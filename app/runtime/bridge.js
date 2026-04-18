@@ -1,8 +1,8 @@
 import { PyWorker } from "../../vendor/pyscript/2025.11.2/core.js";
 import { parse as parseToml } from "../../vendor/pyscript/2025.11.2/toml-BK2RWy-G.js";
 import { createRuntimeRequest, isRuntimeResponse } from "./messages.js";
+import { postLog, postLifecycle } from "./logger.js";
 
-const NATIVE_BRIDGE_HANDLER_NAME = "bridge";
 const WORKER_DIAGNOSTIC_KIND = "fortweb.runtime.diagnostic";
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const WORKER_LIVENESS_TIMEOUT_MS = 3_000;
@@ -16,56 +16,6 @@ const METHOD_TIMEOUT_MS = {
     "remotes.resolveOobi": 60_000,
     "kf.onboarding.start": 120_000,
 };
-
-function createNativeBridgeAdapter() {
-    if (typeof window !== "undefined") {
-        const webkitBridge = window.webkit?.messageHandlers?.[NATIVE_BRIDGE_HANDLER_NAME];
-        if (webkitBridge && typeof webkitBridge.postMessage === "function") {
-            return {
-                postMessage(payload) {
-                    webkitBridge.postMessage(payload);
-                },
-            };
-        }
-
-        const androidBridge = window[NATIVE_BRIDGE_HANDLER_NAME];
-        if (androidBridge && typeof androidBridge.postMessage === "function") {
-            return {
-                postMessage(payload) {
-                    androidBridge.postMessage(JSON.stringify(payload));
-                },
-            };
-        }
-    }
-
-    return {
-        postMessage() {},
-    };
-}
-
-function isoNow() {
-    return new Date().toISOString();
-}
-
-function formatDiagnosticValue(value) {
-    if (typeof value === "string") {
-        return JSON.stringify(value);
-    }
-
-    return String(value);
-}
-
-function formatDiagnosticMessage(event, fields = {}) {
-    const parts = Object.entries(fields)
-        .filter(([, value]) => value !== undefined && value !== null && value !== "")
-        .map(([key, value]) => `${key}=${formatDiagnosticValue(value)}`);
-
-    if (parts.length === 0) {
-        return `[fortweb.runtime] event=${event}`;
-    }
-
-    return `[fortweb.runtime] event=${event} ${parts.join(" ")}`;
-}
 
 function roundDurationMs(startedAt) {
     return Math.max(0, Math.round(performance.now() - startedAt));
@@ -165,7 +115,6 @@ export function createRuntimeBridge({ workerUrl, configUrl }) {
     let bootedWorker = null;
     let workerPromise = null;
     let hiddenSince = 0;
-    const nativeBridge = createNativeBridgeAdapter();
     let preloadGate = createPreloadGate();
 
     function resetPreloadGate() {
@@ -189,33 +138,11 @@ export function createRuntimeBridge({ workerUrl, configUrl }) {
         ]);
     }
 
-    function postToNativeBridge(payload) {
-        try {
-            nativeBridge.postMessage(payload);
-        } catch {}
-    }
-
-    function emitNativeLog(event, fields = {}) {
-        postToNativeBridge({
-            type: "log",
-            timestamp: isoNow(),
-            message: formatDiagnosticMessage(event, fields),
-        });
-    }
-
-    function emitNativeLifecycle(state, fields = {}) {
-        postToNativeBridge({
-            type: "lifecycle",
-            timestamp: isoNow(),
-            message: formatDiagnosticMessage("worker_lifecycle", { state, ...fields }),
-        });
-    }
-
     function createWorkerPromise() {
         resetPreloadGate();
         return (async () => {
             console.time("[bridge] worker boot");
-            emitNativeLifecycle("boot");
+            postLifecycle("boot");
 
             try {
                 const response = await fetch(configUrl.toString());
@@ -229,10 +156,10 @@ export function createRuntimeBridge({ workerUrl, configUrl }) {
                     configURL: configUrl.toString(),
                     config,
                 });
-                emitNativeLifecycle("ready");
+                postLifecycle("ready");
                 return worker;
             } catch (error) {
-                emitNativeLifecycle("error", {
+                postLifecycle("error", {
                     reason: error?.message ?? String(error),
                 });
                 resolvePreloadGate("js_boot_error");
@@ -246,7 +173,7 @@ export function createRuntimeBridge({ workerUrl, configUrl }) {
     workerPromise = createWorkerPromise();
 
     function invalidateWorker(reason, fields = {}) {
-        emitNativeLog("worker_invalidation", {
+        postLog("worker_invalidation", {
             level: "warning",
             reason,
             ...fields,
@@ -266,7 +193,7 @@ export function createRuntimeBridge({ workerUrl, configUrl }) {
                     return;
                 }
 
-                emitNativeLog(diagnostic.event, {
+                postLog(diagnostic.event, {
                     level: diagnostic.level ?? "info",
                     ...diagnostic.fields,
                 });
@@ -281,7 +208,7 @@ export function createRuntimeBridge({ workerUrl, configUrl }) {
 
         worker.onerror = (ev) => {
             console.error("[bridge] worker error:", ev?.message ?? ev);
-            emitNativeLifecycle("error", {
+            postLifecycle("error", {
                 reason: ev?.message ?? String(ev),
             });
             resolvePreloadGate("worker_error");
@@ -290,7 +217,7 @@ export function createRuntimeBridge({ workerUrl, configUrl }) {
         if (typeof worker.onmessageerror === "object" || worker.onmessageerror === null) {
             worker.onmessageerror = () => {
                 console.error("[bridge] worker message deserialization error");
-                emitNativeLifecycle("error", {
+                postLifecycle("error", {
                     reason: "worker message deserialization error",
                 });
                 resolvePreloadGate("worker_message_error");
@@ -373,7 +300,7 @@ export function createRuntimeBridge({ workerUrl, configUrl }) {
         const payload = JSON.stringify(createRuntimeRequest(id, method, params));
         const startedAt = performance.now();
 
-        emitNativeLog("request_start", {
+        postLog("request_start", {
             level: "info",
             method,
             request_id: id,
@@ -383,7 +310,7 @@ export function createRuntimeBridge({ workerUrl, configUrl }) {
         try {
             const response = await rawRequest(payload, effectiveTimeoutMs, method);
             const result = handleResponse(response, id);
-            emitNativeLog("request_end", {
+            postLog("request_end", {
                 level: "info",
                 method,
                 request_id: id,
@@ -393,7 +320,7 @@ export function createRuntimeBridge({ workerUrl, configUrl }) {
             return result;
         } catch (firstError) {
             if (firstError.code !== "TIMEOUT") {
-                emitNativeLog("terminal_failure", {
+                postLog("terminal_failure", {
                     level: "error",
                     method,
                     request_id: id,
@@ -405,7 +332,7 @@ export function createRuntimeBridge({ workerUrl, configUrl }) {
             }
 
             console.warn(`[bridge] ${method} timed out, checking worker liveness`);
-            emitNativeLog("request_timeout", {
+            postLog("request_timeout", {
                 level: "warning",
                 method,
                 request_id: id,
@@ -415,7 +342,7 @@ export function createRuntimeBridge({ workerUrl, configUrl }) {
             const alive = await checkWorkerLiveness(worker);
 
             if (alive) {
-                emitNativeLog("terminal_failure", {
+                postLog("terminal_failure", {
                     level: "error",
                     method,
                     request_id: id,
@@ -435,7 +362,7 @@ export function createRuntimeBridge({ workerUrl, configUrl }) {
 
             const retryId = `runtime-${Date.now()}-${requestCounter++}`;
             const retryPayload = JSON.stringify(createRuntimeRequest(retryId, method, params));
-            emitNativeLog("request_retry", {
+            postLog("request_retry", {
                 level: "warning",
                 method,
                 request_id: id,
@@ -446,7 +373,7 @@ export function createRuntimeBridge({ workerUrl, configUrl }) {
             try {
                 const retryResponse = await rawRequest(retryPayload, effectiveTimeoutMs, method);
                 const retryResult = handleResponse(retryResponse, retryId);
-                emitNativeLog("request_end", {
+                postLog("request_end", {
                     level: "info",
                     method,
                     request_id: retryId,
@@ -456,7 +383,7 @@ export function createRuntimeBridge({ workerUrl, configUrl }) {
                 });
                 return retryResult;
             } catch (retryError) {
-                emitNativeLog("terminal_failure", {
+                postLog("terminal_failure", {
                     level: "error",
                     method,
                     request_id: retryId,

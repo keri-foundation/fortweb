@@ -26,6 +26,8 @@ import { renderWatcherOverviewPage } from "../providers/kerifoundation/watcher-o
 import { renderWitnessOverviewPage } from "../providers/kerifoundation/witness-overview-page.js";
 import { isFixtureRoute, loadFixture } from "../fixtures/fixture-router.js";
 import { renderFixtureIndexPage } from "../fixtures/fixture-index-page.js";
+import { installGlobalHandlers } from "../runtime/global-handlers.js";
+import { postLog } from "../runtime/logger.js";
 
 const METHODS = {
     vaultsList: "vaults.list",
@@ -631,6 +633,13 @@ async function render() {
         if (thisGeneration !== renderGeneration) {
             return;
         }
+        postLog("render_error", {
+            level: "error",
+            code: error?.code ?? "",
+            message: error?.message ?? String(error),
+            route: route.name,
+            path: route.path,
+        });
         if (error?.code === "NOT_FOUND") {
             renderNotFoundRoute(route, currentState(), vault);
             return;
@@ -660,6 +669,7 @@ async function render() {
 }
 
 window.addEventListener("hashchange", () => {
+    postLog("route_change", { path: normalizeHash() });
     session.patch({ mobileNavOpen: false });
     void render();
 });
@@ -669,6 +679,7 @@ window.addEventListener("beforeunload", () => {
 });
 
 async function bootstrap() {
+    installGlobalHandlers();
     await actions.refreshVaults();
     initDrawer(currentState().vaults);
     await render();
