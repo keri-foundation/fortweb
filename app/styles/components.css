@@ -581,7 +581,7 @@
 .unlock-passcode-field__toggle {
     position: absolute;
     top: 50%;
-    right: 16px;
+    right: 8px;
     transform: translateY(-50%);
     border: none;
     background: transparent;
@@ -590,7 +590,10 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    padding: 4px;
+    width: 44px;
+    height: 44px;
+    padding: 8px;
+    border-radius: 4px;
 }
 
 .unlock-passcode-field__toggle img {
@@ -929,7 +932,7 @@
 }
 
 .status-line--loading {
-    color: var(--color-text-muted, #888);
+    color: var(--sys-on-surface-muted);
 }
 
 .status-line--error {
@@ -1288,15 +1291,19 @@
 
 .lk-float-field__toggle {
     position: absolute;
-    right: 10px;
+    right: 4px;
     top: 50%;
     transform: translateY(-50%);
     background: transparent;
     border: none;
     cursor: pointer;
-    padding: 4px;
+    width: 44px;
+    height: 44px;
+    padding: 8px;
+    border-radius: 4px;
     display: flex;
     align-items: center;
+    justify-content: center;
 }
 
 .lk-float-field__toggle:hover {
@@ -1408,9 +1415,13 @@
     background: transparent;
     border: none;
     cursor: pointer;
-    padding: 2px;
+    width: 44px;
+    height: 44px;
+    padding: 10px;
+    border-radius: 4px;
     display: flex;
     align-items: center;
+    justify-content: center;
     opacity: 0.5;
 }
 
@@ -1425,7 +1436,7 @@
 }
 
 .lk-table-header__action {
-    min-height: 47px;
+    min-height: 48px;
 }
 
 /* Table */

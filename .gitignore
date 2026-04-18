@@ -209,3 +209,7 @@ __marimo__/
 node_modules/
 playwright-report/
 test-results/
+
+# Screenshot regression tooling — current and diff are ephemeral
+tools/screenshots/current/
+tools/screenshots/diffs/

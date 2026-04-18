@@ -3,6 +3,7 @@ import {
     homeHref,
     identifiersHref,
     navigate,
+    normalizeHash,
     parseRoute,
     unlockHref,
 } from "./router.js";
@@ -23,6 +24,8 @@ import { renderUnlockPage } from "../features/vaults/unlock-page.js";
 import { renderVaultPickerPage } from "../features/vaults/vault-picker-page.js";
 import { renderWatcherOverviewPage } from "../providers/kerifoundation/watcher-overview-page.js";
 import { renderWitnessOverviewPage } from "../providers/kerifoundation/witness-overview-page.js";
+import { isFixtureRoute, loadFixture } from "../fixtures/fixture-router.js";
+import { renderFixtureIndexPage } from "../fixtures/fixture-index-page.js";
 
 const METHODS = {
     vaultsList: "vaults.list",
@@ -569,6 +572,25 @@ let renderGeneration = 0;
 
 async function render() {
     const thisGeneration = ++renderGeneration;
+    const path = normalizeHash();
+
+    if (path === "/_fixtures" || path === "/_fixtures/") {
+        const indexRoute = { name: "fixture-index", shellMode: "home", navMode: "none", path, params: {} };
+        renderShell(root, { route: indexRoute, page: renderFixtureIndexPage(), state: currentState(), vault: null, actions });
+        return;
+    }
+
+    if (isFixtureRoute(path)) {
+        const fixture = loadFixture(path);
+        if (fixture) {
+            renderShell(root, { route: fixture.route, page: fixture.page, state: currentState(), vault: fixture.vault, actions });
+        } else {
+            const fallbackRoute = { name: "not-found", shellMode: "home", navMode: "none", path, params: {} };
+            renderNotFoundRoute(fallbackRoute, currentState(), null);
+        }
+        return;
+    }
+
     const route = parseRoute();
     const state = currentState();
     const vault = route.requiresVault ? findVault(route.params.vaultId) : null;
