@@ -4,6 +4,10 @@ import {
     setupFloatingInputs,
 } from "../../shared/components.js";
 import { escapeHtml, toneClass } from "../../shared/dom.js";
+import { announce } from "../../ui/core/a11y.js";
+import { showToast } from "../../ui/composites/toast.js";
+import { stepperHtml } from "../../ui/composites/stepper.js";
+import { badgeHtml as uiBadgeHtml } from "../../ui/primitives/badge.js";
 
 function badgeHtml(label, tone = "neutral") {
     return `<span class="${toneClass(tone)}">${escapeHtml(label)}</span>`;
@@ -11,7 +15,7 @@ function badgeHtml(label, tone = "neutral") {
 
 function profileLabel(option) {
     const witnessLabel = option.witnessCount === 1 ? "1 witness" : `${option.witnessCount} witnesses`;
-    return `${option.code} · ${witnessLabel} · toad ${option.toad}`;
+    return `${option.code} \u00B7 ${witnessLabel} \u00B7 toad ${option.toad}`;
 }
 
 function detailItem(label, value) {
@@ -36,13 +40,13 @@ function accountSummary(account, bootstrapState) {
     const summary = document.createElement("dl");
     summary.className = "detail-grid summary-grid";
     summary.append(
-        detailItem("Account Alias", account.accountAlias || "—"),
-        detailItem("Account AID", account.accountAid || "—"),
-        detailItem("Profile", account.witnessProfileCode || "—"),
-        detailItem("Region", account.regionName || account.regionId || "—"),
+        detailItem("Account Alias", account.accountAlias || "\u2014"),
+        detailItem("Account AID", account.accountAid || "\u2014"),
+        detailItem("Profile", account.witnessProfileCode || "\u2014"),
+        detailItem("Region", account.regionName || account.regionId || "\u2014"),
         detailItem("Witness Count", String(account.witnessCount || 0)),
         detailItem("Witness Threshold", String(account.toad || 0)),
-        detailItem("Boot Service", bootstrapState.bootUrl || account.bootUrl || "—"),
+        detailItem("Boot Service", bootstrapState.bootUrl || account.bootUrl || "\u2014"),
         detailItem("Boot Server AID", account.bootServerAid || "Pending verification"),
     );
     return summary;
@@ -52,10 +56,10 @@ function renderWitnessTable(witnesses) {
     const rows = witnesses.map((witness) => ({
         name: witness.name || `KF Witness ${witness.eid.slice(0, 12)}`,
         witnessAid: witness.eid,
-        region: witness.regionName || witness.regionId || "—",
+        region: witness.regionName || witness.regionId || "\u2014",
         hostedStatus: badgeHtml(witness.hostedStatus || "allocated", "info"),
         localStatus: badgeHtml(witness.localStatus || "Pending local connect", witness.localStatusTone || "warning"),
-        endpoint: witness.url || "—",
+        endpoint: witness.url || "\u2014",
         _raw: witness,
     }));
 
@@ -92,6 +96,21 @@ function renderWitnessTable(witnesses) {
     };
 }
 
+/** @type {Array<{id: string, label: string}>} */
+const ONBOARDING_STEPS = [
+    { id: "connect", label: "Connect" },
+    { id: "configure", label: "Configure" },
+    { id: "onboard", label: "Onboard" },
+    { id: "review", label: "Review" },
+];
+
+function deriveCurrentStep(bootstrapState) {
+    if (!bootstrapState.connection.ok) return "connect";
+    const options = bootstrapState.bootstrap?.accountOptions ?? [];
+    if (options.length === 0) return "connect";
+    return "configure";
+}
+
 function renderOnboardingPage({ bootstrapState, onLoadBootstrap, onStartOnboarding }) {
     const account = bootstrapState.account;
     const initialOptions = bootstrapState.bootstrap?.accountOptions ?? [];
@@ -103,6 +122,8 @@ function renderOnboardingPage({ bootstrapState, onLoadBootstrap, onStartOnboardi
         title: "KERI Foundation Witnesses",
         render(container) {
             container.replaceChildren();
+
+            const currentStep = deriveCurrentStep(bootstrapState);
 
             const page = document.createElement("section");
             page.className = "page-grid";
@@ -116,6 +137,9 @@ function renderOnboardingPage({ bootstrapState, onLoadBootstrap, onStartOnboardi
                         </p>
                     </div>
                 </header>
+                <div class="section-card section-card--summary" style="padding-block: var(--space-4);">
+                    ${stepperHtml({ steps: ONBOARDING_STEPS, currentStepId: currentStep })}
+                </div>
             `;
 
             const columns = document.createElement("section");
@@ -123,6 +147,7 @@ function renderOnboardingPage({ bootstrapState, onLoadBootstrap, onStartOnboardi
 
             const summaryCard = document.createElement("section");
             summaryCard.className = "section-card section-card--summary";
+            summaryCard.setAttribute("role", "status");
             summaryCard.innerHTML = `
                 <div class="panel__title">
                     <h2>Boot Connection</h2>
@@ -178,7 +203,7 @@ function renderOnboardingPage({ bootstrapState, onLoadBootstrap, onStartOnboardi
                         <button class="button button--secondary" type="button" data-kf-refresh-bootstrap>Check Boot Connection</button>
                         <button class="button button--primary" type="submit" data-kf-start-onboarding>Start Hosted Onboarding</button>
                     </div>
-                    <p class="status-line" data-kf-onboarding-status></p>
+                    <p class="status-line" data-kf-onboarding-status role="status" aria-live="polite"></p>
                 </form>
             `;
 
@@ -234,7 +259,7 @@ function renderOnboardingPage({ bootstrapState, onLoadBootstrap, onStartOnboardi
                 const connectionLabel = nextSnapshot.connection.ok ? "Connected" : "Disconnected";
                 const connectionTone = nextSnapshot.connection.ok ? "success" : "warning";
 
-                bootUrlLabel.textContent = nextSnapshot.bootUrl || bootUrlInput.value || initialBootUrl || "—";
+                bootUrlLabel.textContent = nextSnapshot.bootUrl || bootUrlInput.value || initialBootUrl || "\u2014";
                 connectionBadge.innerHTML = badgeHtml(connectionLabel, connectionTone);
                 regionLabel.textContent = region;
                 watcherPolicy.textContent = watcherText;
@@ -243,6 +268,8 @@ function renderOnboardingPage({ bootstrapState, onLoadBootstrap, onStartOnboardi
                     : '<span class="badge badge--warning">No hosted profiles returned</span>';
                 summaryStatus.textContent = nextSnapshot.account?.failureReason || nextSnapshot.connection.error || "";
                 renderProfiles(options, nextSnapshot.account?.witnessProfileCode || profileSelect.value || initialProfile);
+
+                announce(nextSnapshot.connection.ok ? "Boot service connected." : "Boot service disconnected.");
             }
 
             async function refreshBootstrap() {
@@ -255,9 +282,12 @@ function renderOnboardingPage({ bootstrapState, onLoadBootstrap, onStartOnboardi
                     applySnapshot(nextSnapshot);
                     if (!nextSnapshot.connection.ok) {
                         statusLine.textContent = nextSnapshot.connection.error || "Boot connection failed.";
+                    } else {
+                        showToast({ message: "Boot connection verified.", tone: "success" });
                     }
                 } catch (error) {
                     statusLine.textContent = error.message || "Boot connection failed.";
+                    announce("Boot connection failed.", "assertive");
                 } finally {
                     refreshButton.disabled = false;
                     submitButton.disabled = profileSelect.disabled || !currentSnapshot.connection.ok;
@@ -285,13 +315,16 @@ function renderOnboardingPage({ bootstrapState, onLoadBootstrap, onStartOnboardi
                         }
 
                         statusLine.textContent = "Hosted onboarding in progress. Fortweb is allocating hosted resources and resolving the required OOBIs.";
+                        announce("Hosted onboarding in progress.");
                         await onStartOnboarding({
                             bootUrl: bootUrlInput.value,
                             alias: aliasInput.value,
                             witnessProfileCode: profileSelect.value,
                         });
+                        showToast({ message: "Hosted onboarding complete.", tone: "success" });
                     } catch (error) {
                         statusLine.textContent = error.message || "Hosted onboarding failed.";
+                        announce(error.message || "Hosted onboarding failed.", "assertive");
                         refreshButton.disabled = false;
                         submitButton.disabled = profileSelect.disabled || !currentSnapshot.connection.ok;
                     }
@@ -322,7 +355,7 @@ function renderAccountWitnessesPage({ bootstrapState, witnesses, witnessError })
                 <div>
                     <h1>Witnesses</h1>
                     <p>
-                        Hosted witness rows come from the boot-backed KF account, not from Fortweb’s local identifier summaries.
+                        Hosted witness rows come from the boot-backed KF account, not from Fortweb's local identifier summaries.
                     </p>
                 </div>
             `;

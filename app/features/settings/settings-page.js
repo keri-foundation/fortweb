@@ -1,3 +1,16 @@
+import { escapeHtml } from "../../shared/dom.js";
+import { announce } from "../../ui/core/a11y.js";
+import { createModal } from "../../ui/composites/modal.js";
+import { showToast } from "../../ui/composites/toast.js";
+import { fieldTextHtml } from "../../ui/primitives/field-text.js";
+
+/**
+ * @typedef {Object} SettingsPageProps
+ * @property {Object} vault
+ * @property {Object} settings
+ * @property {function(string): Promise<void>} [onDeleteVault]
+ */
+
 function enabledLabel(value) {
     return value ? "Enabled" : "Disabled";
 }
@@ -16,7 +29,68 @@ function detailItem(label, value) {
     return wrapper;
 }
 
-export function renderSettingsPage({ vault, settings }) {
+function openDeleteConfirmation(vault, onDeleteVault) {
+    const modal = createModal({
+        title: "Delete Vault",
+        tone: "danger",
+        body: `
+            <p>This will permanently delete <strong>${escapeHtml(vault.alias)}</strong> and all its local data. This action cannot be undone.</p>
+            <p>Type the vault name to confirm:</p>
+            ${fieldTextHtml({
+                id: "delete-confirm-alias",
+                label: "Vault name",
+                placeholder: vault.alias,
+                autocomplete: "off",
+            })}
+            <p class="status-line" data-delete-status></p>
+        `,
+        actions: [
+            { label: "Cancel", tone: "ghost", dataAction: "cancel" },
+            { label: "Delete Vault", tone: "danger", dataAction: "confirm-delete" },
+        ],
+    });
+
+    modal.open();
+
+    const root = document.querySelector("[role='dialog'][aria-label='Delete Vault']");
+    if (!root) return;
+
+    const confirmInput = root.querySelector("#delete-confirm-alias");
+    const deleteBtn = root.querySelector("[data-action='confirm-delete']");
+    const cancelBtn = root.querySelector("[data-action='cancel']");
+    const statusLine = root.querySelector("[data-delete-status]");
+
+    deleteBtn.disabled = true;
+
+    confirmInput?.addEventListener("input", () => {
+        deleteBtn.disabled = confirmInput.value.trim() !== vault.alias;
+    });
+
+    cancelBtn?.addEventListener("click", () => modal.close());
+
+    deleteBtn?.addEventListener("click", async () => {
+        if (confirmInput.value.trim() !== vault.alias) return;
+
+        deleteBtn.disabled = true;
+        statusLine.textContent = "Deleting vault\u2026";
+        announce("Deleting vault, please wait.");
+
+        try {
+            await onDeleteVault(vault.id);
+            modal.close();
+            showToast({ message: `Vault "${vault.alias}" deleted.`, tone: "success" });
+        } catch (error) {
+            deleteBtn.disabled = false;
+            statusLine.textContent = error.message || "Vault deletion failed.";
+            announce(error.message || "Vault deletion failed.", "assertive");
+        }
+    });
+}
+
+/**
+ * @param {SettingsPageProps} props
+ */
+export function renderSettingsPage({ vault, settings, onDeleteVault }) {
     return {
         title: "Settings",
         render(container) {
@@ -89,7 +163,7 @@ export function renderSettingsPage({ vault, settings }) {
 
             const dangerCopy = document.createElement("p");
             dangerCopy.className = "muted";
-            dangerCopy.textContent = "Vault deletion is still deferred until the product has a real destructive-action contract.";
+            dangerCopy.textContent = "Deleting a vault permanently removes all local keys, identifiers, and remote state stored in this vault.";
 
             const actions = document.createElement("div");
             actions.className = "panel__actions";
@@ -97,8 +171,15 @@ export function renderSettingsPage({ vault, settings }) {
             const deleteButton = document.createElement("button");
             deleteButton.className = "button button--danger";
             deleteButton.type = "button";
-            deleteButton.disabled = true;
             deleteButton.textContent = "Delete Vault";
+
+            if (typeof onDeleteVault === "function") {
+                deleteButton.addEventListener("click", () => {
+                    openDeleteConfirmation(vault, onDeleteVault);
+                });
+            } else {
+                deleteButton.disabled = true;
+            }
 
             actions.append(deleteButton);
             dangerZone.append(dangerTitle, dangerCopy, actions);

@@ -1,6 +1,10 @@
 import { kfWitnessesHref } from "../../app/router.js";
 import { renderPaginatedTable } from "../../shared/components.js";
 import { escapeHtml, toneClass } from "../../shared/dom.js";
+import { announce } from "../../ui/core/a11y.js";
+import { emptyStateHtml } from "../../ui/composites/empty-state.js";
+import { showToast } from "../../ui/composites/toast.js";
+import { buttonHtml } from "../../ui/primitives/button.js";
 
 function badgeHtml(label, tone = "neutral") {
     return `<span class="${toneClass(tone)}">${escapeHtml(label)}</span>`;
@@ -24,10 +28,10 @@ function renderWatcherTable(watchers) {
     const rows = watchers.map((watcher) => ({
         name: watcher.name || `KF Watcher ${watcher.eid.slice(0, 12)}`,
         watcherAid: watcher.eid,
-        region: watcher.regionName || watcher.regionId || "—",
+        region: watcher.regionName || watcher.regionId || "\u2014",
         hostedStatus: badgeHtml(watcher.hostedStatus || "created", "info"),
         localStatus: badgeHtml(watcher.localStatus || "Pending local connect", watcher.localStatusTone || "warning"),
-        endpoint: watcher.url || "—",
+        endpoint: watcher.url || "\u2014",
     }));
 
     const table = renderPaginatedTable({
@@ -64,6 +68,8 @@ function renderWatcherTable(watchers) {
 }
 
 function renderPlaceholder({ vault, bootstrapState }) {
+    const bootUrl = bootstrapState.bootUrl || "http://127.0.0.1:9723";
+
     return {
         title: "KERI Foundation Watchers",
         html: `
@@ -77,22 +83,30 @@ function renderPlaceholder({ vault, bootstrapState }) {
                     </div>
                 </header>
                 <section class="section-card">
-                    <div class="empty-state">
-                        <h2>No Hosted Watcher Account Yet</h2>
-                        <p>
-                            Start from the Witnesses route, connect Fortweb to <code>${escapeHtml(bootstrapState.bootUrl || "http://127.0.0.1:9723")}</code>,
-                            and complete one hosted onboarding run before returning here.
-                        </p>
-                        <div class="panel__actions">
-                            <a class="button button--primary" href="${kfWitnessesHref(vault.id)}">Open Witnesses</a>
-                        </div>
-                    </div>
+                    ${emptyStateHtml({
+                        title: "No Hosted Watcher Account Yet",
+                        message: `Start from the Witnesses route, connect Fortweb to ${bootUrl}, and complete one hosted onboarding run before returning here.`,
+                        iconSrc: "./assets/icons/watcher.svg",
+                        primaryActionHtml: `<a class="button button--primary" href="${kfWitnessesHref(vault.id)}">Open Witnesses</a>`,
+                    })}
                 </section>
             </section>
         `,
     };
 }
 
+/**
+ * @typedef {Object} WatcherOverviewProps
+ * @property {Object} vault
+ * @property {Object} bootstrapState
+ * @property {Array<Object>} watchers
+ * @property {string} [watcherError]
+ * @property {function(): Promise<void>} onRefreshStatuses
+ */
+
+/**
+ * @param {WatcherOverviewProps} props
+ */
 export function renderWatcherOverviewPage({ vault, bootstrapState, watchers, watcherError, onRefreshStatuses }) {
     if (bootstrapState.account?.status !== "onboarded") {
         return renderPlaceholder({ vault, bootstrapState });
@@ -116,7 +130,7 @@ export function renderWatcherOverviewPage({ vault, bootstrapState, watchers, wat
                         </p>
                     </div>
                     <div class="page-header__actions page-header__actions--stacked">
-                        <button class="button button--secondary" type="button" data-kf-refresh-watchers>Refresh Status</button>
+                        ${buttonHtml({ label: "Refresh Status", tone: "secondary", dataAction: "refresh-watchers" })}
                         <p class="page-header__note">Refresh calls the approved-account watcher status route for each hosted watcher.</p>
                     </div>
                 </header>
@@ -127,11 +141,11 @@ export function renderWatcherOverviewPage({ vault, bootstrapState, watchers, wat
             const summary = document.createElement("dl");
             summary.className = "detail-grid summary-grid";
             summary.append(
-                detailItem("Account Alias", bootstrapState.account.accountAlias || "—"),
-                detailItem("Account AID", bootstrapState.account.accountAid || "—"),
-                detailItem("Region", bootstrapState.account.regionName || bootstrapState.account.regionId || "—"),
+                detailItem("Account Alias", bootstrapState.account.accountAlias || "\u2014"),
+                detailItem("Account AID", bootstrapState.account.accountAid || "\u2014"),
+                detailItem("Region", bootstrapState.account.regionName || bootstrapState.account.regionId || "\u2014"),
                 detailItem("Watcher Policy", bootstrapState.account.watcherRequired ? "Required" : "Optional"),
-                detailItem("Boot Service", bootstrapState.bootUrl || bootstrapState.account.bootUrl || "—"),
+                detailItem("Boot Service", bootstrapState.bootUrl || bootstrapState.account.bootUrl || "\u2014"),
                 detailItem("Boot Server AID", bootstrapState.account.bootServerAid || "Pending verification"),
             );
             summaryCard.append(summary);
@@ -152,6 +166,8 @@ export function renderWatcherOverviewPage({ vault, bootstrapState, watchers, wat
             const statusLine = document.createElement("p");
             statusLine.className = "status-line";
             statusLine.dataset.kfWatcherStatusLine = "true";
+            statusLine.setAttribute("role", "status");
+            statusLine.setAttribute("aria-live", "polite");
             page.append(statusLine);
 
             container.append(page);
@@ -159,16 +175,20 @@ export function renderWatcherOverviewPage({ vault, bootstrapState, watchers, wat
         setup(root) {
             table.setup(root);
 
-            const refreshButton = root.querySelector("[data-kf-refresh-watchers]");
+            const refreshButton = root.querySelector("[data-action='refresh-watchers']");
             const statusLine = root.querySelector("[data-kf-watcher-status-line]");
             refreshButton?.addEventListener("click", () => {
                 void (async () => {
                     refreshButton.disabled = true;
-                    statusLine.textContent = "Refreshing hosted watcher status...";
+                    statusLine.textContent = "Refreshing hosted watcher status\u2026";
+                    announce("Refreshing watcher status.");
                     try {
                         await onRefreshStatuses();
+                        showToast({ message: "Watcher status refreshed.", tone: "success" });
+                        announce("Watcher status refreshed.");
                     } catch (error) {
                         statusLine.textContent = error.message || "Watcher status refresh failed.";
+                        announce(error.message || "Watcher status refresh failed.", "assertive");
                         refreshButton.disabled = false;
                     }
                 })();

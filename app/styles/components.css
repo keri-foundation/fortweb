@@ -2278,6 +2278,77 @@
     50% { opacity: 0.4; }
 }
 
+/* --- Inline copy button --- */
+
+.icon-button--inline {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    vertical-align: middle;
+    width: 28px;
+    height: 28px;
+    padding: 4px;
+    margin-left: var(--space-1);
+    border-radius: var(--radius-field);
+    color: var(--sys-on-surface-muted);
+    transition: background-color 120ms ease;
+}
+
+.icon-button--inline:hover {
+    background: var(--sys-hover);
+}
+
+.detail-item__copyable {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    min-width: 0;
+}
+
+.detail-item__copyable span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* --- Page content transition --- */
+
+[data-page-content] {
+    animation: page-fadein 180ms ease;
+}
+
+@keyframes page-fadein {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+/* --- Danger zone card refinement --- */
+
+.danger-zone {
+    border-color: var(--sys-error-border);
+}
+
+.danger-zone h2 {
+    color: var(--sys-error);
+}
+
+/* --- List-to-detail transition --- */
+
+.page-grid--detail {
+    animation: page-slide-in 200ms ease;
+}
+
+@keyframes page-slide-in {
+    from {
+        opacity: 0;
+        transform: translateX(8px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+
 @media (max-width: 720px) {
     .ui-card {
         padding: 20px;

@@ -1,6 +1,16 @@
 import { homeHref } from "../../app/router.js";
 import { formatDateLabel } from "../../shared/dom.js";
+import { announce } from "../../ui/core/a11y.js";
 
+/**
+ * @typedef {Object} UnlockPageProps
+ * @property {Object} vault
+ * @property {function(string): Promise<void>} onOpenVault
+ */
+
+/**
+ * @param {UnlockPageProps} props
+ */
 export function renderUnlockPage({ vault, onOpenVault }) {
     return {
         title: `Unlock ${vault.alias}`,
@@ -31,12 +41,13 @@ export function renderUnlockPage({ vault, onOpenVault }) {
                                     id="unlock-passcode"
                                     placeholder="Passcode"
                                     autocomplete="off"
+                                    aria-describedby="unlock-status"
                                 >
                                 <button type="button" class="unlock-passcode-field__toggle" data-unlock-toggle aria-label="Toggle password visibility">
                                     <img src="./assets/icons/browse.svg" alt="" width="22" height="22">
                                 </button>
                             </div>
-                            <p class="status-line" data-unlock-status></p>
+                            <p class="status-line" id="unlock-status" data-unlock-status role="status" aria-live="polite"></p>
                             <div class="lk-dialog__buttons unlock-dialog-card__buttons">
                                 <a class="button button--secondary" href="${homeHref()}">Cancel</a>
                                 <button class="button button--primary" type="submit">Open</button>
@@ -52,7 +63,7 @@ export function renderUnlockPage({ vault, onOpenVault }) {
                 vault.storageName,
                 `Created ${formatDateLabel(vault.createdAt)}`,
                 `2FA ${vault.otpConfigured ? "configured" : "deferred"}`,
-            ].join(" • ");
+            ].join(" \u00B7 ");
 
             const form = root.querySelector("[data-unlock-form]");
             const statusLine = root.querySelector("[data-unlock-status]");
@@ -71,6 +82,7 @@ export function renderUnlockPage({ vault, onOpenVault }) {
                 statusLine.textContent = "Opening vault\u2026";
                 statusLine.classList.remove("status-line--error");
                 statusLine.classList.add("status-line--loading");
+                announce("Opening vault, please wait.");
 
                 try {
                     await onOpenVault(String(formData.get("passcode") || ""));
@@ -78,10 +90,15 @@ export function renderUnlockPage({ vault, onOpenVault }) {
                     submitButton.disabled = false;
                     statusLine.classList.remove("status-line--loading");
                     statusLine.classList.add("status-line--error");
-                    statusLine.textContent =
+
+                    const message =
                         error.code === "TIMEOUT"
                             ? "The vault took too long to open. This can happen after the app has been in the background. Please try again."
                             : error.message || "Vault open failed.";
+
+                    statusLine.textContent = message;
+                    announce(message, "assertive");
+                    passcodeInput.focus();
                 }
             });
         },
