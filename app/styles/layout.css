@@ -310,9 +310,9 @@
         max(var(--shell-header-inline-padding), env(safe-area-inset-right))
         var(--shell-header-bottom-padding)
         max(var(--shell-header-inline-padding), env(safe-area-inset-left));
-    background: rgba(248, 249, 255, 0.96);
+    background: rgba(247, 248, 244, 0.96);
     backdrop-filter: blur(16px);
-    border-bottom: 1px solid var(--color-border-table);
+    border-bottom: 1px solid var(--sys-outline-subtle);
 }
 
 .shell-header__leading {
@@ -379,32 +379,40 @@
         var(--shell-tabbar-padding-top)
         var(--shell-tabbar-padding-inline)
         calc(env(safe-area-inset-bottom) + var(--safe-area-buffer-bottom));
-    background: rgba(248, 249, 255, 0.96);
+    background: rgba(247, 248, 244, 0.96);
     backdrop-filter: blur(16px);
-    border-top: 1px solid var(--color-border-table);
+    border-top: 1px solid var(--sys-outline-subtle);
+}
+
+.shell-tabbar__icon {
+    flex-shrink: 0;
 }
 
 .shell-tabbar__link {
     min-height: var(--shell-tabbar-control-height);
     display: inline-flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
+    gap: var(--space-1);
     text-align: center;
     touch-action: manipulation;
     -webkit-user-select: none;
     user-select: none;
-    padding: 10px clamp(8px, 2.5vw, 12px);
-    border-radius: 999px;
+    padding: 6px clamp(8px, 2.5vw, 12px) 4px;
+    border-radius: var(--radius-panel);
     text-decoration: none;
-    color: var(--color-text-secondary);
+    color: var(--sys-on-surface-muted);
     background: transparent;
-    font-size: clamp(0.82rem, 1.9vw, 0.92rem);
+    font-size: 11px;
     font-weight: 600;
+    letter-spacing: 0.02em;
+    transition: color 120ms ease, background-color 120ms ease;
 }
 
 .shell-tabbar__link.is-active {
-    background: var(--color-surface);
-    color: var(--color-text-dark);
+    background: var(--sys-surface);
+    color: var(--sys-primary);
     box-shadow: var(--shadow-subtle);
 }
 
@@ -416,23 +424,24 @@
 }
 
 .shell-section-tabs__link {
-    min-height: 38px;
+    min-height: 48px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    padding: 8px 14px;
+    padding: 10px 16px;
     border-radius: 999px;
-    border: 1px solid var(--color-border-table);
-    background: var(--color-surface);
-    color: var(--color-text-secondary);
+    border: 1px solid var(--sys-outline-subtle);
+    background: var(--sys-surface);
+    color: var(--sys-on-surface-muted);
     text-decoration: none;
     font-size: 0.9rem;
     font-weight: 600;
+    transition: border-color 120ms ease, color 120ms ease;
 }
 
 .shell-section-tabs__link.is-active {
-    border-color: var(--color-primary);
-    color: var(--color-text-dark);
+    border-color: var(--sys-primary);
+    color: var(--sys-on-surface-strong);
 }
 
 @media (min-width: 901px) {
