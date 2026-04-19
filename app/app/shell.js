@@ -138,15 +138,15 @@ export function renderShell(root, { route, page, state, vault, actions }) {
             ${isVaultShell ? `
                 <header class="shell-header">
                     <div class="shell-header__leading">
-                        <p class="shell-header__eyebrow">${vault.alias}</p>
+                        <button class="shell-header__eyebrow" type="button" data-action="toggle-drawer" aria-label="Switch vault">
+                            <span>${vault.alias}</span>
+                            <svg class="shell-header__chevron" width="10" height="6" viewBox="0 0 10 6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 1l4 4 4-4"/></svg>
+                        </button>
                         <h1 class="shell-header__title">${page.title}</h1>
                     </div>
-                    <div class="shell-header__actions" role="toolbar" aria-label="Vault actions">
-                        <button class="button button--ghost shell-header__vault-button" type="button" data-action="toggle-drawer">Vaults</button>
-                        <button class="icon-button shell-header__icon" data-action="lock-vault" aria-label="Lock vault">
-                            <img src="./assets/icons/lock.svg" alt="">
-                        </button>
-                    </div>
+                    <button class="icon-button shell-header__lock" data-action="lock-vault" aria-label="Lock vault">
+                        <img src="./assets/icons/lock.svg" alt="">
+                    </button>
                 </header>
             ` : ""}
             <div class="shell__body ${isVaultShell ? "shell__body--vault" : "shell__body--home"}">

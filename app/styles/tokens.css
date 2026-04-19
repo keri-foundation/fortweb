@@ -156,12 +156,12 @@
     --content-inline-gutter: 16px;
 
     /* ── Component: Shell ──────────────────────────────────────────── */
-    --safe-area-buffer-top: 8px;
+    --safe-area-buffer-top: 16px;
     --safe-area-buffer-bottom: 4px;
     --home-shell-top-padding: clamp(22px, 5vw, 36px);
     --home-shell-bottom-padding: clamp(24px, 6vw, 40px);
     --shell-header-inline-padding: 16px;
-    --shell-header-bottom-padding: 18px;
+    --shell-header-bottom-padding: 20px;
     --shell-content-top-padding: clamp(18px, 4vw, 24px);
     --shell-tabbar-control-height: 48px;
     --shell-tabbar-padding-top: 12px;
@@ -249,7 +249,7 @@
         --home-shell-top-padding: 24px;
         --home-shell-bottom-padding: 28px;
         --shell-header-inline-padding: 14px;
-        --shell-header-bottom-padding: 16px;
+        --shell-header-bottom-padding: 18px;
         --shell-content-top-padding: 18px;
         --shell-tabbar-control-height: 44px;
         --shell-tabbar-padding-top: 10px;

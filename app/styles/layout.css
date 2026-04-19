@@ -74,7 +74,7 @@
     display: flex;
     justify-content: center;
     padding:
-        calc(env(safe-area-inset-top) + var(--home-shell-top-padding))
+        var(--home-shell-top-padding)
         max(var(--content-inline-gutter), env(safe-area-inset-right))
         calc(env(safe-area-inset-bottom) + var(--home-shell-bottom-padding))
         max(var(--content-inline-gutter), env(safe-area-inset-left));
@@ -291,6 +291,7 @@
 
 .shell--home {
     background: var(--color-window);
+    padding-top: env(safe-area-inset-top, 0px);
 }
 
 .shell--vault {
@@ -322,11 +323,37 @@
 }
 
 .shell-header__eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
     margin: 0;
+    padding: 4px 8px 4px 0;
+    border: none;
+    background: none;
+    cursor: pointer;
     color: var(--color-text-secondary);
     text-transform: uppercase;
     letter-spacing: 0.12em;
     font-size: 0.72rem;
+    font-family: inherit;
+    min-height: 32px;
+    border-radius: var(--radius-chip);
+    transition: color 120ms ease, background-color 120ms ease;
+}
+
+.shell-header__eyebrow:hover {
+    color: var(--sys-primary);
+    background: var(--sys-surface);
+}
+
+.shell-header__eyebrow:focus-visible {
+    outline: 2px solid var(--sys-primary);
+    outline-offset: 2px;
+}
+
+.shell-header__chevron {
+    flex-shrink: 0;
+    transition: transform 120ms ease;
 }
 
 .shell-header__title {
@@ -336,25 +363,11 @@
     line-height: 1.05;
 }
 
-.shell-header__actions {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-}
-
-.shell-header__vault-button {
-    min-height: max(40px, var(--button-min-height));
-    padding: 10px 14px;
-}
-
-.shell-header__icon {
+.shell-header__lock {
+    flex-shrink: 0;
     border: 1px solid var(--color-border-table);
     border-radius: 999px;
     background: var(--color-surface);
-}
-
-.shell__content--home {
-    padding: 0;
 }
 
 .shell__content--vault {
@@ -463,22 +476,6 @@
 }
 
 @media (max-width: 720px) {
-    .shell-header {
-        align-items: flex-start;
-        flex-direction: column;
-        gap: var(--space-2);
-    }
-
-    .shell-header__actions {
-        width: 100%;
-        justify-content: flex-start;
-    }
-
-    .shell-header__vault-button {
-        flex: 1;
-        justify-content: center;
-    }
-
     .shell-tabbar {
         gap: var(--space-1);
     }
