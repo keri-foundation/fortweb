@@ -968,6 +968,21 @@
     padding: 0 16px 0;
 }
 
+/* Wide viewports: center sheet-styled dialogs (e.g. vault init); narrow screens keep bottom sheet in @media (max-width:720px) */
+@media (min-width: 721px) {
+    .lk-dialog-root--sheet {
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+    }
+
+    .lk-dialog--sheet {
+        width: min(560px, calc(100vw - 48px));
+        border-radius: var(--radius-panel);
+        padding-bottom: 0;
+    }
+}
+
 .lk-dialog-overlay {
     position: absolute;
     inset: 0;
