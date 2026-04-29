@@ -24,6 +24,7 @@
     "app/features/identifiers/identifier-detail-page.ts",
     "app/features/remotes/remotes-page.ts",
     "app/features/remotes/remote-detail-page.ts",
+    "app/features/settings/settings-page.ts",
     "app/runtime/logger.ts",
     "app/runtime/types/**/*.d.ts",
     "app/runtime/bridge.ts",
