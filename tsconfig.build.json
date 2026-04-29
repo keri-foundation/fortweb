@@ -16,6 +16,8 @@
     "app/features/remotes/remotes-page.ts",
     "app/features/remotes/remote-detail-page.ts",
     "app/features/settings/settings-page.ts",
+    "app/features/vaults/unlock-page.ts",
+    "app/features/vaults/vault-picker-page.ts",
     "app/runtime/logger.ts",
     "app/runtime/types/**/*.d.ts",
     "app/runtime/bridge.ts",

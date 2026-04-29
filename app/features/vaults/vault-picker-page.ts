@@ -2,10 +2,28 @@ import { formatDateLabel } from "../../shared/dom.js";
 import { emptyStateHtml } from "../../ui/composites/empty-state.js";
 import { buttonHtml } from "../../ui/primitives/button.js";
 import { badgeHtml } from "../../ui/primitives/badge.js";
-function vaultCardHtml(vault) {
+
+interface VaultRecord {
+    id: string;
+    alias: string;
+    storageName?: string;
+    createdAt: string;
+    identifierCount?: number;
+    remoteCount?: number;
+    locked?: boolean;
+}
+
+interface VaultPickerProps {
+    vaults: VaultRecord[];
+    onCreateVault(): void;
+    onSelectVault(vault: VaultRecord): void;
+}
+
+function vaultCardHtml(vault: VaultRecord): string {
     const statusTone = vault.locked === false ? "success" : "neutral";
     const statusLabel = vault.locked === false ? "Open" : "Locked";
     const actionLabel = vault.locked === false ? "Return to Vault" : "Open Vault";
+
     return `
         <article class="vault-card vault-card--mobile-home" data-vault-id="${vault.id}">
             <div class="vault-card__header">
@@ -35,25 +53,29 @@ function vaultCardHtml(vault) {
         </article>
     `;
 }
-export function renderVaultPickerPage({ vaults = [], onCreateVault, onSelectVault }) {
+
+export function renderVaultPickerPage({ vaults = [], onCreateVault, onSelectVault }: VaultPickerProps) {
     return {
         title: "Vaults",
-        render(container) {
+        render(container: HTMLElement): void {
             container.replaceChildren();
+
             const page = document.createElement("section");
             page.className = "page-grid vault-home";
+
             const vaultListHtml = vaults.length
                 ? `<div class="vault-list vault-home__list">${vaults.map((vault) => vaultCardHtml(vault)).join("")}</div>`
                 : emptyStateHtml({
-                    title: "No Vaults Yet",
-                    message: "This wallet has not created a local vault on this device yet.",
-                    iconSrc: "./assets/brand/SymbolLogo.svg",
-                    primaryActionHtml: buttonHtml({
-                        label: "Create Your First Vault",
-                        tone: "primary",
-                        dataAction: "create-vault",
-                    }),
-                });
+                      title: "No Vaults Yet",
+                      message: "This wallet has not created a local vault on this device yet.",
+                      iconSrc: "./assets/brand/SymbolLogo.svg",
+                      primaryActionHtml: buttonHtml({
+                          label: "Create Your First Vault",
+                          tone: "primary",
+                          dataAction: "create-vault",
+                      }),
+                  });
+
             page.innerHTML = `
                 <section class="hero-card vault-home__hero">
                     <div class="hero-card__brand vault-home__brand">
@@ -70,33 +92,40 @@ export function renderVaultPickerPage({ vaults = [], onCreateVault, onSelectVaul
                     <div class="panel__header vault-home__list-header">
                         <div class="panel__title">
                             <h2>Available Vaults</h2>
-                            <p class="muted">${vaults.length
-                ? "Choose a vault to continue your local wallet session."
-                : "Create your first vault to begin using the mobile wallet."}</p>
+                            <p class="muted">${
+                                vaults.length
+                                    ? "Choose a vault to continue your local wallet session."
+                                    : "Create your first vault to begin using the mobile wallet."
+                            }</p>
                         </div>
                     </div>
                     ${vaultListHtml}
                 </section>
             `;
+
             page.querySelectorAll("[data-action='create-vault']").forEach((button) => {
                 if (!(button instanceof HTMLElement)) {
                     return;
                 }
                 button.addEventListener("click", () => onCreateVault());
             });
+
             page.querySelectorAll("[data-action='open-vault']").forEach((button) => {
                 if (!(button instanceof HTMLElement)) {
                     return;
                 }
+
                 const card = button.closest("[data-vault-id]");
                 if (!(card instanceof HTMLElement)) {
                     return;
                 }
+
                 const vault = vaults.find((entry) => entry.id === card.dataset.vaultId);
                 if (vault) {
                     button.addEventListener("click", () => onSelectVault(vault));
                 }
             });
+
             container.append(page);
         },
     };
