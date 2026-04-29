@@ -4,10 +4,115 @@
  * Each component returns a { html, setup(root) } object or a controller API,
  * following the same pattern as fortweb page modules.
  */
+
 import { escapeHtml } from "./dom.js";
+
+interface DialogOptions {
+    title?: string;
+    titleIcon?: string;
+    showClose?: boolean;
+    showDivider?: boolean;
+    content?: string;
+    buttons?: string;
+    showOverlay?: boolean;
+    rootClassName?: string;
+    surfaceClassName?: string;
+}
+
+interface DialogController {
+    el: HTMLDivElement;
+    show(): void;
+    close(): void;
+}
+
+interface VaultDrawerRecord {
+    id: string;
+    alias: string;
+    locked?: boolean;
+    identifierCount?: number;
+    remoteCount?: number;
+}
+
+interface VaultDrawerOptions<Vault extends VaultDrawerRecord> {
+    vaults: Vault[];
+    onVaultClick(vault: Vault): void;
+    onNewVault?(): void;
+}
+
+interface VaultDrawerController<Vault extends VaultDrawerRecord> {
+    el: HTMLDivElement;
+    open(): void;
+    close(): void;
+    refresh(vaults: Vault[]): void;
+}
+
+interface FloatingInputOptions {
+    label: string;
+    name: string;
+    type?: string;
+    password?: boolean;
+}
+
+interface TableColumn {
+    key: string;
+    label: string;
+    width?: string;
+    searchKey?: string;
+    html?: boolean;
+}
+
+interface TableAction {
+    key: string;
+    label: string;
+    icon?: string;
+}
+
+interface PaginatedTableOptions<Row> {
+    icon?: string;
+    title?: string;
+    titleTag?: "h1" | "h2";
+    titleMetaHtml?: string;
+    collapseHeadingOnMobile?: boolean;
+    searchPlaceholder?: string;
+    addButtonText?: string;
+    columns?: TableColumn[];
+    rows: Row[];
+    rowActions?: TableAction[];
+    itemsPerPage?: number;
+    emptyTitle?: string;
+    emptyText?: string;
+    onAdd?(): void;
+    onAction?(row: Row, actionKey: string): void;
+}
+
+interface PaginatedTableController {
+    html: string;
+    setup(root: ParentNode | null): void;
+}
+
+interface MenuButtonOptions {
+    icon: string;
+    label: string;
+    href: string;
+    active?: boolean;
+    disabled?: boolean;
+}
+
 let floatingInputCounter = 0;
-export function createDialog(opts) {
-    const { title = "", titleIcon = "", showClose = true, showDivider = true, content = "", buttons = "", showOverlay = false, rootClassName = "", surfaceClassName = "", } = opts;
+
+export function createDialog(opts: DialogOptions): DialogController {
+    const {
+        title = "",
+        titleIcon = "",
+        showClose = true,
+        showDivider = true,
+        content = "",
+        buttons = "",
+        showOverlay = false,
+        rootClassName = "",
+        surfaceClassName = "",
+    } = opts;
+
     const el = document.createElement("div");
     el.className = [
         "lk-dialog-root",
@@ -19,38 +124,46 @@ export function createDialog(opts) {
         <div class="lk-dialog ${surfaceClassName}" role="dialog" aria-modal="${showOverlay ? "true" : "false"}">
             <div class="lk-dialog__container">
                 ${title || titleIcon || showClose
-        ? `<div class="lk-dialog__header">
+            ? `<div class="lk-dialog__header">
                             ${titleIcon ? `<img class="lk-dialog__icon" src="${titleIcon}" alt="">` : ""}
                             <span class="lk-dialog__title" data-dialog-title></span>
                             <span class="lk-dialog__spacer"></span>
                             ${showClose ? '<button class="lk-dialog__close" aria-label="Close"><img src="./assets/icons/close.svg" alt=""></button>' : ""}
                         </div>`
-        : ""}
+            : ""
+        }
                 ${showDivider ? '<div class="lk-dialog__divider"></div>' : ""}
                 <div class="lk-dialog__content">${content}</div>
                 ${buttons ? `<div class="lk-dialog__buttons">${buttons}</div>` : ""}
             </div>
         </div>
     `;
+
     const titleEl = el.querySelector("[data-dialog-title]");
     if (titleEl instanceof HTMLElement) {
         titleEl.textContent = title;
     }
-    function show() {
+
+    function show(): void {
         document.body.appendChild(el);
         el.offsetHeight;
         el.classList.add("is-visible");
     }
-    function close() {
+
+    function close(): void {
         el.remove();
     }
+
     el.querySelector(".lk-dialog__close")?.addEventListener("click", close);
     el.querySelector(".lk-dialog-overlay")?.addEventListener("click", close);
+
     return { el, show, close };
 }
-export function createVaultDrawer(opts) {
+
+export function createVaultDrawer<Vault extends VaultDrawerRecord>(opts: VaultDrawerOptions<Vault>): VaultDrawerController<Vault> {
     const { onVaultClick, onNewVault } = opts;
     let vaults = [...opts.vaults];
+
     const el = document.createElement("div");
     el.className = "lk-drawer-root";
     el.innerHTML = `
@@ -76,48 +189,62 @@ export function createVaultDrawer(opts) {
             <ul class="lk-drawer__list" role="list"></ul>
         </aside>
     `;
+
     const list = el.querySelector(".lk-drawer__list");
     if (!(list instanceof HTMLUListElement)) {
         throw new Error("Vault drawer list is missing.");
     }
+
     let isOpen = false;
-    function renderList(nextVaults) {
-        list.replaceChildren(...nextVaults.map((vault) => {
-            const isCurrent = vault.locked === false;
-            const item = document.createElement("li");
-            item.className = `lk-drawer__item ${isCurrent ? "is-active" : ""}`.trim();
-            item.dataset.vaultId = vault.id;
-            item.setAttribute("aria-current", isCurrent ? "page" : "false");
-            item.setAttribute("role", "button");
-            item.tabIndex = 0;
-            const icon = document.createElement("img");
-            icon.src = "./assets/icons/vault.png";
-            icon.alt = "";
-            icon.width = 36;
-            icon.height = 36;
-            const copy = document.createElement("span");
-            copy.className = "lk-drawer__item-copy";
-            const heading = document.createElement("span");
-            heading.className = "lk-drawer__item-heading";
-            const label = document.createElement("span");
-            label.className = "lk-drawer__item-title";
-            label.textContent = vault.alias;
-            heading.append(label);
-            if (isCurrent) {
-                const status = document.createElement("span");
-                status.className = "lk-drawer__item-status";
-                status.textContent = "Current";
-                heading.append(status);
-            }
-            const meta = document.createElement("span");
-            meta.className = "lk-drawer__item-meta";
-            meta.textContent = `${vault.identifierCount ?? 0} identifiers · ${vault.remoteCount ?? 0} remotes`;
-            copy.append(heading, meta);
-            item.append(icon, copy);
-            return item;
-        }));
+
+    function renderList(nextVaults: Vault[]): void {
+        list.replaceChildren(
+            ...nextVaults.map((vault) => {
+                const isCurrent = vault.locked === false;
+                const item = document.createElement("li");
+                item.className = `lk-drawer__item ${isCurrent ? "is-active" : ""}`.trim();
+                item.dataset.vaultId = vault.id;
+                item.setAttribute("aria-current", isCurrent ? "page" : "false");
+                item.setAttribute("role", "button");
+                item.tabIndex = 0;
+
+                const icon = document.createElement("img");
+                icon.src = "./assets/icons/vault.png";
+                icon.alt = "";
+                icon.width = 36;
+                icon.height = 36;
+
+                const copy = document.createElement("span");
+                copy.className = "lk-drawer__item-copy";
+
+                const heading = document.createElement("span");
+                heading.className = "lk-drawer__item-heading";
+
+                const label = document.createElement("span");
+                label.className = "lk-drawer__item-title";
+                label.textContent = vault.alias;
+
+                heading.append(label);
+
+                if (isCurrent) {
+                    const status = document.createElement("span");
+                    status.className = "lk-drawer__item-status";
+                    status.textContent = "Current";
+                    heading.append(status);
+                }
+
+                const meta = document.createElement("span");
+                meta.className = "lk-drawer__item-meta";
+                meta.textContent = `${vault.identifierCount ?? 0} identifiers · ${vault.remoteCount ?? 0} remotes`;
+
+                copy.append(heading, meta);
+                item.append(icon, copy);
+                return item;
+            }),
+        );
     }
-    function open() {
+
+    function open(): void {
         if (isOpen) {
             return;
         }
@@ -126,7 +253,8 @@ export function createVaultDrawer(opts) {
         el.offsetHeight;
         el.classList.add("is-open");
     }
-    function close() {
+
+    function close(): void {
         if (!isOpen) {
             return;
         }
@@ -134,22 +262,27 @@ export function createVaultDrawer(opts) {
         el.classList.remove("is-open");
         setTimeout(() => el.remove(), 300);
     }
-    function refresh(nextVaults) {
+
+    function refresh(nextVaults: Vault[]): void {
         vaults = [...nextVaults];
         renderList(vaults);
     }
+
     const overlay = el.querySelector(".lk-drawer-overlay");
     const closeButton = el.querySelector(".lk-drawer__close");
     const newVaultButton = el.querySelector(".lk-drawer__new-vault");
+
     if (!(overlay instanceof HTMLElement) || !(closeButton instanceof HTMLButtonElement) || !(newVaultButton instanceof HTMLButtonElement)) {
         throw new Error("Vault drawer controls are missing.");
     }
+
     overlay.addEventListener("click", close);
     closeButton.addEventListener("click", close);
     newVaultButton.addEventListener("click", () => {
         close();
         onNewVault?.();
     });
+
     list.addEventListener("click", (event) => {
         const target = event.target;
         if (!(target instanceof Element)) {
@@ -179,10 +312,13 @@ export function createVaultDrawer(opts) {
             onVaultClick(vault);
         }
     });
+
     renderList(vaults);
+
     return { el, open, close, refresh };
 }
-export function floatingInputHtml({ label, name, type = "text", password = false }) {
+
+export function floatingInputHtml({ label, name, type = "text", password = false }: FloatingInputOptions): string {
     const inputType = password ? "password" : type;
     const inputId = `lk-field-${name}-${floatingInputCounter++}`;
     return `
@@ -193,33 +329,55 @@ export function floatingInputHtml({ label, name, type = "text", password = false
         </div>
     `;
 }
-export function setupFloatingInputs(root) {
+
+export function setupFloatingInputs(root: ParentNode | null): void {
     if (!root) {
         return;
     }
+
     root.querySelectorAll("[data-toggle-password]").forEach((button) => {
         if (!(button instanceof HTMLElement)) {
             return;
         }
+
         button.addEventListener("click", () => {
             const name = button.dataset.togglePassword;
             if (!name) {
                 return;
             }
+
             const input = root.querySelector(`input[name="${name}"]`);
             if (!(input instanceof HTMLInputElement)) {
                 return;
             }
+
             input.type = input.type === "password" ? "text" : "password";
         });
     });
 }
-export function renderPaginatedTable(opts) {
-    const { icon = "", title = "", titleTag = "h2", titleMetaHtml = "", collapseHeadingOnMobile = false, searchPlaceholder = "Search...", addButtonText = "", columns = [], rows, rowActions = [], itemsPerPage = 10, emptyTitle = "No Records Yet", emptyText = "Nothing has been stored for this view yet.", } = opts;
+
+export function renderPaginatedTable<Row>(opts: PaginatedTableOptions<Row>): PaginatedTableController {
+    const {
+        icon = "",
+        title = "",
+        titleTag = "h2",
+        titleMetaHtml = "",
+        collapseHeadingOnMobile = false,
+        searchPlaceholder = "Search...",
+        addButtonText = "",
+        columns = [],
+        rows,
+        rowActions = [],
+        itemsPerPage = 10,
+        emptyTitle = "No Records Yet",
+        emptyText = "Nothing has been stored for this view yet.",
+    } = opts;
+
     const hasActions = rowActions.length > 0;
     const allColumns = hasActions ? [...columns, { key: "_actions", label: "Actions", width: "100px" }] : columns;
     const safeTitleTag = titleTag === "h1" ? "h1" : "h2";
     const sectionClassName = collapseHeadingOnMobile ? "lk-table-section lk-table-section--collapse-heading-mobile" : "lk-table-section";
+
     const html = `
         <section class="${sectionClassName}">
             <div class="lk-table-shell">
@@ -238,8 +396,9 @@ export function renderPaginatedTable(opts) {
                             <button type="button" class="lk-search-bar__clear" data-table-search-clear aria-label="Clear search" hidden><img src="./assets/icons/close.svg" alt="" width="14" height="14"></button>
                         </div>
                         ${addButtonText
-        ? `<button class="button button--primary lk-table-header__action" type="button" data-table-add><img src="./assets/icons/add.svg" alt="" width="18" height="18" style="filter:brightness(0) invert(1);"> ${escapeHtml(addButtonText)}</button>`
-        : ""}
+            ? `<button class="button button--primary lk-table-header__action" type="button" data-table-add><img src="./assets/icons/add.svg" alt="" width="18" height="18" style="filter:brightness(0) invert(1);"> ${escapeHtml(addButtonText)}</button>`
+            : ""
+        }
                     </div>
                 </div>
                 <div class="lk-table-wrap">
@@ -260,10 +419,12 @@ export function renderPaginatedTable(opts) {
             </div>
         </section>
     `;
-    function setup(root) {
+
+    function setup(root: ParentNode | null): void {
         if (!(root instanceof Element)) {
             return;
         }
+
         const searchInput = root.querySelector("[data-table-search]");
         const searchClear = root.querySelector("[data-table-search-clear]");
         const tbody = root.querySelector("[data-table-body]");
@@ -271,25 +432,31 @@ export function renderPaginatedTable(opts) {
         const countEl = root.querySelector("[data-table-count]");
         const paginationEl = root.querySelector("[data-table-pagination]");
         const titleColumn = columns[0] || null;
-        if (!(searchInput instanceof HTMLInputElement) ||
+
+        if (
+            !(searchInput instanceof HTMLInputElement) ||
             !(searchClear instanceof HTMLButtonElement) ||
             !(tbody instanceof HTMLElement) ||
             !(stack instanceof HTMLElement) ||
             !(countEl instanceof HTMLElement) ||
-            !(paginationEl instanceof HTMLElement)) {
+            !(paginationEl instanceof HTMLElement)
+        ) {
             return;
         }
-        function rowValue(row, key) {
-            return row[key];
+
+        function rowValue(row: Row, key: string): unknown {
+            return (row as Record<string, unknown>)[key];
         }
-        function displayValue(row, column) {
+
+        function displayValue(row: Row, column: TableColumn): string {
             const value = rowValue(row, column.key) ?? "";
             if (column.html) {
                 return escapeHtml(String(rowValue(row, column.searchKey || column.key) ?? ""));
             }
             return escapeHtml(String(value));
         }
-        function renderCard(row, rowIdx) {
+
+        function renderCard(row: Row, rowIdx: number): string {
             const titleValue = titleColumn
                 ? escapeHtml(String(rowValue(row, titleColumn.searchKey || titleColumn.key) ?? ""))
                 : "Record";
@@ -309,6 +476,7 @@ export function renderPaginatedTable(opts) {
                     `).join("")}
                 </div>`
                 : "";
+
             return `
                 <article class="stack-card">
                     <div class="stack-card__header">
@@ -324,14 +492,15 @@ export function renderPaginatedTable(opts) {
                 </article>
             `;
         }
+
         let filteredRows = [...rows];
         let currentPage = 1;
-        function filterRows(query) {
+
+        function filterRows(query: string): void {
             const normalizedQuery = query.trim().toLowerCase();
             if (!normalizedQuery) {
                 filteredRows = [...rows];
-            }
-            else {
+            } else {
                 filteredRows = rows.filter((row) => {
                     return columns.some((column) => {
                         const value = rowValue(row, column.searchKey || column.key);
@@ -342,13 +511,16 @@ export function renderPaginatedTable(opts) {
             currentPage = 1;
             render();
         }
-        function render() {
+
+        function render(): void {
             const totalPages = Math.max(1, Math.ceil(filteredRows.length / itemsPerPage));
             if (currentPage > totalPages) {
                 currentPage = totalPages;
             }
+
             const start = (currentPage - 1) * itemsPerPage;
             const pageRows = filteredRows.slice(start, start + itemsPerPage);
+
             if (!pageRows.length) {
                 tbody.innerHTML = `
                     <tr class="lk-table__empty-row">
@@ -370,18 +542,20 @@ export function renderPaginatedTable(opts) {
                 paginationEl.innerHTML = '<span class="lk-page-label">Page 1 of 1</span>';
                 return;
             }
+
             tbody.innerHTML = pageRows
                 .map((row, idx) => {
-                const cells = columns
-                    .map((column) => {
-                    const value = rowValue(row, column.key) ?? "";
-                    const mono = column.key === "prefix" ? ' class="mono"' : "";
-                    const content = column.html ? String(value) : escapeHtml(String(value));
-                    return `<td${mono}>${content}</td>`;
-                })
-                    .join("");
-                const actionCell = hasActions
-                    ? `<td class="lk-table__actions-cell">
+                    const cells = columns
+                        .map((column) => {
+                            const value = rowValue(row, column.key) ?? "";
+                            const mono = column.key === "prefix" ? ' class="mono"' : "";
+                            const content = column.html ? String(value) : escapeHtml(String(value));
+                            return `<td${mono}>${content}</td>`;
+                        })
+                        .join("");
+
+                    const actionCell = hasActions
+                        ? `<td class="lk-table__actions-cell">
                             <button class="lk-skewer-btn" data-skewer-idx="${start + idx}" aria-label="Actions" aria-haspopup="menu" aria-expanded="false">
                                 <img src="./assets/icons/more_vert.svg" alt="" width="20" height="20">
                             </button>
@@ -389,14 +563,18 @@ export function renderPaginatedTable(opts) {
                                 ${rowActions.map((action) => `<button class="lk-skewer-menu__item" data-action-key="${action.key}" data-row-idx="${start + idx}">${action.icon ? `<img src="${action.icon}" alt="" width="18" height="18">` : ""} ${escapeHtml(action.label)}</button>`).join("")}
                             </div>
                         </td>`
-                    : "";
-                return `<tr class="lk-table__row">${cells}${actionCell}</tr>`;
-            })
+                        : "";
+
+                    return `<tr class="lk-table__row">${cells}${actionCell}</tr>`;
+                })
                 .join("");
+
             stack.innerHTML = pageRows
                 .map((row, idx) => renderCard(row, start + idx))
                 .join("");
+
             countEl.textContent = `${filteredRows.length} item${filteredRows.length === 1 ? "" : "s"}`;
+
             paginationEl.innerHTML = `
                 <button class="lk-page-btn" data-page-action="first" ${currentPage <= 1 ? "disabled" : ""}><img src="./assets/icons/first_page.svg" alt="First" width="18" height="18"></button>
                 <button class="lk-page-btn" data-page-action="prev" ${currentPage <= 1 ? "disabled" : ""}><img src="./assets/icons/chevron_left.svg" alt="Previous" width="18" height="18"></button>
@@ -405,9 +583,11 @@ export function renderPaginatedTable(opts) {
                 <button class="lk-page-btn" data-page-action="last" ${currentPage >= totalPages ? "disabled" : ""}><img src="./assets/icons/last_page.svg" alt="Last" width="18" height="18"></button>
             `;
         }
-        const syncSearchChrome = () => {
+
+        const syncSearchChrome = (): void => {
             searchClear.hidden = !Boolean(searchInput.value.trim());
         };
+
         searchInput.addEventListener("input", () => {
             syncSearchChrome();
             filterRows(searchInput.value);
@@ -417,15 +597,18 @@ export function renderPaginatedTable(opts) {
             syncSearchChrome();
             filterRows("");
         });
+
         paginationEl.addEventListener("click", (event) => {
             const target = event.target;
             if (!(target instanceof Element)) {
                 return;
             }
+
             const button = target.closest("[data-page-action]");
             if (!(button instanceof HTMLButtonElement) || button.disabled) {
                 return;
             }
+
             const totalPages = Math.max(1, Math.ceil(filteredRows.length / itemsPerPage));
             switch (button.dataset.pageAction) {
                 case "first":
@@ -445,11 +628,13 @@ export function renderPaginatedTable(opts) {
             }
             render();
         });
+
         root.addEventListener("click", (event) => {
             const target = event.target;
             if (!(target instanceof Element)) {
                 return;
             }
+
             const skewerButton = target.closest(".lk-skewer-btn");
             if (skewerButton instanceof HTMLButtonElement) {
                 const idx = skewerButton.dataset.skewerIdx;
@@ -470,6 +655,7 @@ export function renderPaginatedTable(opts) {
                 }
                 return;
             }
+
             const actionButton = target.closest(".lk-skewer-menu__item");
             if (actionButton instanceof HTMLButtonElement) {
                 const rowIdx = Number.parseInt(actionButton.dataset.rowIdx ?? "", 10);
@@ -477,6 +663,7 @@ export function renderPaginatedTable(opts) {
                 if (Number.isNaN(rowIdx) || !actionKey) {
                     return;
                 }
+
                 const menu = actionButton.closest(".lk-skewer-menu");
                 if (menu instanceof HTMLElement) {
                     menu.classList.remove("is-open");
@@ -485,12 +672,14 @@ export function renderPaginatedTable(opts) {
                 if (trigger instanceof HTMLElement && trigger.classList.contains("lk-skewer-btn")) {
                     trigger.setAttribute("aria-expanded", "false");
                 }
+
                 const row = filteredRows[rowIdx];
                 if (row) {
                     opts.onAction?.(row, actionKey);
                 }
                 return;
             }
+
             const cardActionButton = target.closest(".stack-card__action-button");
             if (cardActionButton instanceof HTMLButtonElement) {
                 const rowIdx = Number.parseInt(cardActionButton.dataset.rowIdx ?? "", 10);
@@ -498,12 +687,14 @@ export function renderPaginatedTable(opts) {
                 if (Number.isNaN(rowIdx) || !actionKey) {
                     return;
                 }
+
                 const row = filteredRows[rowIdx];
                 if (row) {
                     opts.onAction?.(row, actionKey);
                 }
                 return;
             }
+
             root.querySelectorAll(".lk-skewer-menu.is-open").forEach((node) => {
                 if (node instanceof HTMLElement) {
                     node.classList.remove("is-open");
@@ -515,13 +706,17 @@ export function renderPaginatedTable(opts) {
                 }
             });
         });
+
         root.querySelector("[data-table-add]")?.addEventListener("click", () => opts.onAdd?.());
+
         syncSearchChrome();
         render();
     }
+
     return { html, setup };
 }
-export function menuButtonHtml({ icon, label, href, active = false, disabled = false }) {
+
+export function menuButtonHtml({ icon, label, href, active = false, disabled = false }: MenuButtonOptions): string {
     if (disabled) {
         return `
             <span class="lk-menu-btn" aria-disabled="true">
@@ -530,6 +725,7 @@ export function menuButtonHtml({ icon, label, href, active = false, disabled = f
             </span>
         `;
     }
+
     return `
         <a class="lk-menu-btn ${active ? "is-active" : ""}" href="${href}" aria-current="${active ? "page" : "false"}">
             <img src="${icon}" alt="" width="32" height="32">
