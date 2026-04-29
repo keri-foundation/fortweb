@@ -20,7 +20,10 @@
     "app/app/router.ts",
     "app/app/session.ts",
     "app/runtime/logger.ts",
-    "app/runtime/types/**/*.d.ts"
+    "app/runtime/types/**/*.d.ts",
+    "app/runtime/bridge.ts",
+    "vendor/pyscript/2025.11.2/core.d.ts",
+    "vendor/pyscript/2025.11.2/toml-BK2RWy-G.d.ts"
   ],
   "exclude": [
     "vendor",
