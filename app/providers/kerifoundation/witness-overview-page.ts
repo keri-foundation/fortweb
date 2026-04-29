@@ -1,40 +1,125 @@
-import { floatingInputHtml, renderPaginatedTable, setupFloatingInputs, } from "../../shared/components.js";
+import {
+    floatingInputHtml,
+    renderPaginatedTable,
+    setupFloatingInputs,
+} from "../../shared/components.js";
 import { escapeHtml, toneClass } from "../../shared/dom.js";
 import { announce } from "../../ui/core/a11y.js";
 import { showToast } from "../../ui/composites/toast.js";
 import { stepperHtml } from "../../ui/composites/stepper.js";
-function badgeHtml(label, tone = "neutral") {
+
+interface WitnessProfileOption {
+    code: string;
+    witnessCount: number;
+    toad: number;
+}
+
+interface BootstrapConnection {
+    ok: boolean;
+    error?: string;
+}
+
+interface BootstrapAccountData {
+    status?: string;
+    accountAlias?: string;
+    accountAid?: string;
+    witnessProfileCode?: string;
+    regionName?: string;
+    regionId?: string;
+    witnessCount?: number;
+    toad?: number;
+    bootUrl?: string;
+    bootServerAid?: string;
+    failureReason?: string;
+}
+
+interface BootstrapResponse {
+    accountOptions?: WitnessProfileOption[];
+    regionName?: string;
+    regionId?: string;
+    watcherRequired?: boolean;
+}
+
+interface BootstrapState {
+    account?: BootstrapAccountData;
+    bootstrap?: BootstrapResponse;
+    connection: BootstrapConnection;
+    bootUrl?: string;
+}
+
+interface WitnessRecord {
+    eid: string;
+    name?: string;
+    regionName?: string;
+    regionId?: string;
+    hostedStatus?: string;
+    localStatus?: string;
+    localStatusTone?: string;
+    url?: string;
+}
+
+interface StartOnboardingRequest {
+    bootUrl: string;
+    alias: string;
+    witnessProfileCode: string;
+}
+
+interface WitnessOverviewProps {
+    bootstrapState: BootstrapState;
+    witnesses: WitnessRecord[];
+    witnessError?: string;
+    onLoadBootstrap(bootUrl: string): Promise<BootstrapState>;
+    onStartOnboarding(request: StartOnboardingRequest): Promise<void>;
+}
+
+function badgeHtml(label: string, tone = "neutral"): string {
     return `<span class="${toneClass(tone)}">${escapeHtml(label)}</span>`;
 }
-function profileLabel(option) {
+
+function profileLabel(option: WitnessProfileOption): string {
     const witnessLabel = option.witnessCount === 1 ? "1 witness" : `${option.witnessCount} witnesses`;
     return `${option.code} · ${witnessLabel} · toad ${option.toad}`;
 }
-function detailItem(label, value) {
+
+function detailItem(label: string, value: string | HTMLElement): HTMLDivElement {
     const wrapper = document.createElement("div");
     wrapper.className = "detail-item";
+
     const term = document.createElement("dt");
     term.textContent = label;
+
     const description = document.createElement("dd");
     if (value instanceof HTMLElement) {
         description.append(value);
-    }
-    else {
+    } else {
         description.textContent = value;
     }
+
     wrapper.append(term, description);
     return wrapper;
 }
-function errorMessage(error, fallback) {
+
+function errorMessage(error: unknown, fallback: string): string {
     return error instanceof Error && error.message ? error.message : fallback;
 }
-function accountSummary(account, bootstrapState) {
+
+function accountSummary(account: BootstrapAccountData | undefined, bootstrapState: BootstrapState): HTMLDListElement {
     const summary = document.createElement("dl");
     summary.className = "detail-grid summary-grid";
-    summary.append(detailItem("Account Alias", account?.accountAlias || "\u2014"), detailItem("Account AID", account?.accountAid || "\u2014"), detailItem("Profile", account?.witnessProfileCode || "\u2014"), detailItem("Region", account?.regionName || account?.regionId || "\u2014"), detailItem("Witness Count", String(account?.witnessCount || 0)), detailItem("Witness Threshold", String(account?.toad || 0)), detailItem("Boot Service", bootstrapState.bootUrl || account?.bootUrl || "\u2014"), detailItem("Boot Server AID", account?.bootServerAid || "Pending verification"));
+    summary.append(
+        detailItem("Account Alias", account?.accountAlias || "\u2014"),
+        detailItem("Account AID", account?.accountAid || "\u2014"),
+        detailItem("Profile", account?.witnessProfileCode || "\u2014"),
+        detailItem("Region", account?.regionName || account?.regionId || "\u2014"),
+        detailItem("Witness Count", String(account?.witnessCount || 0)),
+        detailItem("Witness Threshold", String(account?.toad || 0)),
+        detailItem("Boot Service", bootstrapState.bootUrl || account?.bootUrl || "\u2014"),
+        detailItem("Boot Server AID", account?.bootServerAid || "Pending verification"),
+    );
     return summary;
 }
-function renderWitnessTable(witnesses) {
+
+function renderWitnessTable(witnesses: WitnessRecord[]) {
     const rows = witnesses.map((witness) => ({
         name: witness.name || `KF Witness ${witness.eid.slice(0, 12)}`,
         witnessAid: witness.eid,
@@ -44,6 +129,7 @@ function renderWitnessTable(witnesses) {
         endpoint: witness.url || "\u2014",
         _raw: witness,
     }));
+
     const table = renderPaginatedTable({
         icon: "./assets/icons/witness1.svg",
         title: "Hosted Witnesses",
@@ -60,47 +146,61 @@ function renderWitnessTable(witnesses) {
         rows,
         itemsPerPage: 10,
         emptyTitle: "No Hosted Witness Rows",
-        emptyText: "This KF account is onboarded locally, but the boot service did not return any witness rows yet.",
+        emptyText:
+            "This KF account is onboarded locally, but the boot service did not return any witness rows yet.",
     });
+
     return {
-        render(container) {
+        render(container: HTMLElement): void {
             const root = document.createElement("div");
             root.dataset.kfWitnessTable = "true";
             root.innerHTML = table.html;
             container.append(root);
         },
-        setup(root) {
+        setup(root: ParentNode): void {
             table.setup(root.querySelector("[data-kf-witness-table]"));
         },
     };
 }
-const ONBOARDING_STEPS = [
+
+const ONBOARDING_STEPS: Array<{ id: string; label: string }> = [
     { id: "connect", label: "Connect" },
     { id: "configure", label: "Configure" },
     { id: "onboard", label: "Onboard" },
     { id: "review", label: "Review" },
 ];
-function deriveCurrentStep(bootstrapState) {
+
+function deriveCurrentStep(bootstrapState: BootstrapState): string {
     if (!bootstrapState.connection.ok) {
         return "connect";
     }
+
     const options = bootstrapState.bootstrap?.accountOptions ?? [];
     if (options.length === 0) {
         return "connect";
     }
+
     return "configure";
 }
-function renderOnboardingPage({ bootstrapState, onLoadBootstrap, onStartOnboarding, }) {
+
+function renderOnboardingPage({
+    bootstrapState,
+    onLoadBootstrap,
+    onStartOnboarding,
+}: Pick<WitnessOverviewProps, "bootstrapState" | "onLoadBootstrap" | "onStartOnboarding">) {
     const account = bootstrapState.account;
     const initialOptions = bootstrapState.bootstrap?.accountOptions ?? [];
     const initialAlias = account?.accountAlias || "";
     const initialBootUrl = bootstrapState.bootUrl || account?.bootUrl || "";
     const initialProfile = account?.witnessProfileCode || initialOptions[0]?.code || "";
+
     return {
         title: "KERI Foundation Witnesses",
-        render(container) {
+        render(container: HTMLElement): void {
             container.replaceChildren();
+
             const currentStep = deriveCurrentStep(bootstrapState);
+
             const page = document.createElement("section");
             page.className = "page-grid";
             page.innerHTML = `
@@ -117,8 +217,10 @@ function renderOnboardingPage({ bootstrapState, onLoadBootstrap, onStartOnboardi
                     ${stepperHtml({ steps: ONBOARDING_STEPS, currentStepId: currentStep })}
                 </div>
             `;
+
             const columns = document.createElement("section");
             columns.className = "page-columns";
+
             const summaryCard = document.createElement("section");
             summaryCard.className = "section-card section-card--summary";
             summaryCard.setAttribute("role", "status");
@@ -153,6 +255,7 @@ function renderOnboardingPage({ bootstrapState, onLoadBootstrap, onStartOnboardi
                 </dl>
                 <p class="status-line" data-kf-connection-status>${escapeHtml(account?.failureReason || bootstrapState.connection.error || "")}</p>
             `;
+
             const formCard = document.createElement("section");
             formCard.className = "section-card section-card--form";
             formCard.innerHTML = `
@@ -179,12 +282,14 @@ function renderOnboardingPage({ bootstrapState, onLoadBootstrap, onStartOnboardi
                     <p class="status-line" data-kf-onboarding-status role="status" aria-live="polite"></p>
                 </form>
             `;
+
             columns.append(summaryCard, formCard);
             page.append(columns);
             container.append(page);
         },
-        setup(root) {
+        setup(root: HTMLElement): void {
             setupFloatingInputs(root);
+
             const summaryStatus = root.querySelector("[data-kf-connection-status]");
             const bootUrlLabel = root.querySelector("[data-kf-boot-url-label]");
             const connectionBadge = root.querySelector("[data-kf-connection-badge]");
@@ -192,51 +297,64 @@ function renderOnboardingPage({ bootstrapState, onLoadBootstrap, onStartOnboardi
             const watcherPolicy = root.querySelector("[data-kf-watcher-policy]");
             const profilePills = root.querySelector("[data-kf-profile-pills]");
             const form = root.querySelector("[data-kf-onboarding-form]");
-            if (!(summaryStatus instanceof HTMLElement) ||
+
+            if (
+                !(summaryStatus instanceof HTMLElement) ||
                 !(bootUrlLabel instanceof HTMLElement) ||
                 !(connectionBadge instanceof HTMLElement) ||
                 !(regionLabel instanceof HTMLElement) ||
                 !(watcherPolicy instanceof HTMLElement) ||
                 !(profilePills instanceof HTMLElement) ||
-                !(form instanceof HTMLFormElement)) {
+                !(form instanceof HTMLFormElement)
+            ) {
                 return;
             }
+
             const bootUrlInput = form.querySelector("input[name='bootUrl']");
             const aliasInput = form.querySelector("input[name='alias']");
             const profileSelect = form.querySelector("[data-kf-profile-select]");
             const refreshButton = form.querySelector("[data-kf-refresh-bootstrap]");
             const submitButton = form.querySelector("[data-kf-start-onboarding]");
             const statusLine = form.querySelector("[data-kf-onboarding-status]");
-            if (!(bootUrlInput instanceof HTMLInputElement) ||
+
+            if (
+                !(bootUrlInput instanceof HTMLInputElement) ||
                 !(aliasInput instanceof HTMLInputElement) ||
                 !(profileSelect instanceof HTMLSelectElement) ||
                 !(refreshButton instanceof HTMLButtonElement) ||
                 !(submitButton instanceof HTMLButtonElement) ||
-                !(statusLine instanceof HTMLElement)) {
+                !(statusLine instanceof HTMLElement)
+            ) {
                 return;
             }
+
             const bootUrlField = bootUrlInput;
             const aliasField = aliasInput;
             const profileField = profileSelect;
             const refreshAction = refreshButton;
             const submitAction = submitButton;
             const onboardingStatus = statusLine;
+
             let currentSnapshot = bootstrapState;
-            function renderProfiles(options, preferredCode = "") {
+
+            function renderProfiles(options: WitnessProfileOption[], preferredCode = ""): void {
                 const selectedCode = preferredCode || profileField.value || options[0]?.code || "";
                 profileField.innerHTML = options.length
                     ? options
-                        .map((option) => `
+                        .map(
+                            (option) => `
                                 <option value="${escapeHtml(option.code)}" ${selectedCode === option.code ? "selected" : ""}>
                                     ${escapeHtml(profileLabel(option))}
                                 </option>
-                            `)
+                            `,
+                        )
                         .join("")
                     : '<option value="">No hosted profiles available</option>';
                 profileField.disabled = options.length === 0;
                 submitAction.disabled = options.length === 0 || !currentSnapshot.connection.ok;
             }
-            function applySnapshot(nextSnapshot) {
+
+            function applySnapshot(nextSnapshot: BootstrapState): void {
                 currentSnapshot = nextSnapshot;
                 const options = nextSnapshot.bootstrap?.accountOptions ?? [];
                 const region = nextSnapshot.bootstrap?.regionName || nextSnapshot.bootstrap?.regionId || "Unavailable";
@@ -247,6 +365,7 @@ function renderOnboardingPage({ bootstrapState, onLoadBootstrap, onStartOnboardi
                     : "Unavailable";
                 const connectionLabel = nextSnapshot.connection.ok ? "Connected" : "Disconnected";
                 const connectionTone = nextSnapshot.connection.ok ? "success" : "warning";
+
                 bootUrlLabel.textContent = nextSnapshot.bootUrl || bootUrlField.value || initialBootUrl || "\u2014";
                 connectionBadge.innerHTML = badgeHtml(connectionLabel, connectionTone);
                 regionLabel.textContent = region;
@@ -256,40 +375,43 @@ function renderOnboardingPage({ bootstrapState, onLoadBootstrap, onStartOnboardi
                     : '<span class="badge badge--warning">No hosted profiles returned</span>';
                 summaryStatus.textContent = nextSnapshot.account?.failureReason || nextSnapshot.connection.error || "";
                 renderProfiles(options, nextSnapshot.account?.witnessProfileCode || profileField.value || initialProfile);
+
                 announce(nextSnapshot.connection.ok ? "Boot service connected." : "Boot service disconnected.");
             }
-            async function refreshBootstrap() {
+
+            async function refreshBootstrap(): Promise<void> {
                 onboardingStatus.textContent = "";
                 refreshAction.disabled = true;
                 submitAction.disabled = true;
+
                 try {
                     const nextSnapshot = await onLoadBootstrap(bootUrlField.value);
                     applySnapshot(nextSnapshot);
                     if (!nextSnapshot.connection.ok) {
                         onboardingStatus.textContent = nextSnapshot.connection.error || "Boot connection failed.";
-                    }
-                    else {
+                    } else {
                         showToast({ message: "Boot connection verified.", tone: "success" });
                     }
-                }
-                catch (error) {
+                } catch (error) {
                     onboardingStatus.textContent = errorMessage(error, "Boot connection failed.");
                     announce("Boot connection failed.", "assertive");
-                }
-                finally {
+                } finally {
                     refreshAction.disabled = false;
                     submitAction.disabled = profileField.disabled || !currentSnapshot.connection.ok;
                 }
             }
+
             refreshAction.addEventListener("click", () => {
                 void refreshBootstrap();
             });
+
             form.addEventListener("submit", (event) => {
                 event.preventDefault();
                 void (async () => {
                     onboardingStatus.textContent = "";
                     refreshAction.disabled = true;
                     submitAction.disabled = true;
+
                     try {
                         if (!currentSnapshot.connection.ok) {
                             const nextSnapshot = await onLoadBootstrap(bootUrlField.value);
@@ -298,6 +420,7 @@ function renderOnboardingPage({ bootstrapState, onLoadBootstrap, onStartOnboardi
                                 throw new Error(nextSnapshot.connection.error || "Boot connection failed.");
                             }
                         }
+
                         onboardingStatus.textContent = "Hosted onboarding in progress. Fortweb is allocating hosted resources and resolving the required OOBIs.";
                         announce("Hosted onboarding in progress.");
                         await onStartOnboarding({
@@ -306,8 +429,7 @@ function renderOnboardingPage({ bootstrapState, onLoadBootstrap, onStartOnboardi
                             witnessProfileCode: profileField.value,
                         });
                         showToast({ message: "Hosted onboarding complete.", tone: "success" });
-                    }
-                    catch (error) {
+                    } catch (error) {
                         const message = errorMessage(error, "Hosted onboarding failed.");
                         onboardingStatus.textContent = message;
                         announce(message, "assertive");
@@ -316,20 +438,29 @@ function renderOnboardingPage({ bootstrapState, onLoadBootstrap, onStartOnboardi
                     }
                 })();
             });
+
             bootUrlField.value = initialBootUrl || "http://127.0.0.1:9723";
             aliasField.value = initialAlias;
             applySnapshot(currentSnapshot);
         },
     };
 }
-function renderAccountWitnessesPage({ bootstrapState, witnesses, witnessError, }) {
+
+function renderAccountWitnessesPage({
+    bootstrapState,
+    witnesses,
+    witnessError,
+}: Pick<WitnessOverviewProps, "bootstrapState" | "witnesses" | "witnessError">) {
     const table = renderWitnessTable(witnesses);
+
     return {
         title: "KERI Foundation Witnesses",
-        render(container) {
+        render(container: HTMLElement): void {
             container.replaceChildren();
+
             const page = document.createElement("section");
             page.className = "page-grid page-grid--table";
+
             const header = document.createElement("header");
             header.className = "page-header";
             header.innerHTML = `
@@ -340,30 +471,37 @@ function renderAccountWitnessesPage({ bootstrapState, witnesses, witnessError, }
                     </p>
                 </div>
             `;
+
             const summaryCard = document.createElement("section");
             summaryCard.className = "section-card section-card--summary";
             summaryCard.append(accountSummary(bootstrapState.account, bootstrapState));
+
             page.append(header, summaryCard);
+
             if (witnessError) {
                 const warning = document.createElement("p");
                 warning.className = "notice notice--warning";
                 warning.textContent = witnessError;
                 page.append(warning);
             }
+
             const tableSection = document.createElement("section");
             tableSection.className = "section-card section-card--tight page-table-stage";
             table.render(tableSection);
             page.append(tableSection);
+
             container.append(page);
         },
-        setup(root) {
+        setup(root: HTMLElement): void {
             table.setup(root);
         },
     };
 }
-export function renderWitnessOverviewPage(props) {
+
+export function renderWitnessOverviewPage(props: WitnessOverviewProps) {
     if (props.bootstrapState.account?.status === "onboarded") {
         return renderAccountWitnessesPage(props);
     }
+
     return renderOnboardingPage(props);
 }
