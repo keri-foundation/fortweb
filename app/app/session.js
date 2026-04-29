@@ -6,12 +6,10 @@ export function createSessionStore(initialState = {}) {
         lastCoreRoutes: {},
         ...initialState,
     };
-
     return {
         snapshot() {
             return state;
         },
-
         patch(partial) {
             state = {
                 ...state,
@@ -19,7 +17,6 @@ export function createSessionStore(initialState = {}) {
             };
             return state;
         },
-
         rememberCoreRoute(vaultId, href) {
             state = {
                 ...state,
