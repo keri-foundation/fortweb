@@ -21,9 +21,11 @@ let floatingInputCounter = 0;
  * @param {string}  [opts.titleIcon]       - icon src path
  * @param {boolean} [opts.showClose=true]
  * @param {boolean} [opts.showDivider=true]
- * @param {string}  opts.content           - inner HTML
+ * @param {string}  [opts.content]         - inner HTML
  * @param {string}  [opts.buttons]         - button row HTML
  * @param {boolean} [opts.showOverlay=false]
+ * @param {string}  [opts.rootClassName]
+ * @param {string}  [opts.surfaceClassName]
  * @returns {{ el: HTMLElement, show(): void, close(): void }}
  */
 export function createDialog(opts) {
@@ -213,15 +215,17 @@ export function createVaultDrawer(opts) {
 
     // Vault item clicks (delegate)
     list.addEventListener("click", (e) => {
+        if (!(e.target instanceof Element)) return;
         const item = e.target.closest(".lk-drawer__item");
-        if (!item) return;
+        if (!(item instanceof HTMLElement)) return;
         const id = item.dataset.vaultId;
         const vault = vaults.find((v) => v.id === id);
         if (vault) onVaultClick(vault);
     });
-    list.addEventListener("keydown", (event) => {
+    list.addEventListener("keydown", /** @param {KeyboardEvent} event */ (event) => {
+        if (!(event.target instanceof Element)) return;
         const item = event.target.closest(".lk-drawer__item");
-        if (!item || (event.key !== "Enter" && event.key !== " ")) return;
+        if (!(item instanceof HTMLElement) || (event.key !== "Enter" && event.key !== " ")) return;
         event.preventDefault();
         const vault = vaults.find((entry) => entry.id === item.dataset.vaultId);
         if (vault) onVaultClick(vault);
@@ -283,12 +287,19 @@ export function setupFloatingInputs(root) {
  * @param {object} opts
  * @param {string} [opts.icon]              - header icon src
  * @param {string} opts.title               - header title
+ * @param {"h1"|"h2"} [opts.titleTag]
+ * @param {string} [opts.titleMetaHtml]
+ * @param {boolean} [opts.collapseHeadingOnMobile]
  * @param {string} [opts.searchPlaceholder] - search input placeholder
  * @param {string} [opts.addButtonText]     - text for add button
- * @param {Array<{key:string, label:string, width?:string, searchKey?:string}>} opts.columns
+ * @param {Array<{key:string, label:string, width?:string, searchKey?:string, html?:boolean}>} opts.columns
  * @param {Array<object>} opts.rows         - row data objects
  * @param {Array<{key:string, label:string, icon?:string}>} [opts.rowActions]
  * @param {number} [opts.itemsPerPage=10]
+ * @param {string} [opts.emptyTitle]
+ * @param {string} [opts.emptyText]
+ * @param {() => void} [opts.onAdd]
+ * @param {(row: object, actionKey: string) => void} [opts.onAction]
  * @returns {{ html: string, setup(root): void }}
  */
 export function renderPaginatedTable(opts) {
