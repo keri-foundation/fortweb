@@ -7,6 +7,7 @@ import {
     parseRoute,
     unlockHref,
 } from "./router.js";
+import { loadRouteData } from "./page-loader.js";
 import { createSessionStore } from "./session.js";
 import { renderShell } from "./shell.js";
 import {
@@ -422,13 +423,14 @@ async function loadPage(route) {
         };
     }
 
+    const pageData = await loadRouteData({ route, bridge });
+
     if (route.name === "identifiers") {
         const vaultId = route.params.vaultId;
-        const { identifiers } = await bridge.request(METHODS.identifiersList, { vaultId });
         return {
             page: renderIdentifiersPage({
                 vault: findVault(vaultId),
-                identifiers,
+                identifiers: pageData.identifiers || [],
                 onCreateIdentifier: actions.createIdentifier,
             }),
             vault: findVault(vaultId),
@@ -436,14 +438,10 @@ async function loadPage(route) {
     }
 
     if (route.name === "identifier-detail") {
-        const { identifier } = await bridge.request(METHODS.identifiersGet, {
-            vaultId: route.params.vaultId,
-            aid: route.params.aid,
-        });
         return {
             page: renderIdentifierDetailPage({
                 vault: findVault(route.params.vaultId),
-                identifier,
+                identifier: pageData.identifier,
             }),
             vault: findVault(route.params.vaultId),
         };
@@ -451,11 +449,10 @@ async function loadPage(route) {
 
     if (route.name === "remotes") {
         const vaultId = route.params.vaultId;
-        const { remotes } = await bridge.request(METHODS.remotesList, { vaultId });
         return {
             page: renderRemotesPage({
                 vault: findVault(vaultId),
-                remotes,
+                remotes: pageData.remotes || [],
                 filter: currentState().remoteFilter,
                 onResolveRemote: actions.resolveRemoteOobi,
                 onUpdateRemote: actions.updateRemote,
@@ -466,27 +463,20 @@ async function loadPage(route) {
     }
 
     if (route.name === "remote-detail") {
-        const { remote } = await bridge.request(METHODS.remotesGet, {
-            vaultId: route.params.vaultId,
-            aid: route.params.aid,
-        });
         return {
             page: renderRemoteDetailPage({
                 vault: findVault(route.params.vaultId),
-                remote,
+                remote: pageData.remote,
             }),
             vault: findVault(route.params.vaultId),
         };
     }
 
     if (route.name === "settings") {
-        const { settings } = await bridge.request(METHODS.settingsGet, {
-            vaultId: route.params.vaultId,
-        });
         return {
             page: renderSettingsPage({
                 vault: findVault(route.params.vaultId),
-                settings,
+                settings: pageData.settings,
             }),
             vault: findVault(route.params.vaultId),
         };
@@ -494,22 +484,12 @@ async function loadPage(route) {
 
     if (route.name === "kf-witnesses") {
         const vaultId = route.params.vaultId;
-        const bootstrapState = await bridge.request(METHODS.kfBootstrapGet, { vaultId });
-        let witnesses = [];
-        let witnessError = "";
-        if (bootstrapState.account?.status === "onboarded") {
-            try {
-                ({ witnesses } = await bridge.request(METHODS.kfAccountWitnessesList, { vaultId }));
-            } catch (error) {
-                witnessError = error.message || "Failed to load hosted witness rows.";
-            }
-        }
         return {
             page: renderWitnessOverviewPage({
                 vault: findVault(vaultId),
-                bootstrapState,
-                witnesses,
-                witnessError,
+                bootstrapState: pageData.bootstrapState,
+                witnesses: pageData.witnesses || [],
+                witnessError: pageData.witnessError || "",
                 onLoadBootstrap: actions.loadKfBootstrap,
                 onStartOnboarding: actions.startKfOnboarding,
             }),
@@ -519,22 +499,13 @@ async function loadPage(route) {
 
     if (route.name === "kf-watchers") {
         const vaultId = route.params.vaultId;
-        const bootstrapState = await bridge.request(METHODS.kfBootstrapGet, { vaultId });
-        let watchers = [];
-        let watcherError = "";
-        if (bootstrapState.account?.status === "onboarded") {
-            try {
-                ({ watchers } = await bridge.request(METHODS.kfAccountWatchersList, { vaultId }));
-            } catch (error) {
-                watcherError = error.message || "Failed to load hosted watcher rows.";
-            }
-        }
+        const watchers = pageData.watchers || [];
         return {
             page: renderWatcherOverviewPage({
                 vault: findVault(vaultId),
-                bootstrapState,
+                bootstrapState: pageData.bootstrapState,
                 watchers,
-                watcherError,
+                watcherError: pageData.watcherError || "",
                 onRefreshStatuses() {
                     return actions.refreshKfWatcherStatuses(watchers.map((watcher) => watcher.eid));
                 },

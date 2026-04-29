@@ -19,6 +19,7 @@
     "app/runtime/method-catalog.ts",
     "app/app/router.ts",
     "app/app/session.ts",
+    "app/app/page-loader.ts",
     "app/runtime/logger.ts",
     "app/runtime/types/**/*.d.ts",
     "app/runtime/bridge.ts",
