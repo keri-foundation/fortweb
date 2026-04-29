@@ -7,7 +7,7 @@ import {
     parseRoute,
     unlockHref,
 } from "./router.js";
-import { loadRouteData } from "./page-loader.js";
+import { loadPage } from "./page-factory.js";
 import { createSessionStore } from "./session.js";
 import { renderShell } from "./shell.js";
 import {
@@ -16,15 +16,6 @@ import {
     floatingInputHtml,
     setupFloatingInputs,
 } from "../shared/components.js";
-import { renderIdentifierDetailPage } from "../features/identifiers/identifier-detail-page.js";
-import { renderIdentifiersPage } from "../features/identifiers/identifiers-page.js";
-import { renderRemoteDetailPage } from "../features/remotes/remote-detail-page.js";
-import { renderRemotesPage } from "../features/remotes/remotes-page.js";
-import { renderSettingsPage } from "../features/settings/settings-page.js";
-import { renderUnlockPage } from "../features/vaults/unlock-page.js";
-import { renderVaultPickerPage } from "../features/vaults/vault-picker-page.js";
-import { renderWatcherOverviewPage } from "../providers/kerifoundation/watcher-overview-page.js";
-import { renderWitnessOverviewPage } from "../providers/kerifoundation/witness-overview-page.js";
 import { isFixtureRoute, loadFixture } from "../fixtures/fixture-router.js";
 import { renderFixtureIndexPage } from "../fixtures/fixture-index-page.js";
 import { installGlobalHandlers } from "../runtime/global-handlers.js";
@@ -393,133 +384,6 @@ const actions = {
     },
 };
 
-async function loadPage(route) {
-    if (route.name === "home") {
-        return {
-            page: renderVaultPickerPage({
-                vaults: currentState().vaults,
-                onCreateVault: showCreateVaultDialog,
-                onSelectVault(vault) {
-                    if (isUnlocked(vault.id)) {
-                        navigate(currentState().lastCoreRoutes[vault.id] || identifiersHref(vault.id));
-                        return;
-                    }
-                    navigate(unlockHref(vault.id));
-                },
-            }),
-            vault: null,
-        };
-    }
-
-    if (route.name === "unlock") {
-        return {
-            page: renderUnlockPage({
-                vault: findVault(route.params.vaultId),
-                onOpenVault(passcode) {
-                    return actions.openVault(route.params.vaultId, passcode);
-                },
-            }),
-            vault: null,
-        };
-    }
-
-    const pageData = await loadRouteData({ route, bridge });
-
-    if (route.name === "identifiers") {
-        const vaultId = route.params.vaultId;
-        return {
-            page: renderIdentifiersPage({
-                vault: findVault(vaultId),
-                identifiers: pageData.identifiers || [],
-                onCreateIdentifier: actions.createIdentifier,
-            }),
-            vault: findVault(vaultId),
-        };
-    }
-
-    if (route.name === "identifier-detail") {
-        return {
-            page: renderIdentifierDetailPage({
-                vault: findVault(route.params.vaultId),
-                identifier: pageData.identifier,
-            }),
-            vault: findVault(route.params.vaultId),
-        };
-    }
-
-    if (route.name === "remotes") {
-        const vaultId = route.params.vaultId;
-        return {
-            page: renderRemotesPage({
-                vault: findVault(vaultId),
-                remotes: pageData.remotes || [],
-                filter: currentState().remoteFilter,
-                onResolveRemote: actions.resolveRemoteOobi,
-                onUpdateRemote: actions.updateRemote,
-                onFilterChange: actions.setRemoteFilter,
-            }),
-            vault: findVault(vaultId),
-        };
-    }
-
-    if (route.name === "remote-detail") {
-        return {
-            page: renderRemoteDetailPage({
-                vault: findVault(route.params.vaultId),
-                remote: pageData.remote,
-            }),
-            vault: findVault(route.params.vaultId),
-        };
-    }
-
-    if (route.name === "settings") {
-        return {
-            page: renderSettingsPage({
-                vault: findVault(route.params.vaultId),
-                settings: pageData.settings,
-            }),
-            vault: findVault(route.params.vaultId),
-        };
-    }
-
-    if (route.name === "kf-witnesses") {
-        const vaultId = route.params.vaultId;
-        return {
-            page: renderWitnessOverviewPage({
-                vault: findVault(vaultId),
-                bootstrapState: pageData.bootstrapState,
-                witnesses: pageData.witnesses || [],
-                witnessError: pageData.witnessError || "",
-                onLoadBootstrap: actions.loadKfBootstrap,
-                onStartOnboarding: actions.startKfOnboarding,
-            }),
-            vault: findVault(vaultId),
-        };
-    }
-
-    if (route.name === "kf-watchers") {
-        const vaultId = route.params.vaultId;
-        const watchers = pageData.watchers || [];
-        return {
-            page: renderWatcherOverviewPage({
-                vault: findVault(vaultId),
-                bootstrapState: pageData.bootstrapState,
-                watchers,
-                watcherError: pageData.watcherError || "",
-                onRefreshStatuses() {
-                    return actions.refreshKfWatcherStatuses(watchers.map((watcher) => watcher.eid));
-                },
-            }),
-            vault: findVault(vaultId),
-        };
-    }
-
-    return {
-        page: renderNotFoundPage(route.path),
-        vault: null,
-    };
-}
-
 /** Incremented on every render(); stale renders bail so tab taps do not stack concurrent bridge calls. */
 let renderGeneration = 0;
 
@@ -569,7 +433,15 @@ async function render() {
         if (thisGeneration !== renderGeneration) {
             return;
         }
-        const { page, vault: loadedVault } = await loadPage(route);
+        const { page, vault: loadedVault } = await loadPage({
+            route,
+            bridge,
+            currentState,
+            findVault,
+            isUnlocked,
+            showCreateVaultDialog,
+            actions,
+        });
         if (thisGeneration !== renderGeneration) {
             return;
         }

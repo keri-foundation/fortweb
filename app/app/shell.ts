@@ -1,5 +1,57 @@
-import { identifiersHref, remotesHref, kfWitnessesHref, kfWatchersHref, settingsHref, } from "./router.js";
-const TAB_CONFIG = Object.freeze([
+import {
+    identifiersHref,
+    remotesHref,
+    kfWitnessesHref,
+    kfWatchersHref,
+    settingsHref,
+} from "./router.js";
+
+interface RouteRecord {
+    name: string;
+    shellMode?: string;
+}
+
+interface PageRecord {
+    title: string;
+    html?: string;
+    render?(container: HTMLElement): void;
+    setup?(root: HTMLElement): void;
+}
+
+interface VaultRecord {
+    id: string;
+    alias: string;
+}
+
+interface ShellActions {
+    toggleDrawer?(): void;
+    lockVault(vaultId: string): Promise<void> | void;
+}
+
+interface ShellProps {
+    route: RouteRecord;
+    page: PageRecord;
+    state: object;
+    vault: VaultRecord | null;
+    actions: ShellActions;
+}
+
+interface TabConfig {
+    id: string;
+    label: string;
+    icon: string;
+    href(vaultId: string): string;
+    isActive(name: string): boolean;
+}
+
+interface SectionTabConfig {
+    id: string;
+    label: string;
+    href(vaultId: string): string;
+    isActive(name: string): boolean;
+}
+
+const TAB_CONFIG: ReadonlyArray<TabConfig> = Object.freeze([
     {
         id: "identifiers",
         label: "Identifiers",
@@ -29,7 +81,8 @@ const TAB_CONFIG = Object.freeze([
         isActive: (name) => name === "settings",
     },
 ]);
-const SECTION_TAB_CONFIG = Object.freeze([
+
+const SECTION_TAB_CONFIG: ReadonlyArray<SectionTabConfig> = Object.freeze([
     {
         id: "witnesses",
         label: "Witnesses",
@@ -43,18 +96,20 @@ const SECTION_TAB_CONFIG = Object.freeze([
         isActive: (name) => name === "kf-watchers",
     },
 ]);
-function tabIcon(pathData, viewBox) {
+
+function tabIcon(pathData: string, viewBox: string): string {
     return `<svg class="shell-tabbar__icon" xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" width="20" height="20" fill="currentColor" aria-hidden="true">${pathData}</svg>`;
 }
-function shellTabs(route, vaultId) {
+
+function shellTabs(route: RouteRecord, vaultId: string): string {
     return `
         <nav class="shell-tabbar" aria-label="Vault navigation">
             ${TAB_CONFIG.map((tab) => {
-        const active = tab.isActive(route.name);
-        const viewBox = tab.id === "identifiers" || tab.id === "foundation"
-            ? "0 -960 960 960"
-            : "0 0 24 24";
-        return `
+                const active = tab.isActive(route.name);
+                const viewBox = tab.id === "identifiers" || tab.id === "foundation"
+                    ? "0 -960 960 960"
+                    : "0 0 24 24";
+                return `
                 <a class="shell-tabbar__link ${active ? "is-active" : ""}"
                    href="${tab.href(vaultId)}"
                    aria-current="${active ? "page" : "false"}">
@@ -62,32 +117,36 @@ function shellTabs(route, vaultId) {
                     <span>${tab.label}</span>
                 </a>
             `;
-    }).join("")}
+            }).join("")}
         </nav>
     `;
 }
-function sectionTabs(route, vaultId) {
+
+function sectionTabs(route: RouteRecord, vaultId: string): string {
     const isFoundationRoute = route.name === "kf-witnesses" || route.name === "kf-watchers";
     if (!isFoundationRoute) {
         return "";
     }
+
     return `
         <nav class="shell-section-tabs" aria-label="Foundation navigation">
             ${SECTION_TAB_CONFIG.map((tab) => {
-        const active = tab.isActive(route.name);
-        return `
+                const active = tab.isActive(route.name);
+                return `
                 <a class="shell-section-tabs__link ${active ? "is-active" : ""}"
                    href="${tab.href(vaultId)}"
                    aria-current="${active ? "page" : "false"}">
                     ${tab.label}
                 </a>
             `;
-    }).join("")}
+            }).join("")}
         </nav>
     `;
 }
-export function renderShell(root, { route, page, state: _state, vault, actions }) {
+
+export function renderShell(root: HTMLElement, { route, page, state: _state, vault, actions }: ShellProps): void {
     const isVaultShell = route.shellMode === "vault" && Boolean(vault);
+
     root.innerHTML = `
         <div class="shell ${isVaultShell ? "shell--vault" : "shell--home"}">
             ${isVaultShell && vault ? `
@@ -115,28 +174,33 @@ export function renderShell(root, { route, page, state: _state, vault, actions }
             ${isVaultShell && vault ? shellTabs(route, vault.id) : ""}
         </div>
     `;
+
     const pageRoot = root.querySelector("[data-page-content]");
     if (!(pageRoot instanceof HTMLElement)) {
         return;
     }
+
     pageRoot.replaceChildren();
     if (typeof page.render === "function") {
         page.render(pageRoot);
-    }
-    else {
+    } else {
         pageRoot.innerHTML = page.html || "";
     }
     document.title = `${page.title} | Fort`;
+
     root.querySelectorAll("[data-action='toggle-drawer']").forEach((button) => {
         button.addEventListener("click", () => actions.toggleDrawer?.());
     });
+
     root.querySelectorAll("[data-action='lock-vault']").forEach((button) => {
         button.addEventListener("click", async () => {
             if (!vault) {
                 return;
             }
+
             await actions.lockVault(vault.id);
         });
     });
+
     page.setup?.(pageRoot);
 }
