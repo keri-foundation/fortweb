@@ -1,16 +1,33 @@
 import { homeHref } from "../../app/router.js";
 import { formatDateLabel } from "../../shared/dom.js";
 import { announce } from "../../ui/core/a11y.js";
-function errorMessage(error) {
-    if (typeof error === "object" &&
+
+interface VaultRecord {
+    alias: string;
+    storageName?: string;
+    createdAt: string;
+    otpConfigured?: boolean;
+}
+
+interface UnlockPageProps {
+    vault: VaultRecord;
+    onOpenVault(passcode: string): Promise<void>;
+}
+
+function errorMessage(error: unknown): string {
+    if (
+        typeof error === "object" &&
         error !== null &&
         "code" in error &&
-        error.code === "TIMEOUT") {
+        error.code === "TIMEOUT"
+    ) {
         return "The vault took too long to open. This can happen after the app has been in the background. Please try again.";
     }
+
     return error instanceof Error && error.message ? error.message : "Vault open failed.";
 }
-export function renderUnlockPage({ vault, onOpenVault }) {
+
+export function renderUnlockPage({ vault, onOpenVault }: UnlockPageProps) {
     return {
         title: `Unlock ${vault.alias}`,
         html: `
@@ -56,47 +73,57 @@ export function renderUnlockPage({ vault, onOpenVault }) {
                 </section>
             </section>
         `,
-        setup(root) {
+        setup(root: HTMLElement): void {
             const title = root.querySelector("[data-unlock-title]");
             const meta = root.querySelector("[data-unlock-meta]");
             const form = root.querySelector("[data-unlock-form]");
             const statusLine = root.querySelector("[data-unlock-status]");
             const toggleButton = root.querySelector("[data-unlock-toggle]");
-            if (!(title instanceof HTMLElement) ||
+
+            if (
+                !(title instanceof HTMLElement) ||
                 !(meta instanceof HTMLElement) ||
                 !(form instanceof HTMLFormElement) ||
-                !(statusLine instanceof HTMLElement)) {
+                !(statusLine instanceof HTMLElement)
+            ) {
                 return;
             }
+
             const submitButton = form.querySelector("button[type='submit']");
             const passcodeInput = form.querySelector("input[name='passcode']");
+
             if (!(submitButton instanceof HTMLButtonElement) || !(passcodeInput instanceof HTMLInputElement)) {
                 return;
             }
+
             title.textContent = `Open ${vault.alias}`;
             meta.textContent = [
                 vault.storageName || "Browser-safe vault",
                 `Created ${formatDateLabel(vault.createdAt)}`,
                 `2FA ${vault.otpConfigured ? "configured" : "deferred"}`,
             ].join(" · ");
+
             if (toggleButton instanceof HTMLElement) {
                 toggleButton.addEventListener("click", () => {
                     passcodeInput.type = passcodeInput.type === "password" ? "text" : "password";
                 });
             }
+
             form.addEventListener("submit", async (event) => {
                 event.preventDefault();
                 const formData = new FormData(form);
+
                 submitButton.disabled = true;
                 statusLine.textContent = "Opening vault...";
                 statusLine.classList.remove("status-line--error");
                 statusLine.classList.add("status-line--loading");
                 announce("Opening vault, please wait.");
+
                 try {
                     await onOpenVault(String(formData.get("passcode") || ""));
-                }
-                catch (error) {
+                } catch (error) {
                     const message = errorMessage(error);
+
                     submitButton.disabled = false;
                     statusLine.classList.remove("status-line--loading");
                     statusLine.classList.add("status-line--error");
