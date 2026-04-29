@@ -27,28 +27,8 @@ import { renderWitnessOverviewPage } from "../providers/kerifoundation/witness-o
 import { isFixtureRoute, loadFixture } from "../fixtures/fixture-router.js";
 import { renderFixtureIndexPage } from "../fixtures/fixture-index-page.js";
 import { installGlobalHandlers } from "../runtime/global-handlers.js";
+import { METHODS } from "../runtime/method-catalog.js";
 import { postLog } from "../runtime/logger.js";
-
-const METHODS = {
-    vaultsList: "vaults.list",
-    vaultsCreate: "vaults.create",
-    vaultsOpen: "vaults.open",
-    vaultsClose: "vaults.close",
-    vaultsSummary: "vaults.summary",
-    identifiersList: "identifiers.list",
-    identifiersGet: "identifiers.get",
-    identifiersCreate: "identifiers.create",
-    remotesList: "remotes.list",
-    remotesGet: "remotes.get",
-    remotesResolveOobi: "remotes.resolveOobi",
-    remotesUpdate: "remotes.update",
-    settingsGet: "settings.get",
-    kfBootstrapGet: "kf.bootstrap.get",
-    kfOnboardingStart: "kf.onboarding.start",
-    kfAccountWitnessesList: "kf.account.witnesses.list",
-    kfAccountWatchersList: "kf.account.watchers.list",
-    kfAccountWatchersStatus: "kf.account.watchers.status",
-};
 
 const root = document.querySelector("#app-root");
 const bridge = createRuntimeBridge({

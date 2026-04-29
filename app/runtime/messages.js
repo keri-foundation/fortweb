@@ -1,10 +1,8 @@
 export const REQUEST_KIND = "fortweb.runtime.request";
 export const RESPONSE_KIND = "fortweb.runtime.response";
-
 function isPlainObject(value) {
     return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
-
 export function createRuntimeRequest(id, method, params = {}) {
     if (typeof id !== "string" || !id) {
         throw new Error("Runtime request id must be a non-empty string.");
@@ -22,7 +20,6 @@ export function createRuntimeRequest(id, method, params = {}) {
         params,
     };
 }
-
 export function isRuntimeResponse(message) {
     if (!isPlainObject(message)) {
         return false;
@@ -33,9 +30,7 @@ export function isRuntimeResponse(message) {
     if (message.ok) {
         return isPlainObject(message.result);
     }
-    return (
-        isPlainObject(message.error) &&
+    return (isPlainObject(message.error) &&
         typeof message.error.code === "string" &&
-        typeof message.error.message === "string"
-    );
+        typeof message.error.message === "string");
 }
