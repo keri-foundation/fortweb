@@ -1,61 +1,76 @@
 import { identifierDetailHref } from "../../app/router.js";
-import {
-    createDialog,
-    floatingInputHtml,
-    renderPaginatedTable,
-    setupFloatingInputs,
-} from "../../shared/components.js";
+import { renderPaginatedTable } from "../../shared/components.js";
 import { escapeHtml } from "../../shared/dom.js";
+import { createModal } from "../../ui/composites/modal.js";
+import { showToast } from "../../ui/composites/toast.js";
+import { fieldTextHtml } from "../../ui/primitives/field-text.js";
+
+/**
+ * @typedef {Object} IdentifiersPageProps
+ * @property {Object} vault
+ * @property {Array<Object>} identifiers
+ * @property {function(string): Promise<void>} onCreateIdentifier
+ */
 
 function createIdentifierDialog(onCreateIdentifier) {
-    const dialog = createDialog({
+    const modal = createModal({
         title: "Create Identifier",
-        showClose: true,
-        showDivider: true,
-        content: `
-            <form class="lk-form-stack" data-create-identifier-form>
-                ${floatingInputHtml({ label: "Alias", name: "alias" })}
+        body: `
+            <form data-create-identifier-form>
+                ${fieldTextHtml({ id: "create-id-alias", label: "Alias", placeholder: "e.g. my-first-aid", required: true })}
                 <p class="status-line" data-create-identifier-status></p>
             </form>
         `,
-        buttons: `
-            <button class="button button--secondary" type="button" data-dialog-cancel>Cancel</button>
-            <button class="button button--primary" type="button" data-dialog-submit>Create</button>
-        `,
-        showOverlay: false,
+        actions: [
+            { label: "Cancel", tone: "ghost", dataAction: "cancel" },
+            { label: "Create", tone: "primary", dataAction: "submit" },
+        ],
     });
 
-    dialog.show();
-    setupFloatingInputs(dialog.el);
+    modal.open();
 
-    const form = dialog.el.querySelector("[data-create-identifier-form]");
-    const statusLine = dialog.el.querySelector("[data-create-identifier-status]");
-    const submitBtn = dialog.el.querySelector("[data-dialog-submit]");
-    const cancelBtn = dialog.el.querySelector("[data-dialog-cancel]");
+    const root = document.querySelector("[role='dialog'][aria-label='Create Identifier']");
+    if (!root) return;
 
-    cancelBtn.addEventListener("click", () => dialog.close());
+    const form = root.querySelector("[data-create-identifier-form]");
+    const statusLine = root.querySelector("[data-create-identifier-status]");
+    const submitBtn = root.querySelector("[data-action='submit']");
+    const cancelBtn = root.querySelector("[data-action='cancel']");
+
+    cancelBtn?.addEventListener("click", () => modal.close());
 
     async function submit() {
-        const formData = new FormData(form);
+        const input = form.querySelector("input");
+        const alias = input?.value?.trim() || "";
+
+        if (!alias) {
+            statusLine.textContent = "Alias is required.";
+            return;
+        }
+
         submitBtn.disabled = true;
         statusLine.textContent = "";
 
         try {
-            await onCreateIdentifier(String(formData.get("alias") || ""));
-            dialog.close();
+            await onCreateIdentifier(alias);
+            modal.close();
+            showToast({ message: `Identifier "${alias}" created.`, tone: "success" });
         } catch (error) {
             submitBtn.disabled = false;
             statusLine.textContent = error.message || "Identifier creation failed.";
         }
     }
 
-    submitBtn.addEventListener("click", submit);
-    form.addEventListener("submit", (event) => {
+    submitBtn?.addEventListener("click", submit);
+    form?.addEventListener("submit", (event) => {
         event.preventDefault();
         submit();
     });
 }
 
+/**
+ * @param {IdentifiersPageProps} props
+ */
 export function renderIdentifiersPage({ vault, identifiers, onCreateIdentifier }) {
     const identifierRows = identifiers.map((identifier) => ({
         alias: identifier.alias,
@@ -70,7 +85,7 @@ export function renderIdentifiersPage({ vault, identifiers, onCreateIdentifier }
     const identifierTable = renderPaginatedTable({
         icon: "./assets/icons/identifiers.png",
         title: "Local Identifiers",
-        titleTag: "h1",
+        collapseHeadingOnMobile: true,
         searchPlaceholder: "Search...",
         addButtonText: "Add Identifier",
         columns: [

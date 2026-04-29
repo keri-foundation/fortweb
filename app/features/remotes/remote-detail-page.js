@@ -1,5 +1,13 @@
 import { remotesHref } from "../../app/router.js";
 import { formatDateLabel, toneClass } from "../../shared/dom.js";
+import { showToast } from "../../ui/composites/toast.js";
+import { badgeHtml } from "../../ui/primitives/badge.js";
+
+/**
+ * @typedef {Object} RemoteDetailProps
+ * @property {Object} vault
+ * @property {Object} remote
+ */
 
 function detailItem(label, value, valueClassName = "") {
     const wrapper = document.createElement("div");
@@ -18,6 +26,42 @@ function detailItem(label, value, valueClassName = "") {
     return wrapper;
 }
 
+function copyableDetailItem(label, value) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "detail-item";
+
+    const term = document.createElement("dt");
+    term.textContent = label;
+
+    const description = document.createElement("dd");
+    description.className = "mono detail-item__copyable";
+
+    const span = document.createElement("span");
+    span.textContent = value || "Not recorded";
+
+    if (value) {
+        const copyBtn = document.createElement("button");
+        copyBtn.type = "button";
+        copyBtn.className = "icon-button icon-button--inline";
+        copyBtn.setAttribute("aria-label", `Copy ${label}`);
+        copyBtn.innerHTML = '<img src="./assets/icons/copy.svg" alt="" width="16" height="16">';
+        copyBtn.addEventListener("click", async () => {
+            try {
+                await navigator.clipboard.writeText(value);
+                showToast({ message: "Copied to clipboard.", tone: "success", durationMs: 2000 });
+            } catch {
+                showToast({ message: "Copy failed.", tone: "error", durationMs: 3000 });
+            }
+        });
+        description.append(span, copyBtn);
+    } else {
+        description.append(span);
+    }
+
+    wrapper.append(term, description);
+    return wrapper;
+}
+
 function renderRolePills(remote) {
     if (!remote.roles.length) {
         const empty = document.createElement("p");
@@ -29,14 +73,14 @@ function renderRolePills(remote) {
     const row = document.createElement("div");
     row.className = "meta-pill-row";
     remote.roles.forEach((role) => {
-        const pill = document.createElement("span");
-        pill.className = "badge badge--neutral";
-        pill.textContent = role;
-        row.append(pill);
+        row.insertAdjacentHTML("beforeend", badgeHtml({ label: role, tone: "neutral" }));
     });
     return row;
 }
 
+/**
+ * @param {RemoteDetailProps} props
+ */
 export function renderRemoteDetailPage({ vault, remote }) {
     return {
         title: remote.alias,
@@ -136,9 +180,9 @@ export function renderRemoteDetailPage({ vault, remote }) {
             const stateGrid = document.createElement("dl");
             stateGrid.className = "detail-grid";
             stateGrid.append(
-                detailItem("Prefix", remote.prefix, "mono"),
-                detailItem("Last Event SAID", remote.lastEventDigest, "mono"),
-                detailItem("OOBI", remote.oobi, "mono"),
+                copyableDetailItem("Prefix", remote.prefix),
+                copyableDetailItem("Last Event SAID", remote.lastEventDigest),
+                copyableDetailItem("OOBI", remote.oobi),
                 detailItem(
                     "Key State Updated",
                     remote.keystateUpdatedAt ? formatDateLabel(remote.keystateUpdatedAt) : "Not recorded",

@@ -1,123 +1,128 @@
 import { remoteDetailHref } from "../../app/router.js";
-import {
-    createDialog,
-    floatingInputHtml,
-    renderPaginatedTable,
-    setupFloatingInputs,
-} from "../../shared/components.js";
+import { renderPaginatedTable } from "../../shared/components.js";
 import { escapeHtml } from "../../shared/dom.js";
+import { createModal } from "../../ui/composites/modal.js";
+import { showToast } from "../../ui/composites/toast.js";
+import { fieldTextHtml } from "../../ui/primitives/field-text.js";
+import { chipHtml } from "../../ui/primitives/chip.js";
+
+/**
+ * @typedef {Object} RemotesPageProps
+ * @property {Object} vault
+ * @property {Array<Object>} remotes
+ * @property {string} filter
+ * @property {function(string, string): Promise<void>} onResolveRemote
+ * @property {function(string, Object): Promise<void>} onUpdateRemote
+ * @property {function(string): void} onFilterChange
+ */
 
 function createResolveRemoteDialog(onResolveRemote) {
-    const dialog = createDialog({
+    const modal = createModal({
         title: "Add Remote Identifier",
-        showClose: true,
-        showDivider: true,
-        content: `
-            <form class="lk-form-stack" data-resolve-remote-form>
-                ${floatingInputHtml({ label: "Blind OOBI URL", name: "oobiUrl" })}
-                ${floatingInputHtml({ label: "Alias", name: "alias" })}
+        body: `
+            <form data-resolve-remote-form>
+                ${fieldTextHtml({ id: "resolve-oobi-url", label: "Blind OOBI URL", placeholder: "https://...", required: true })}
+                ${fieldTextHtml({ id: "resolve-alias", label: "Alias", placeholder: "e.g. remote-peer" })}
                 <p class="muted">Blind OOBI connect is the only enabled add path in this slice. File import remains deferred.</p>
                 <p class="status-line" data-resolve-remote-status></p>
             </form>
         `,
-        buttons: `
-            <button class="button button--secondary" type="button" data-dialog-cancel>Cancel</button>
-            <button class="button button--primary" type="button" data-dialog-submit>Resolve OOBI</button>
-        `,
-        showOverlay: false,
+        actions: [
+            { label: "Cancel", tone: "ghost", dataAction: "cancel" },
+            { label: "Resolve OOBI", tone: "primary", dataAction: "submit" },
+        ],
     });
 
-    dialog.show();
-    setupFloatingInputs(dialog.el);
+    modal.open();
 
-    const form = dialog.el.querySelector("[data-resolve-remote-form]");
-    const statusLine = dialog.el.querySelector("[data-resolve-remote-status]");
-    const submitBtn = dialog.el.querySelector("[data-dialog-submit]");
-    const cancelBtn = dialog.el.querySelector("[data-dialog-cancel]");
+    const root = document.querySelector("[role='dialog'][aria-label='Add Remote Identifier']");
+    if (!root) return;
 
-    cancelBtn.addEventListener("click", () => dialog.close());
+    const form = root.querySelector("[data-resolve-remote-form]");
+    const statusLine = root.querySelector("[data-resolve-remote-status]");
+    const submitBtn = root.querySelector("[data-action='submit']");
+    const cancelBtn = root.querySelector("[data-action='cancel']");
+
+    cancelBtn?.addEventListener("click", () => modal.close());
 
     async function submit() {
-        const formData = new FormData(form);
+        const oobiUrl = form.querySelector("#resolve-oobi-url")?.value?.trim() || "";
+        const alias = form.querySelector("#resolve-alias")?.value?.trim() || "";
+
+        if (!oobiUrl) {
+            statusLine.textContent = "OOBI URL is required.";
+            return;
+        }
+
         submitBtn.disabled = true;
         statusLine.textContent = "";
 
         try {
-            await onResolveRemote(
-                String(formData.get("oobiUrl") || ""),
-                String(formData.get("alias") || ""),
-            );
-            dialog.close();
+            await onResolveRemote(oobiUrl, alias);
+            modal.close();
+            showToast({ message: "Remote identifier resolved.", tone: "success" });
         } catch (error) {
             submitBtn.disabled = false;
             statusLine.textContent = error.message || "OOBI resolution failed.";
         }
     }
 
-    submitBtn.addEventListener("click", submit);
-    form.addEventListener("submit", (event) => {
+    submitBtn?.addEventListener("click", submit);
+    form?.addEventListener("submit", (event) => {
         event.preventDefault();
         submit();
     });
 }
 
 function createRemoteEditDialog(remote, onUpdateRemote) {
-    const dialog = createDialog({
+    const modal = createModal({
         title: `Edit ${remote.alias}`,
-        showClose: true,
-        showDivider: true,
-        content: `
-            <form class="lk-form-stack" data-edit-remote-form>
-                ${floatingInputHtml({ label: "Alias", name: "alias" })}
-                ${floatingInputHtml({ label: "Organization", name: "org" })}
-                ${floatingInputHtml({ label: "Note", name: "note" })}
+        body: `
+            <form data-edit-remote-form>
+                ${fieldTextHtml({ id: "edit-alias", label: "Alias", value: remote.alias ?? "" })}
+                ${fieldTextHtml({ id: "edit-org", label: "Organization", value: remote.org ?? "" })}
+                ${fieldTextHtml({ id: "edit-note", label: "Note", value: remote.note ?? "" })}
                 <p class="status-line" data-edit-remote-status></p>
             </form>
         `,
-        buttons: `
-            <button class="button button--secondary" type="button" data-dialog-cancel>Cancel</button>
-            <button class="button button--primary" type="button" data-dialog-submit>Save</button>
-        `,
-        showOverlay: false,
+        actions: [
+            { label: "Cancel", tone: "ghost", dataAction: "cancel" },
+            { label: "Save", tone: "primary", dataAction: "submit" },
+        ],
     });
 
-    dialog.show();
-    setupFloatingInputs(dialog.el);
+    modal.open();
 
-    const form = dialog.el.querySelector("[data-edit-remote-form]");
-    const aliasInput = form.querySelector("input[name='alias']");
-    const orgInput = form.querySelector("input[name='org']");
-    const noteInput = form.querySelector("input[name='note']");
-    const statusLine = dialog.el.querySelector("[data-edit-remote-status]");
-    const submitBtn = dialog.el.querySelector("[data-dialog-submit]");
-    const cancelBtn = dialog.el.querySelector("[data-dialog-cancel]");
+    const root = document.querySelector(`[role='dialog'][aria-label='Edit ${remote.alias}']`);
+    if (!root) return;
 
-    aliasInput.value = remote.alias ?? "";
-    orgInput.value = remote.org ?? "";
-    noteInput.value = remote.note ?? "";
+    const form = root.querySelector("[data-edit-remote-form]");
+    const statusLine = root.querySelector("[data-edit-remote-status]");
+    const submitBtn = root.querySelector("[data-action='submit']");
+    const cancelBtn = root.querySelector("[data-action='cancel']");
 
-    cancelBtn.addEventListener("click", () => dialog.close());
+    cancelBtn?.addEventListener("click", () => modal.close());
 
     async function submit() {
-        const formData = new FormData(form);
         submitBtn.disabled = true;
         statusLine.textContent = "";
 
         try {
             await onUpdateRemote(remote.aid, {
-                alias: String(formData.get("alias") || ""),
-                org: String(formData.get("org") || ""),
-                note: String(formData.get("note") || ""),
+                alias: form.querySelector("#edit-alias")?.value?.trim() || "",
+                org: form.querySelector("#edit-org")?.value?.trim() || "",
+                note: form.querySelector("#edit-note")?.value?.trim() || "",
             });
-            dialog.close();
+            modal.close();
+            showToast({ message: `Remote "${remote.alias}" updated.`, tone: "success" });
         } catch (error) {
             submitBtn.disabled = false;
             statusLine.textContent = error.message || "Remote update failed.";
         }
     }
 
-    submitBtn.addEventListener("click", submit);
-    form.addEventListener("submit", (event) => {
+    submitBtn?.addEventListener("click", submit);
+    form?.addEventListener("submit", (event) => {
         event.preventDefault();
         submit();
     });
@@ -133,19 +138,9 @@ function applyRemoteFilter(remotes, filter) {
     return remotes;
 }
 
-function filterButton(label, value, current) {
-    return `
-        <button
-            class="lk-filter-chip ${current === value ? "is-active" : ""}"
-            type="button"
-            data-remote-filter="${value}"
-            aria-pressed="${current === value ? "true" : "false"}"
-        >
-            ${label}
-        </button>
-    `;
-}
-
+/**
+ * @param {RemotesPageProps} props
+ */
 export function renderRemotesPage({
     vault,
     remotes,
@@ -167,18 +162,20 @@ export function renderRemotesPage({
         _raw: remote,
     }));
 
+    const filterChipsHtml = `
+        <div class="lk-inline-filter" role="group" aria-label="Remote identifier filter">
+            ${chipHtml({ label: "All", selected: filter === "all", dataValue: "all" })}
+            ${chipHtml({ label: "Transferable", selected: filter === "transferable", dataValue: "transferable" })}
+            ${chipHtml({ label: "Non-transferable", selected: filter === "non-transferable", dataValue: "non-transferable" })}
+        </div>
+        <p class="lk-table-header__note">Connect by blind OOBI only. File import remains deferred in this slice.</p>
+    `;
+
     const remotesTable = renderPaginatedTable({
         icon: "./assets/icons/remoteIds.png",
         title: "Remote Identifiers",
-        titleTag: "h1",
-        titleMetaHtml: `
-            <div class="lk-inline-filter" role="group" aria-label="Remote identifier filter">
-                ${filterButton("All", "all", filter)}
-                ${filterButton("Transferable", "transferable", filter)}
-                ${filterButton("Non-transferable", "non-transferable", filter)}
-            </div>
-            <p class="lk-table-header__note">Connect by blind OOBI only. File import remains deferred in this slice.</p>
-        `,
+        collapseHeadingOnMobile: true,
+        titleMetaHtml: filterChipsHtml,
         searchPlaceholder: "Search...",
         addButtonText: "Add Remote Identifier",
         columns: [
@@ -205,7 +202,6 @@ export function renderRemotesPage({
                 window.location.hash = remoteDetailHref(vault.id, row._raw.aid);
                 return;
             }
-
             if (actionKey === "edit") {
                 createRemoteEditDialog(row._raw, onUpdateRemote);
             }
@@ -233,9 +229,9 @@ export function renderRemotesPage({
         },
         setup(root) {
             remotesTable.setup(root.querySelector("[data-remotes-table]"));
-            root.querySelectorAll("[data-remote-filter]").forEach((button) => {
+            root.querySelectorAll("[data-value]").forEach((button) => {
                 button.addEventListener("click", () => {
-                    const nextFilter = button.dataset.remoteFilter || "all";
+                    const nextFilter = button.dataset.value || "all";
                     if (nextFilter !== filter) {
                         onFilterChange(nextFilter);
                     }

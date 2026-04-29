@@ -35,13 +35,19 @@ export function createDialog(opts) {
         content = "",
         buttons = "",
         showOverlay = false,
+        rootClassName = "",
+        surfaceClassName = "",
     } = opts;
 
     const el = document.createElement("div");
-    el.className = `lk-dialog-root ${showOverlay ? "lk-dialog-root--modal" : "lk-dialog-root--floating"}`;
+    el.className = [
+        "lk-dialog-root",
+        showOverlay ? "lk-dialog-root--modal" : "lk-dialog-root--floating",
+        rootClassName,
+    ].filter(Boolean).join(" ");
     el.innerHTML = `
         ${showOverlay ? '<div class="lk-dialog-overlay"></div>' : ""}
-        <div class="lk-dialog" role="dialog" aria-modal="${showOverlay ? "true" : "false"}">
+        <div class="lk-dialog ${surfaceClassName}" role="dialog" aria-modal="${showOverlay ? "true" : "false"}">
             <div class="lk-dialog__container">
                 ${title || titleIcon || showClose
             ? `<div class="lk-dialog__header">
@@ -103,10 +109,18 @@ export function createVaultDrawer(opts) {
     el.className = "lk-drawer-root";
     el.innerHTML = `
         <div class="lk-drawer-overlay"></div>
-        <aside class="lk-drawer" aria-label="Vault drawer">
+        <aside class="lk-drawer" aria-label="Vault switcher" role="dialog" aria-modal="true">
             <div class="lk-drawer__header">
-                <img src="./assets/brand/SymbolLogo.svg" alt="" width="36" height="36">
-                <span class="lk-drawer__title">Vaults</span>
+                <div class="lk-drawer__heading">
+                    <img src="./assets/brand/SymbolLogo.svg" alt="" width="36" height="36">
+                    <div>
+                        <span class="lk-drawer__title">Vaults</span>
+                        <p class="lk-drawer__subtitle">Switch vaults or start a new one.</p>
+                    </div>
+                </div>
+                <button class="lk-drawer__close" type="button" aria-label="Close vault switcher">
+                    <img src="./assets/icons/close.svg" alt="" width="18" height="18">
+                </button>
             </div>
             <div class="lk-drawer__divider"></div>
             <button class="lk-drawer__new-vault" type="button">
@@ -123,10 +137,11 @@ export function createVaultDrawer(opts) {
     function renderList(vaults) {
         list.replaceChildren(
             ...vaults.map((vault) => {
+                const isCurrent = vault.locked === false;
                 const item = document.createElement("li");
-                item.className = `lk-drawer__item ${vault.opened ? "is-active" : ""}`.trim();
+                item.className = `lk-drawer__item ${isCurrent ? "is-active" : ""}`.trim();
                 item.dataset.vaultId = vault.id;
-                item.setAttribute("aria-current", vault.opened ? "page" : "false");
+                item.setAttribute("aria-current", isCurrent ? "page" : "false");
                 item.setAttribute("role", "button");
                 item.tabIndex = 0;
 
@@ -139,11 +154,27 @@ export function createVaultDrawer(opts) {
                 const copy = document.createElement("span");
                 copy.className = "lk-drawer__item-copy";
 
+                const heading = document.createElement("span");
+                heading.className = "lk-drawer__item-heading";
+
                 const label = document.createElement("span");
                 label.className = "lk-drawer__item-title";
                 label.textContent = vault.alias;
 
-                copy.append(label);
+                heading.append(label);
+
+                if (isCurrent) {
+                    const status = document.createElement("span");
+                    status.className = "lk-drawer__item-status";
+                    status.textContent = "Current";
+                    heading.append(status);
+                }
+
+                const meta = document.createElement("span");
+                meta.className = "lk-drawer__item-meta";
+                meta.textContent = `${vault.identifierCount ?? 0} identifiers · ${vault.remoteCount ?? 0} remotes`;
+
+                copy.append(heading, meta);
                 item.append(icon, copy);
                 return item;
             }),
@@ -172,9 +203,11 @@ export function createVaultDrawer(opts) {
 
     // Overlay click closes
     el.querySelector(".lk-drawer-overlay").addEventListener("click", close);
+    el.querySelector(".lk-drawer__close").addEventListener("click", close);
 
     // New vault button
     el.querySelector(".lk-drawer__new-vault").addEventListener("click", () => {
+        close();
         onNewVault?.();
     });
 
@@ -264,6 +297,7 @@ export function renderPaginatedTable(opts) {
         title = "",
         titleTag = "h2",
         titleMetaHtml = "",
+        collapseHeadingOnMobile = false,
         searchPlaceholder = "Search...",
         addButtonText = "",
         columns = [],
@@ -277,9 +311,10 @@ export function renderPaginatedTable(opts) {
     const hasActions = rowActions.length > 0;
     const allColumns = hasActions ? [...columns, { key: "_actions", label: "Actions", width: "100px" }] : columns;
     const safeTitleTag = titleTag === "h1" ? "h1" : "h2";
+    const sectionClassName = collapseHeadingOnMobile ? "lk-table-section lk-table-section--collapse-heading-mobile" : "lk-table-section";
 
     const html = `
-        <section class="lk-table-section">
+        <section class="${sectionClassName}">
             <div class="lk-table-shell">
                 <div class="lk-table-header">
                     <div class="lk-table-header__left">
@@ -311,6 +346,7 @@ export function renderPaginatedTable(opts) {
                         <tbody data-table-body></tbody>
                     </table>
                 </div>
+                <div class="lk-table-stack" data-table-stack></div>
                 <div class="lk-table-footer">
                     <span class="lk-table-footer__count" data-table-count></span>
                     <div class="lk-table-footer__pagination" data-table-pagination></div>
@@ -323,8 +359,55 @@ export function renderPaginatedTable(opts) {
         const searchInput = root.querySelector("[data-table-search]");
         const searchClear = root.querySelector("[data-table-search-clear]");
         const tbody = root.querySelector("[data-table-body]");
+        const stack = root.querySelector("[data-table-stack]");
         const countEl = root.querySelector("[data-table-count]");
         const paginationEl = root.querySelector("[data-table-pagination]");
+        const titleColumn = columns[0] || null;
+
+        function displayValue(row, col) {
+            const value = row[col.key] ?? "";
+            if (col.html) {
+                return escapeHtml(String(row[col.searchKey || col.key] ?? ""));
+            }
+            return escapeHtml(String(value));
+        }
+
+        function renderCard(row, rowIdx) {
+            const titleValue = titleColumn
+                ? escapeHtml(String(row[titleColumn.searchKey || titleColumn.key] ?? ""))
+                : "Record";
+            const detailFields = columns.slice(1).map((col) => `
+                <div class="detail-item ${col.key === "lastEventDigest" ? "detail-item--span" : ""}">
+                    <dt>${escapeHtml(col.label)}</dt>
+                    <dd class="${col.key === "prefix" || col.key === "lastEventDigest" ? "mono" : ""}">${displayValue(row, col)}</dd>
+                </div>
+            `).join("");
+            const actionsHtml = rowActions.length
+                ? `<div class="stack-card__actions">
+                    ${rowActions.map((action) => `
+                        <button class="button button--ghost stack-card__action-button" type="button" data-action-key="${action.key}" data-row-idx="${rowIdx}">
+                            ${action.icon ? `<img src="${action.icon}" alt="" width="16" height="16">` : ""}
+                            <span>${escapeHtml(action.label)}</span>
+                        </button>
+                    `).join("")}
+                </div>`
+                : "";
+
+            return `
+                <article class="stack-card">
+                    <div class="stack-card__header">
+                        <div class="stack-card__title-block">
+                            <span class="stack-card__eyebrow">${escapeHtml(titleColumn?.label || "Record")}</span>
+                            <h3 class="stack-card__title">${titleValue}</h3>
+                        </div>
+                    </div>
+                    <dl class="detail-grid stack-card__details">
+                        ${detailFields}
+                    </dl>
+                    ${actionsHtml}
+                </article>
+            `;
+        }
 
         let filteredRows = [...rows];
         let currentPage = 1;
@@ -363,6 +446,12 @@ export function renderPaginatedTable(opts) {
                         </td>
                     </tr>
                 `;
+                stack.innerHTML = `
+                    <div class="empty-state empty-state--table empty-state--stack">
+                        <h2>${escapeHtml(emptyTitle)}</h2>
+                        <p>${escapeHtml(emptyText)}</p>
+                    </div>
+                `;
                 countEl.textContent = `${filteredRows.length} item${filteredRows.length === 1 ? "" : "s"}`;
                 paginationEl.innerHTML = `
                     <span class="lk-page-label">Page 1 of 1</span>
@@ -394,6 +483,10 @@ export function renderPaginatedTable(opts) {
 
                     return `<tr class="lk-table__row">${cells}${actionCell}</tr>`;
                 })
+                .join("");
+
+            stack.innerHTML = pageRows
+                .map((row, idx) => renderCard(row, start + idx))
                 .join("");
 
             countEl.textContent = `${filteredRows.length} item${filteredRows.length === 1 ? "" : "s"}`;
@@ -468,6 +561,14 @@ export function renderPaginatedTable(opts) {
                 if (trigger?.classList.contains("lk-skewer-btn")) {
                     trigger.setAttribute("aria-expanded", "false");
                 }
+                opts.onAction?.(filteredRows[rowIdx], actionKey);
+                return;
+            }
+
+            const cardActionBtn = e.target.closest(".stack-card__action-button");
+            if (cardActionBtn) {
+                const rowIdx = parseInt(cardActionBtn.dataset.rowIdx, 10);
+                const actionKey = cardActionBtn.dataset.actionKey;
                 opts.onAction?.(filteredRows[rowIdx], actionKey);
                 return;
             }

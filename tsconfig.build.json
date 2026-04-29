@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "allowJs": false,
+    "checkJs": false
+  },
+  "include": [
+    "app/runtime/messages.ts",
+    "app/runtime/method-catalog.ts"
+  ]
+}

@@ -3,6 +3,7 @@ import {
     homeHref,
     identifiersHref,
     navigate,
+    normalizeHash,
     parseRoute,
     unlockHref,
 } from "./router.js";
@@ -23,6 +24,10 @@ import { renderUnlockPage } from "../features/vaults/unlock-page.js";
 import { renderVaultPickerPage } from "../features/vaults/vault-picker-page.js";
 import { renderWatcherOverviewPage } from "../providers/kerifoundation/watcher-overview-page.js";
 import { renderWitnessOverviewPage } from "../providers/kerifoundation/witness-overview-page.js";
+import { isFixtureRoute, loadFixture } from "../fixtures/fixture-router.js";
+import { renderFixtureIndexPage } from "../fixtures/fixture-index-page.js";
+import { installGlobalHandlers } from "../runtime/global-handlers.js";
+import { postLog } from "../runtime/logger.js";
 
 const METHODS = {
     vaultsList: "vaults.list",
@@ -112,6 +117,8 @@ function showCreateVaultDialog() {
         title: "Vault Initialization",
         showClose: true,
         showDivider: true,
+        rootClassName: "lk-dialog-root--sheet",
+        surfaceClassName: "lk-dialog--sheet",
         content: `
             <form data-create-vault-form style="display:flex;flex-direction:column;gap:16px;padding:16px 0;">
                 ${floatingInputHtml({ label: "Name", name: "name" })}
@@ -126,7 +133,7 @@ function showCreateVaultDialog() {
             <button class="button button--secondary" type="button" data-dialog-cancel>Cancel</button>
             <button class="button button--primary" type="button" data-dialog-submit>Create</button>
         `,
-        showOverlay: false,
+        showOverlay: true,
     });
 
     dialog.show();
@@ -142,7 +149,10 @@ function showCreateVaultDialog() {
     async function submit() {
         const formData = new FormData(form);
         submitBtn.disabled = true;
+        cancelBtn.disabled = true;
         statusLine.textContent = "";
+        submitBtn.textContent = "Creating...";
+        statusLine.textContent = "Creating vault...";
 
         try {
             await actions.createVault(
@@ -150,9 +160,10 @@ function showCreateVaultDialog() {
                 String(formData.get("passcode") || ""),
             );
             dialog.close();
-            drawer?.close();
         } catch (error) {
             submitBtn.disabled = false;
+            cancelBtn.disabled = false;
+            submitBtn.textContent = "Create";
             statusLine.textContent = error.message || "Vault creation failed.";
         }
     }
@@ -301,7 +312,7 @@ const actions = {
 
     async lockVault(vaultId) {
         if (isUnlocked(vaultId)) {
-            await bridge.request(METHODS.vaultsClose, { vaultId });
+            await bridge.request(METHODS.vaultsClose, { vaultId }).catch(() => {});
         }
 
         session.patch({
@@ -309,7 +320,7 @@ const actions = {
             vaultSummary: null,
             mobileNavOpen: false,
         });
-        await actions.refreshVaults(null, null);
+        await actions.refreshVaults(null, null).catch(() => null);
         navigate(unlockHref(vaultId));
     },
 
@@ -407,6 +418,13 @@ async function loadPage(route) {
             page: renderVaultPickerPage({
                 vaults: currentState().vaults,
                 onCreateVault: showCreateVaultDialog,
+                onSelectVault(vault) {
+                    if (isUnlocked(vault.id)) {
+                        navigate(currentState().lastCoreRoutes[vault.id] || identifiersHref(vault.id));
+                        return;
+                    }
+                    navigate(unlockHref(vault.id));
+                },
             }),
             vault: null,
         };
@@ -551,7 +569,30 @@ async function loadPage(route) {
     };
 }
 
+/** Incremented on every render(); stale renders bail so tab taps do not stack concurrent bridge calls. */
+let renderGeneration = 0;
+
 async function render() {
+    const thisGeneration = ++renderGeneration;
+    const path = normalizeHash();
+
+    if (path === "/_fixtures" || path === "/_fixtures/") {
+        const indexRoute = { name: "fixture-index", shellMode: "home", navMode: "none", path, params: {} };
+        renderShell(root, { route: indexRoute, page: renderFixtureIndexPage(), state: currentState(), vault: null, actions });
+        return;
+    }
+
+    if (isFixtureRoute(path)) {
+        const fixture = loadFixture(path);
+        if (fixture) {
+            renderShell(root, { route: fixture.route, page: fixture.page, state: currentState(), vault: fixture.vault, actions });
+        } else {
+            const fallbackRoute = { name: "not-found", shellMode: "home", navMode: "none", path, params: {} };
+            renderNotFoundRoute(fallbackRoute, currentState(), null);
+        }
+        return;
+    }
+
     const route = parseRoute();
     const state = currentState();
     const vault = route.requiresVault ? findVault(route.params.vaultId) : null;
@@ -574,7 +615,13 @@ async function render() {
     rememberCoreRoute(route);
 
     try {
+        if (thisGeneration !== renderGeneration) {
+            return;
+        }
         const { page, vault: loadedVault } = await loadPage(route);
+        if (thisGeneration !== renderGeneration) {
+            return;
+        }
         renderShell(root, {
             route,
             page,
@@ -583,17 +630,30 @@ async function render() {
             actions,
         });
     } catch (error) {
+        if (thisGeneration !== renderGeneration) {
+            return;
+        }
+        postLog("render_error", {
+            level: "error",
+            code: error?.code ?? "",
+            message: error?.message ?? String(error),
+            route: route.name,
+            path: route.path,
+        });
         if (error?.code === "NOT_FOUND") {
             renderNotFoundRoute(route, currentState(), vault);
             return;
         }
-        if (error?.code === "LOCKED" && route.params?.vaultId) {
+        if ((error?.code === "LOCKED" || error?.code === "TIMEOUT") && route.params?.vaultId) {
             session.patch({
                 unlockedVaultId: null,
                 vaultSummary: null,
                 mobileNavOpen: false,
             });
             await actions.refreshVaults(null, null).catch(() => null);
+            if (thisGeneration !== renderGeneration) {
+                return;
+            }
             navigate(unlockHref(route.params.vaultId));
             return;
         }
@@ -609,6 +669,7 @@ async function render() {
 }
 
 window.addEventListener("hashchange", () => {
+    postLog("route_change", { path: normalizeHash() });
     session.patch({ mobileNavOpen: false });
     void render();
 });
@@ -618,6 +679,7 @@ window.addEventListener("beforeunload", () => {
 });
 
 async function bootstrap() {
+    installGlobalHandlers();
     await actions.refreshVaults();
     initDrawer(currentState().vaults);
     await render();

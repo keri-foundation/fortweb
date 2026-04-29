@@ -1,61 +1,130 @@
+/*
+ * Design Tokens — Fortweb Shared Payload
+ *
+ * Three-layer token architecture:
+ *   1. Reference  — raw brand and neutral palette values
+ *   2. Semantic   — purpose-driven mappings (surface, primary, error, etc.)
+ *   3. Component  — element-specific sizing, radius, shadow values
+ *
+ * Brand alignment: ADR-027 (KERI olive #61783e, bronze #986c32)
+ * Theme: light-only for conference build; semantic naming supports future
+ *        dark mode via html[data-theme="dark"] override layer.
+ *
+ * @typedef {Object} ReferenceTokens
+ * @property {string} ref-brand-olive    - #61783e — primary brand
+ * @property {string} ref-brand-bronze   - #986c32 — secondary accent
+ *
+ * @typedef {Object} SemanticTokens
+ * @property {string} sys-primary        - semantic primary action/focus color
+ * @property {string} sys-surface        - card/sheet/form background
+ * @property {string} sys-on-surface     - primary text on surfaces
+ * @property {string} sys-error          - destructive/error state
+ */
+
 :root {
     color-scheme: light;
 
+    /* ── Reference: Brand ──────────────────────────────────────────────
+       Source of truth: ADR-027-keri-brand-identity-ui-integration.md   */
+    --ref-brand-olive: #61783e;
+    --ref-brand-bronze: #986c32;
+
+    /* ── Reference: Neutral scale ──────────────────────────────────── */
+    --ref-neutral-0: #ffffff;
+    --ref-neutral-5: #fafbf7;
+    --ref-neutral-10: #f7f8f4;
+    --ref-neutral-15: #f2f4ee;
+    --ref-neutral-20: #eef0e8;
+    --ref-neutral-30: #e2e5db;
+    --ref-neutral-40: #d6dacd;
+    --ref-neutral-50: #b5bbad;
+    --ref-neutral-60: #8a9180;
+    --ref-neutral-70: #5d6357;
+    --ref-neutral-80: #3a4035;
+    --ref-neutral-90: #20231d;
+    --ref-neutral-100: #121510;
+
+    /* ── Reference: Status palette ─────────────────────────────────── */
+    --ref-danger: #b42318;
+    --ref-danger-light: #f97066;
+    --ref-success: #2e7d32;
+    --ref-success-light: #4caf50;
+    --ref-success-indicator: #16a34a;
+    --ref-warning: #c2410c;
+    --ref-info: #2196f3;
+
+    /* ── Semantic: Surfaces ─────────────────────────────────────────── */
+    --sys-window: var(--ref-neutral-10);
+    --sys-surface: var(--ref-neutral-0);
+    --sys-surface-subtle: var(--ref-neutral-20);
+    --sys-surface-elevated: var(--ref-neutral-5);
+
+    /* ── Semantic: Text ─────────────────────────────────────────────── */
+    --sys-on-surface: var(--ref-neutral-90);
+    --sys-on-surface-strong: var(--ref-neutral-100);
+    --sys-on-surface-muted: var(--ref-neutral-70);
+    --sys-on-surface-subtle: var(--ref-neutral-60);
+
+    /* ── Semantic: Borders ──────────────────────────────────────────── */
+    --sys-outline: var(--ref-neutral-40);
+    --sys-outline-subtle: var(--ref-neutral-30);
+    --sys-outline-strong: var(--ref-neutral-50);
+
+    /* ── Semantic: Primary (olive) ──────────────────────────────────── */
+    --sys-primary: var(--ref-brand-olive);
+    --sys-primary-hover: #4e6332;
+    --sys-primary-pressed: #556d36;
+    --sys-on-primary: var(--ref-neutral-0);
+    --sys-primary-container: #e6ecd8;
+
+    /* ── Semantic: Secondary (bronze) ───────────────────────────────── */
+    --sys-secondary: var(--ref-brand-bronze);
+    --sys-secondary-hover: #7d5828;
+    --sys-on-secondary: var(--ref-neutral-0);
+
+    /* ── Semantic: Status ───────────────────────────────────────────── */
+    --sys-error: var(--ref-danger);
+    --sys-error-hover: #991b14;
+    --sys-error-container: #fef2f2;
+    --sys-error-border: #fecaca;
+    --sys-on-error: var(--ref-neutral-0);
+    --sys-success: var(--ref-success);
+    --sys-success-container: #e8f5e9;
+    --sys-warning: var(--ref-warning);
+    --sys-warning-container: #fff7ed;
+    --sys-info: var(--ref-info);
+    --sys-info-container: #e3f2fd;
+
+    /* ── Semantic: Interaction ──────────────────────────────────────── */
+    --sys-overlay: rgba(0, 0, 0, 0.59);
+    --sys-hover: var(--ref-neutral-15);
+    --sys-selection: var(--ref-neutral-20);
+    --sys-focus-ring: 0 0 0 3px rgba(97, 120, 62, 0.22);
+    --sys-disabled-bg: var(--ref-neutral-30);
+    --sys-disabled-text: var(--ref-neutral-60);
+
+    /* ── Component: Typography ─────────────────────────────────────── */
     --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     --font-mono: "Source Code Pro", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
-    --color-primary: #f57b03;
-    --color-primary-hover: #d66a02;
-    --color-primary-pressed: #e67e00;
+    /* ── Component: Spacing (4px base, 8px rhythm) ─────────────────── */
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 20px;
+    --space-6: 24px;
+    --space-7: 32px;
+    --space-8: 40px;
+    --space-9: 48px;
 
-    --color-window: #f2f3fa;
-    --color-content: #f8f9ff;
-    --color-surface: #ffffff;
-    --color-hover: #f5f5f5;
-    --color-neutral: #e0e0e0;
-    --color-neutral-hover: #d0d0d0;
-    --color-collapsible-hover: #dfe0e6;
-    --color-selection: #e8e9f0;
-    --color-highlight: #dcdde5;
-    --color-table-header: #eeeff5;
-    --color-table-row-hover: #e0f2f1;
-    --color-table-row-selected: #d4ebe9;
-    --color-table-row-pressed: #c8e6e4;
-    --color-disabled: #eeeeee;
-
-    --color-text: #2d2f33;
-    --color-text-dark: #1a1c20;
-    --color-text-secondary: #6e7074;
-    --color-text-muted: #888888;
-    --color-text-subtle: #666666;
-    --color-text-menu: #333333;
-    --color-white: #ffffff;
-
-    --color-border: #d0d5dd;
-    --color-border-neutral: #cccccc;
-    --color-border-dark: #757575;
-    --color-border-table: #e5e7eb;
-    --color-border-focus: #9ca3af;
-    --color-divider: #e8e8e8;
-
-    --color-toolbar: #1a252c;
-    --color-overlay: rgba(0, 0, 0, 0.59);
-    --color-danger: #dc2626;
-    --color-danger-hover: #b91c1c;
-    --color-danger-light: #f87171;
-    --color-danger-background: #fef2f2;
-    --color-danger-border: #fecaca;
-    --color-success: #4caf50;
-    --color-success-text: #2e7d32;
-    --color-success-indicator: #16a34a;
-    --color-warning-text: #c2410c;
-    --color-info: #2196f3;
-    --color-info-background: #e3f2fd;
-
+    /* ── Component: Elevation ──────────────────────────────────────── */
+    --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.06), 0 8px 24px rgba(0, 0, 0, 0.08);
     --shadow-soft: 0 20px 40px rgba(26, 37, 44, 0.12);
     --shadow-subtle: 0 1px 2px rgba(26, 37, 44, 0.06);
     --shadow-rail: 1px 0 0 rgba(208, 213, 221, 0.9);
 
+    /* ── Component: Radii ──────────────────────────────────────────── */
     --radius-card: 16px;
     --radius-surface: 24px;
     --radius-panel: 12px;
@@ -63,7 +132,9 @@
     --radius-button: 6px;
     --radius-pill: 999px;
     --radius-drawer: 16px;
+    --radius-sheet: 24px;
 
+    /* ── Component: Sizing ─────────────────────────────────────────── */
     --topbar-height: 56px;
     --topbar-control-size: 36px;
     --rail-width: 260px;
@@ -72,16 +143,84 @@
     --content-max-width: 1240px;
     --content-home-width: 1080px;
     --table-row-height: 50px;
+    --button-min-height: 48px;
+    --button-padding-block: 12px;
+    --button-padding-inline: 25px;
+    --field-min-height: 52px;
+    --panel-padding: 24px;
+    --card-padding-block: 22px;
+    --card-padding-inline: 24px;
+    --surface-gap: 20px;
+    --card-gap: 18px;
+    --field-gap: 16px;
+    --content-inline-gutter: 16px;
 
-    --space-1: 4px;
-    --space-2: 8px;
-    --space-3: 12px;
-    --space-4: 16px;
-    --space-5: 20px;
-    --space-6: 24px;
-    --space-7: 30px;
-    --space-8: 36px;
-    --space-9: 48px;
+    /* ── Component: Shell ──────────────────────────────────────────── */
+    --safe-area-buffer-top: 16px;
+    --safe-area-buffer-bottom: 4px;
+    --home-shell-top-padding: clamp(22px, 5vw, 36px);
+    --home-shell-bottom-padding: clamp(24px, 6vw, 40px);
+    --shell-header-inline-padding: 16px;
+    --shell-header-bottom-padding: 20px;
+    --shell-content-top-padding: clamp(18px, 4vw, 24px);
+    --shell-tabbar-control-height: 48px;
+    --shell-tabbar-padding-top: 12px;
+    --shell-tabbar-padding-inline: 12px;
+    --shell-tabbar-clearance: calc(var(--shell-tabbar-control-height) + var(--shell-tabbar-padding-top) + var(--safe-area-buffer-bottom) + var(--space-3));
+
+    /* ── Component: Brand sizing ───────────────────────────────────── */
+    --hero-brand-width: 260px;
+    --vault-picker-brand-width: 104px;
+    --vault-home-brand-width: 110px;
+
+    /* ── Legacy aliases ─────────────────────────────────────────────
+       Map old token names to the new semantic layer so existing
+       components.css / layout.css rules continue to work. New code
+       should use --sys-* or --ref-* names directly.              ── */
+    --color-primary: var(--sys-primary);
+    --color-primary-hover: var(--sys-primary-hover);
+    --color-primary-pressed: var(--sys-primary-pressed);
+    --color-window: var(--sys-window);
+    --color-content: var(--sys-surface-elevated);
+    --color-surface: var(--sys-surface);
+    --color-hover: var(--sys-hover);
+    --color-neutral: var(--sys-outline-subtle);
+    --color-neutral-hover: var(--sys-outline);
+    --color-collapsible-hover: var(--sys-surface-subtle);
+    --color-selection: var(--sys-selection);
+    --color-highlight: var(--sys-surface-subtle);
+    --color-table-header: var(--sys-surface-subtle);
+    --color-table-row-hover: var(--sys-hover);
+    --color-table-row-selected: var(--sys-primary-container);
+    --color-table-row-pressed: #c2d4ad;
+    --color-disabled: var(--sys-disabled-bg);
+    --color-text: var(--sys-on-surface);
+    --color-text-dark: var(--sys-on-surface-strong);
+    --color-text-secondary: var(--sys-on-surface-muted);
+    --color-text-muted: var(--sys-on-surface-subtle);
+    --color-text-subtle: var(--sys-on-surface-muted);
+    --color-text-menu: var(--sys-on-surface);
+    --color-white: var(--ref-neutral-0);
+    --color-border: var(--sys-outline);
+    --color-border-neutral: var(--sys-outline);
+    --color-border-dark: var(--sys-outline-strong);
+    --color-border-table: var(--sys-outline-subtle);
+    --color-border-focus: var(--sys-primary);
+    --color-divider: var(--sys-outline-subtle);
+    --color-toolbar: #1a252c;
+    --color-overlay: var(--sys-overlay);
+    --color-danger: var(--sys-error);
+    --color-danger-hover: var(--sys-error-hover);
+    --color-danger-light: var(--ref-danger-light);
+    --color-danger-background: var(--sys-error-container);
+    --color-danger-border: var(--sys-error-border);
+    --color-success: var(--ref-success-light);
+    --color-success-text: var(--sys-success);
+    --color-success-indicator: var(--ref-success-indicator);
+    --color-warning-text: var(--sys-warning);
+    --color-info: var(--sys-info);
+    --color-info-background: var(--sys-info-container);
+    --color-brand: var(--sys-primary);
 }
 
 @font-face {
@@ -90,4 +229,33 @@
     font-weight: 400;
     font-style: normal;
     font-display: swap;
+}
+
+@media (max-width: 720px) {
+    :root {
+        --radius-surface: 20px;
+        --radius-panel: 10px;
+        --content-home-width: 920px;
+        --button-min-height: 44px;
+        --button-padding-block: 10px;
+        --button-padding-inline: 20px;
+        --panel-padding: 20px;
+        --card-padding-block: 18px;
+        --card-padding-inline: 20px;
+        --surface-gap: 16px;
+        --card-gap: 14px;
+        --field-gap: 14px;
+        --content-inline-gutter: 14px;
+        --home-shell-top-padding: 24px;
+        --home-shell-bottom-padding: 28px;
+        --shell-header-inline-padding: 14px;
+        --shell-header-bottom-padding: 18px;
+        --shell-content-top-padding: 18px;
+        --shell-tabbar-control-height: 44px;
+        --shell-tabbar-padding-top: 10px;
+        --shell-tabbar-padding-inline: 10px;
+        --hero-brand-width: 220px;
+        --vault-picker-brand-width: 92px;
+        --vault-home-brand-width: 100px;
+    }
 }

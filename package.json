@@ -1,0 +1,12 @@
+{
+  "name": "fortweb",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:runtime": "tsc --project tsconfig.build.json",
+    "typecheck": "tsc --project tsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

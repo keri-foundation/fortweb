@@ -1,16 +1,25 @@
 import { identifiersHref } from "../../app/router.js";
 import { escapeHtml, toneClass } from "../../shared/dom.js";
+import { showToast } from "../../ui/composites/toast.js";
+import { badgeHtml } from "../../ui/primitives/badge.js";
 
+/**
+ * @typedef {Object} IdentifierDetailProps
+ * @property {Object} vault
+ * @property {Object} identifier
+ */
+
+/**
+ * @param {IdentifierDetailProps} props
+ */
 export function renderIdentifierDetailPage({ vault, identifier }) {
     const witnessPills = identifier.witnesses.length
         ? identifier.witnesses
               .map(
-                  (witness) => `
-                    <span class="badge badge--neutral">${escapeHtml(witness.alias)} · ${escapeHtml(witness.status)}</span>
-                  `,
+                  (witness) => badgeHtml({ label: `${witness.alias} \u00B7 ${witness.status}`, tone: "neutral" }),
               )
               .join("")
-        : '<span class="badge badge--neutral">No witnesses provisioned</span>';
+        : badgeHtml({ label: "No witnesses provisioned", tone: "neutral" });
 
     return {
         title: identifier.alias,
@@ -57,7 +66,14 @@ export function renderIdentifierDetailPage({ vault, identifier }) {
                         <dl class="detail-grid">
                             <div class="detail-item">
                                 <dt>Prefix</dt>
-                                <dd class="mono">${escapeHtml(identifier.prefix)}</dd>
+                                <dd class="mono">
+                                    <span>${escapeHtml(identifier.prefix)}</span>
+                                    <button class="icon-button icon-button--inline" type="button"
+                                            data-copy="${escapeHtml(identifier.prefix)}"
+                                            aria-label="Copy prefix">
+                                        <img src="./assets/icons/copy.svg" alt="" width="16" height="16">
+                                    </button>
+                                </dd>
                             </div>
                             <div class="detail-item">
                                 <dt>Last Event Digest</dt>
@@ -65,7 +81,14 @@ export function renderIdentifierDetailPage({ vault, identifier }) {
                             </div>
                             <div class="detail-item">
                                 <dt>OOBI</dt>
-                                <dd class="mono">${escapeHtml(identifier.oobi)}</dd>
+                                <dd class="mono">
+                                    <span>${escapeHtml(identifier.oobi)}</span>
+                                    <button class="icon-button icon-button--inline" type="button"
+                                            data-copy="${escapeHtml(identifier.oobi)}"
+                                            aria-label="Copy OOBI">
+                                        <img src="./assets/icons/copy.svg" alt="" width="16" height="16">
+                                    </button>
+                                </dd>
                             </div>
                             <div class="detail-item">
                                 <dt>Vault</dt>
@@ -82,5 +105,18 @@ export function renderIdentifierDetailPage({ vault, identifier }) {
                 </section>
             </section>
         `,
+        setup(root) {
+            root.querySelectorAll("[data-copy]").forEach((btn) => {
+                btn.addEventListener("click", async () => {
+                    const text = btn.dataset.copy;
+                    try {
+                        await navigator.clipboard.writeText(text);
+                        showToast({ message: "Copied to clipboard.", tone: "success", durationMs: 2000 });
+                    } catch {
+                        showToast({ message: "Copy failed. Select and copy manually.", tone: "error", durationMs: 3000 });
+                    }
+                });
+            });
+        },
     };
 }
