@@ -4,9 +4,13 @@
   "type": "module",
   "scripts": {
     "build:runtime": "tsc --project tsconfig.build.json",
-    "typecheck": "tsc --project tsconfig.json"
+    "typecheck": "tsc --project tsconfig.json",
+    "pretest:e2e": "npm run build:runtime",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed"
   },
   "devDependencies": {
+    "@playwright/test": "1.58.2",
     "typescript": "5.9.3"
   }
 }
