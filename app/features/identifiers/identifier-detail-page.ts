@@ -2,12 +2,42 @@ import { identifiersHref } from "../../app/router.js";
 import { escapeHtml, toneClass } from "../../shared/dom.js";
 import { showToast } from "../../ui/composites/toast.js";
 import { badgeHtml } from "../../ui/primitives/badge.js";
-export function renderIdentifierDetailPage({ vault, identifier }) {
+
+interface VaultRecord {
+    id: string;
+    alias: string;
+}
+
+interface WitnessRecord {
+    alias: string;
+    status: string;
+}
+
+interface IdentifierRecord {
+    alias: string;
+    prefix: string;
+    status: string;
+    statusTone: string;
+    sequenceNumber: number | string;
+    kelEvents: number | string;
+    witnessCount: number | string;
+    lastEventDigest: string;
+    oobi: string;
+    witnesses: WitnessRecord[];
+}
+
+interface IdentifierDetailProps {
+    vault: VaultRecord;
+    identifier: IdentifierRecord;
+}
+
+export function renderIdentifierDetailPage({ vault, identifier }: IdentifierDetailProps) {
     const witnessPills = identifier.witnesses.length
         ? identifier.witnesses
-            .map((witness) => badgeHtml({ label: `${witness.alias} · ${witness.status}`, tone: "neutral" }))
-            .join("")
+              .map((witness) => badgeHtml({ label: `${witness.alias} · ${witness.status}`, tone: "neutral" }))
+              .join("")
         : badgeHtml({ label: "No witnesses provisioned", tone: "neutral" });
+
     return {
         title: identifier.alias,
         html: `
@@ -92,7 +122,7 @@ export function renderIdentifierDetailPage({ vault, identifier }) {
                 </section>
             </section>
         `,
-        setup(root) {
+        setup(root: HTMLElement): void {
             root.querySelectorAll("[data-copy]").forEach((button) => {
                 if (!(button instanceof HTMLElement)) {
                     return;
@@ -102,8 +132,7 @@ export function renderIdentifierDetailPage({ vault, identifier }) {
                     try {
                         await navigator.clipboard.writeText(text);
                         showToast({ message: "Copied to clipboard.", tone: "success", durationMs: 2000 });
-                    }
-                    catch {
+                    } catch {
                         showToast({ message: "Copy failed. Select and copy manually.", tone: "error", durationMs: 3000 });
                     }
                 });
