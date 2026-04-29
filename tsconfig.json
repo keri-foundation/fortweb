@@ -16,7 +16,9 @@
   },
   "include": [
     "app/runtime/messages.ts",
-    "app/runtime/method-catalog.ts"
+    "app/runtime/method-catalog.ts",
+    "app/app/router.ts",
+    "app/app/session.ts"
   ],
   "exclude": [
     "vendor",
