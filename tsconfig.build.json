@@ -28,6 +28,8 @@
     "app/features/settings/settings-page.ts",
     "app/features/vaults/unlock-page.ts",
     "app/features/vaults/vault-picker-page.ts",
+    "app/ui/primitives/badge.ts",
+    "app/ui/primitives/button.ts",
     "app/ui/primitives/field-text.ts",
     "app/ui/primitives/chip.ts",
     "app/runtime/global-handlers.ts",
