@@ -18,7 +18,9 @@
     "app/runtime/messages.ts",
     "app/runtime/method-catalog.ts",
     "app/app/router.ts",
-    "app/app/session.ts"
+    "app/app/session.ts",
+    "app/runtime/logger.ts",
+    "app/runtime/types/**/*.d.ts"
   ],
   "exclude": [
     "vendor",
