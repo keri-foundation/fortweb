@@ -28,6 +28,7 @@
     "app/features/settings/settings-page.ts",
     "app/features/vaults/unlock-page.ts",
     "app/features/vaults/vault-picker-page.ts",
+    "app/ui/composites/empty-state.ts",
     "app/ui/primitives/badge.ts",
     "app/ui/primitives/button.ts",
     "app/ui/primitives/field-text.ts",
