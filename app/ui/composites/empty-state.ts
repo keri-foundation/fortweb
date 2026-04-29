@@ -1,7 +1,26 @@
 import { escapeHtml } from "../../shared/dom.js";
-export function emptyStateHtml(props) {
-    const { title, message = "", iconSrc = "", primaryActionHtml = "", secondaryActionHtml = "", className = "", } = props;
+
+interface EmptyStateProps {
+    title: string;
+    message?: string;
+    iconSrc?: string;
+    primaryActionHtml?: string;
+    secondaryActionHtml?: string;
+    className?: string;
+}
+
+export function emptyStateHtml(props: EmptyStateProps): string {
+    const {
+        title,
+        message = "",
+        iconSrc = "",
+        primaryActionHtml = "",
+        secondaryActionHtml = "",
+        className = "",
+    } = props;
+
     const classes = ["ui-empty-state", className].filter(Boolean).join(" ");
+
     return `
         <div class="${classes}">
             ${iconSrc ? `<img class="ui-empty-state__icon" src="${escapeHtml(iconSrc)}" alt="" width="48" height="48">` : ""}
