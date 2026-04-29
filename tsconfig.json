@@ -24,6 +24,8 @@
     "app/features/identifiers/identifier-detail-page.ts",
     "app/features/remotes/remotes-page.ts",
     "app/features/remotes/remote-detail-page.ts",
+    "app/providers/kerifoundation/watcher-overview-page.ts",
+    "app/providers/kerifoundation/witness-overview-page.ts",
     "app/features/settings/settings-page.ts",
     "app/features/vaults/unlock-page.ts",
     "app/features/vaults/vault-picker-page.ts",
