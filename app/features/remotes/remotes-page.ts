@@ -5,19 +5,61 @@ import { createModal } from "../../ui/composites/modal.js";
 import { showToast } from "../../ui/composites/toast.js";
 import { fieldTextHtml } from "../../ui/primitives/field-text.js";
 import { chipHtml } from "../../ui/primitives/chip.js";
-function queryInput(root, selector) {
-    return root.querySelector(selector);
+
+interface VaultRecord {
+    id: string;
 }
-function queryButton(root, selector) {
-    return root.querySelector(selector);
+
+interface RemoteRecord {
+    aid: string;
+    alias: string;
+    prefix: string;
+    sequenceNumber: number | null;
+    transferable: boolean;
+    transferability: string;
+    rolesLabel: string;
+    status: string;
+    org?: string;
+    note?: string;
 }
-function queryElement(root, selector) {
-    return root.querySelector(selector);
+
+interface RemoteTableRow {
+    alias: string;
+    aliasLink: string;
+    prefix: string;
+    sequenceNumber: string;
+    transferability: string;
+    rolesLabel: string;
+    status: string;
+    _raw: RemoteRecord;
 }
-function errorMessage(error, fallback) {
+
+interface RemotesPageProps {
+    vault: VaultRecord;
+    remotes: RemoteRecord[];
+    filter: string;
+    onResolveRemote(url: string, alias: string): Promise<void>;
+    onUpdateRemote(aid: string, patch: Record<string, unknown>): Promise<void>;
+    onFilterChange(filter: string): void;
+}
+
+function queryInput(root: ParentNode, selector: string): HTMLInputElement | null {
+    return root.querySelector(selector) as HTMLInputElement | null;
+}
+
+function queryButton(root: ParentNode, selector: string): HTMLButtonElement | null {
+    return root.querySelector(selector) as HTMLButtonElement | null;
+}
+
+function queryElement(root: ParentNode, selector: string): HTMLElement | null {
+    return root.querySelector(selector) as HTMLElement | null;
+}
+
+function errorMessage(error: unknown, fallback: string): string {
     return error instanceof Error && error.message ? error.message : fallback;
 }
-function createResolveRemoteDialog(onResolveRemote) {
+
+function createResolveRemoteDialog(onResolveRemote: RemotesPageProps["onResolveRemote"]): void {
     const modal = createModal({
         title: "Add Remote Identifier",
         body: `
@@ -33,38 +75,47 @@ function createResolveRemoteDialog(onResolveRemote) {
             { label: "Resolve OOBI", tone: "primary", dataAction: "submit" },
         ],
     });
+
     modal.open();
+
     const root = document.querySelector("[role='dialog'][aria-label='Add Remote Identifier']");
     if (!(root instanceof HTMLElement)) {
         return;
     }
+
     const form = root.querySelector("[data-resolve-remote-form]");
     const statusLine = queryElement(root, "[data-resolve-remote-status]");
     const submitBtn = queryButton(root, "[data-action='submit']");
     const cancelBtn = queryButton(root, "[data-action='cancel']");
+
     if (!(form instanceof HTMLFormElement) || !statusLine || !submitBtn) {
         return;
     }
+
     cancelBtn?.addEventListener("click", () => modal.close());
-    async function submit() {
+
+    async function submit(): Promise<void> {
         const oobiUrl = queryInput(form, "#resolve-oobi-url")?.value.trim() || "";
         const alias = queryInput(form, "#resolve-alias")?.value.trim() || "";
+
         if (!oobiUrl) {
             statusLine.textContent = "OOBI URL is required.";
             return;
         }
+
         submitBtn.disabled = true;
         statusLine.textContent = "";
+
         try {
             await onResolveRemote(oobiUrl, alias);
             modal.close();
             showToast({ message: "Remote identifier resolved.", tone: "success" });
-        }
-        catch (error) {
+        } catch (error) {
             submitBtn.disabled = false;
             statusLine.textContent = errorMessage(error, "OOBI resolution failed.");
         }
     }
+
     submitBtn.addEventListener("click", () => {
         void submit();
     });
@@ -73,7 +124,11 @@ function createResolveRemoteDialog(onResolveRemote) {
         void submit();
     });
 }
-function createRemoteEditDialog(remote, onUpdateRemote) {
+
+function createRemoteEditDialog(
+    remote: RemoteRecord,
+    onUpdateRemote: RemotesPageProps["onUpdateRemote"],
+): void {
     const modal = createModal({
         title: `Edit ${remote.alias}`,
         body: `
@@ -89,22 +144,29 @@ function createRemoteEditDialog(remote, onUpdateRemote) {
             { label: "Save", tone: "primary", dataAction: "submit" },
         ],
     });
+
     modal.open();
+
     const root = document.querySelector(`[role='dialog'][aria-label='Edit ${remote.alias}']`);
     if (!(root instanceof HTMLElement)) {
         return;
     }
+
     const form = root.querySelector("[data-edit-remote-form]");
     const statusLine = queryElement(root, "[data-edit-remote-status]");
     const submitBtn = queryButton(root, "[data-action='submit']");
     const cancelBtn = queryButton(root, "[data-action='cancel']");
+
     if (!(form instanceof HTMLFormElement) || !statusLine || !submitBtn) {
         return;
     }
+
     cancelBtn?.addEventListener("click", () => modal.close());
-    async function submit() {
+
+    async function submit(): Promise<void> {
         submitBtn.disabled = true;
         statusLine.textContent = "";
+
         try {
             await onUpdateRemote(remote.aid, {
                 alias: queryInput(form, "#edit-alias")?.value.trim() || "",
@@ -113,12 +175,12 @@ function createRemoteEditDialog(remote, onUpdateRemote) {
             });
             modal.close();
             showToast({ message: `Remote "${remote.alias}" updated.`, tone: "success" });
-        }
-        catch (error) {
+        } catch (error) {
             submitBtn.disabled = false;
             statusLine.textContent = errorMessage(error, "Remote update failed.");
         }
     }
+
     submitBtn.addEventListener("click", () => {
         void submit();
     });
@@ -127,7 +189,8 @@ function createRemoteEditDialog(remote, onUpdateRemote) {
         void submit();
     });
 }
-function applyRemoteFilter(remotes, filter) {
+
+function applyRemoteFilter(remotes: RemoteRecord[], filter: string): RemoteRecord[] {
     if (filter === "transferable") {
         return remotes.filter((remote) => remote.transferable);
     }
@@ -136,9 +199,18 @@ function applyRemoteFilter(remotes, filter) {
     }
     return remotes;
 }
-export function renderRemotesPage({ vault, remotes, filter, onResolveRemote, onUpdateRemote, onFilterChange, }) {
+
+export function renderRemotesPage({
+    vault,
+    remotes,
+    filter,
+    onResolveRemote,
+    onUpdateRemote,
+    onFilterChange,
+}: RemotesPageProps) {
     const filteredRemotes = applyRemoteFilter(remotes, filter);
-    const remoteRows = filteredRemotes.map((remote) => ({
+
+    const remoteRows: RemoteTableRow[] = filteredRemotes.map((remote) => ({
         alias: remote.alias,
         aliasLink: `<a href="${remoteDetailHref(vault.id, remote.aid)}">${escapeHtml(remote.alias)}</a>`,
         prefix: remote.prefix,
@@ -148,6 +220,7 @@ export function renderRemotesPage({ vault, remotes, filter, onResolveRemote, onU
         status: remote.status,
         _raw: remote,
     }));
+
     const filterChipsHtml = `
         <div class="lk-inline-filter" role="group" aria-label="Remote identifier filter">
             ${chipHtml({ label: "All", selected: filter === "all", dataValue: "all" })}
@@ -156,6 +229,7 @@ export function renderRemotesPage({ vault, remotes, filter, onResolveRemote, onU
         </div>
         <p class="lk-table-header__note">Connect by blind OOBI only. File import remains deferred in this slice.</p>
     `;
+
     const columns = [
         { key: "aliasLink", label: "Alias", width: "210px", searchKey: "alias", html: true },
         { key: "prefix", label: "Prefix", width: "320px" },
@@ -163,7 +237,8 @@ export function renderRemotesPage({ vault, remotes, filter, onResolveRemote, onU
         { key: "transferability", label: "Type", width: "150px" },
         { key: "rolesLabel", label: "Roles", width: "180px" },
         { key: "status", label: "Status", width: "110px" },
-    ];
+    ] as unknown as Array<{ key: string; label: string; width?: string; searchKey?: string }>;
+
     const remotesTable = renderPaginatedTable({
         icon: "./assets/icons/remoteIds.png",
         title: "Remote Identifiers",
@@ -183,7 +258,7 @@ export function renderRemotesPage({ vault, remotes, filter, onResolveRemote, onU
         onAdd() {
             createResolveRemoteDialog(onResolveRemote);
         },
-        onAction(row, actionKey) {
+        onAction(row: RemoteTableRow, actionKey: string) {
             if (actionKey === "view") {
                 window.location.hash = remoteDetailHref(vault.id, row._raw.aid);
                 return;
@@ -193,22 +268,27 @@ export function renderRemotesPage({ vault, remotes, filter, onResolveRemote, onU
             }
         },
     });
+
     return {
         title: "Remote Identifiers",
-        render(container) {
+        render(container: HTMLElement): void {
             container.replaceChildren();
+
             const page = document.createElement("section");
             page.className = "page-grid page-grid--table";
+
             const section = document.createElement("section");
             section.className = "section-card section-card--tight page-table-stage";
+
             const tableRoot = document.createElement("div");
             tableRoot.dataset.remotesTable = "true";
             tableRoot.innerHTML = remotesTable.html;
+
             section.append(tableRoot);
             page.append(section);
             container.append(page);
         },
-        setup(root) {
+        setup(root: HTMLElement): void {
             remotesTable.setup(queryElement(root, "[data-remotes-table]"));
             root.querySelectorAll("[data-value]").forEach((button) => {
                 if (!(button instanceof HTMLElement)) {
