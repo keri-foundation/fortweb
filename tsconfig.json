@@ -17,6 +17,8 @@
   "include": [
     "app/runtime/messages.ts",
     "app/runtime/method-catalog.ts",
+    "app/shared/dom.ts",
+    "app/shared/components.ts",
     "app/app/router.ts",
     "app/app/session.ts",
     "app/app/shell.ts",
