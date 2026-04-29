@@ -1,4 +1,5 @@
 import { identifiersHref, navigate, type Route, unlockHref } from "./router.js";
+import { renderNotFoundPage, type PageRecord } from "./page-feedback.js";
 import { loadRouteData } from "./page-loader.js";
 import { renderIdentifierDetailPage } from "../features/identifiers/identifier-detail-page.js";
 import { renderIdentifiersPage } from "../features/identifiers/identifiers-page.js";
@@ -36,13 +37,6 @@ interface StateSnapshot {
     vaults: VaultPickerProps["vaults"];
 }
 
-interface PageRecord {
-    title: string;
-    html?: string;
-    render?(container: HTMLElement): void;
-    setup?(root: HTMLElement): void;
-}
-
 interface PageActions {
     createIdentifier(alias: string): Promise<void>;
     loadKfBootstrap(bootUrl?: string): Promise<WitnessOverviewProps["bootstrapState"]>;
@@ -76,41 +70,6 @@ export interface LoadedPageResult {
 
 function assumeType<T>(value: unknown): T {
     return value as T;
-}
-
-function notFoundPage(path: string): PageRecord {
-    return {
-        title: "Route Not Found",
-        render(container: HTMLElement): void {
-            container.replaceChildren();
-
-            const section = document.createElement("section");
-            section.className = "placeholder-card";
-
-            const heading = document.createElement("h2");
-            heading.textContent = "Route Not Found";
-
-            const copy = document.createElement("p");
-            copy.className = "muted";
-            copy.append("No route matches ");
-            const code = document.createElement("code");
-            code.textContent = path;
-            copy.append(code);
-            copy.append(".");
-
-            const actionsRow = document.createElement("div");
-            actionsRow.className = "panel__actions";
-
-            const link = document.createElement("a");
-            link.className = "button button--primary";
-            link.href = "#/";
-            link.textContent = "Back to Vaults";
-
-            actionsRow.append(link);
-            section.append(heading, copy, actionsRow);
-            container.append(section);
-        },
-    };
 }
 
 export async function loadPage({
@@ -238,8 +197,8 @@ export async function loadPage({
         const watchers = assumeType<WatcherOverviewProps["watchers"]>(pageData.watchers || []);
         return {
             page: renderWatcherOverviewPage({
-            vault: assumeType<WatcherOverviewProps["vault"]>(findVault(vaultId)),
-            bootstrapState: assumeType<WatcherOverviewProps["bootstrapState"]>(pageData.bootstrapState),
+                vault: assumeType<WatcherOverviewProps["vault"]>(findVault(vaultId)),
+                bootstrapState: assumeType<WatcherOverviewProps["bootstrapState"]>(pageData.bootstrapState),
                 watchers,
                 watcherError: pageData.watcherError || "",
                 async onRefreshStatuses() {
@@ -251,7 +210,7 @@ export async function loadPage({
     }
 
     return {
-        page: notFoundPage(route.path),
+        page: renderNotFoundPage(route.path),
         vault: null,
     };
 }

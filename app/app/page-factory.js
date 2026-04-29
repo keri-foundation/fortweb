@@ -1,4 +1,5 @@
 import { identifiersHref, navigate, unlockHref } from "./router.js";
+import { renderNotFoundPage } from "./page-feedback.js";
 import { loadRouteData } from "./page-loader.js";
 import { renderIdentifierDetailPage } from "../features/identifiers/identifier-detail-page.js";
 import { renderIdentifiersPage } from "../features/identifiers/identifiers-page.js";
@@ -11,34 +12,6 @@ import { renderWatcherOverviewPage } from "../providers/kerifoundation/watcher-o
 import { renderWitnessOverviewPage } from "../providers/kerifoundation/witness-overview-page.js";
 function assumeType(value) {
     return value;
-}
-function notFoundPage(path) {
-    return {
-        title: "Route Not Found",
-        render(container) {
-            container.replaceChildren();
-            const section = document.createElement("section");
-            section.className = "placeholder-card";
-            const heading = document.createElement("h2");
-            heading.textContent = "Route Not Found";
-            const copy = document.createElement("p");
-            copy.className = "muted";
-            copy.append("No route matches ");
-            const code = document.createElement("code");
-            code.textContent = path;
-            copy.append(code);
-            copy.append(".");
-            const actionsRow = document.createElement("div");
-            actionsRow.className = "panel__actions";
-            const link = document.createElement("a");
-            link.className = "button button--primary";
-            link.href = "#/";
-            link.textContent = "Back to Vaults";
-            actionsRow.append(link);
-            section.append(heading, copy, actionsRow);
-            container.append(section);
-        },
-    };
 }
 export async function loadPage({ actions, bridge, currentState, findVault, isUnlocked, route, showCreateVaultDialog, }) {
     if (route.name === "home") {
@@ -159,7 +132,7 @@ export async function loadPage({ actions, bridge, currentState, findVault, isUnl
         };
     }
     return {
-        page: notFoundPage(route.path),
+        page: renderNotFoundPage(route.path),
         vault: null,
     };
 }
