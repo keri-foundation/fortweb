@@ -1,38 +1,87 @@
 import { createRuntimeBridge } from "../runtime/bridge.js";
-import { identifiersHref, navigate, normalizeHash, parseRoute, unlockHref, } from "./router.js";
+import {
+    identifiersHref,
+    navigate,
+    normalizeHash,
+    parseRoute,
+    type Route,
+    unlockHref,
+} from "./router.js";
 import { renderErrorPage, renderNotFoundRoute } from "./page-feedback.js";
 import { loadPage } from "./page-factory.js";
-import { createSessionStore } from "./session.js";
+import { createSessionStore, type SessionState } from "./session.js";
 import { renderShell } from "./shell.js";
-import { createVaultDrawer, createDialog, floatingInputHtml, setupFloatingInputs, } from "../shared/components.js";
+import {
+    createVaultDrawer,
+    createDialog,
+    floatingInputHtml,
+    setupFloatingInputs,
+} from "../shared/components.js";
 import { isFixtureRoute, loadFixture } from "../fixtures/fixture-router.js";
 import { renderFixtureIndexPage } from "../fixtures/fixture-index-page.js";
 import { installGlobalHandlers } from "../runtime/global-handlers.js";
 import { METHODS } from "../runtime/method-catalog.js";
 import { postLog } from "../runtime/logger.js";
-function assumeType(value) {
-    return value;
+
+type ShellProps = Parameters<typeof renderShell>[1];
+type ShellVault = ShellProps["vault"];
+type PageFactoryContext = Parameters<typeof loadPage>[0];
+type LoadPageActions = Parameters<typeof loadPage>[0]["actions"];
+
+type VaultRecord = ReturnType<PageFactoryContext["currentState"]>["vaults"][number];
+
+type VaultSummary = {
+    identifierCount?: number;
+    remoteCount?: number;
+    [key: string]: unknown;
+} | null;
+
+interface AppSessionState extends SessionState {
+    vaults: VaultRecord[];
+    vaultSummary: VaultSummary;
+    remoteFilter: string;
 }
-function errorMessage(error) {
+
+type AppActions = LoadPageActions & ShellProps["actions"] & {
+    createVault(name: string, passcode?: string): Promise<VaultRecord>;
+    refreshVaults(unlockedVaultId?: string | null, vaultSummary?: VaultSummary): Promise<VaultRecord[]>;
+    toggleNav(): void;
+    closeNav(): void;
+};
+
+type BootstrapState = Awaited<ReturnType<LoadPageActions["loadKfBootstrap"]>>;
+type RuntimeError = { code?: string; message?: string };
+
+function assumeType<T>(value: unknown): T {
+    return value as T;
+}
+
+function errorMessage(error: unknown): string {
     if (error instanceof Error) {
         return error.message;
     }
+
     if (error && typeof error === "object" && "message" in error && typeof error.message === "string") {
         return error.message;
     }
+
     return String(error);
 }
-function errorCode(error) {
+
+function errorCode(error: unknown): string {
     if (error && typeof error === "object" && "code" in error && typeof error.code === "string") {
         return error.code;
     }
+
     return "";
 }
+
 const rootNode = document.querySelector("#app-root");
 if (!(rootNode instanceof HTMLElement)) {
     throw new Error("Expected #app-root host element.");
 }
 const root = rootNode;
+
 const bridge = createRuntimeBridge({
     workerUrl: new URL("../runtime/wallet-worker.py", import.meta.url),
     configUrl: new URL("../../pyscript-ci.toml", import.meta.url),
@@ -42,25 +91,35 @@ const session = createSessionStore({
     vaults: [],
     remoteFilter: "all",
 });
-let drawer = null;
-let actions;
-function currentState() {
-    return assumeType(session.snapshot());
+
+let drawer: ReturnType<typeof createVaultDrawer> | null = null;
+let actions: AppActions;
+
+function currentState(): AppSessionState {
+    return assumeType<AppSessionState>(session.snapshot());
 }
-function requireUnlockedVaultId() {
+
+function requireUnlockedVaultId(): string {
     const vaultId = currentState().unlockedVaultId;
     if (!vaultId) {
         throw new Error("Open a vault before continuing.");
     }
     return vaultId;
 }
-function findVault(vaultId) {
+
+function findVault(vaultId?: string): VaultRecord | null {
     return currentState().vaults.find((vault) => vault.id === vaultId) || null;
 }
-function isUnlocked(vaultId) {
+
+function isUnlocked(vaultId: string): boolean {
     return currentState().unlockedVaultId === vaultId;
 }
-function decorateVaults(vaults, unlockedVaultId = currentState().unlockedVaultId, vaultSummary = currentState().vaultSummary) {
+
+function decorateVaults(
+    vaults: VaultRecord[],
+    unlockedVaultId = currentState().unlockedVaultId,
+    vaultSummary = currentState().vaultSummary,
+): VaultRecord[] {
     return vaults.map((vault) => {
         const isCurrent = unlockedVaultId === vault.id;
         return {
@@ -71,20 +130,25 @@ function decorateVaults(vaults, unlockedVaultId = currentState().unlockedVaultId
         };
     });
 }
-function rememberCoreRoute(route) {
+
+function rememberCoreRoute(route: Route): void {
     const vaultId = route.params.vaultId;
     if (!vaultId) {
         return;
     }
-    if (route.name === "identifiers" ||
+
+    if (
+        route.name === "identifiers" ||
         route.name === "identifier-detail" ||
         route.name === "remotes" ||
         route.name === "remote-detail" ||
-        route.name === "settings") {
+        route.name === "settings"
+    ) {
         session.rememberCoreRoute(vaultId, window.location.hash || identifiersHref(vaultId));
     }
 }
-function showCreateVaultDialog() {
+
+function showCreateVaultDialog(): void {
     const dialog = createDialog({
         title: "Vault Initialization",
         showClose: true,
@@ -107,12 +171,15 @@ function showCreateVaultDialog() {
         `,
         showOverlay: true,
     });
+
     dialog.show();
     setupFloatingInputs(dialog.el);
+
     const formNode = dialog.el.querySelector("[data-create-vault-form]");
     const statusLineNode = dialog.el.querySelector("[data-create-vault-status]");
     const submitBtnNode = dialog.el.querySelector("[data-dialog-submit]");
     const cancelBtnNode = dialog.el.querySelector("[data-dialog-cancel]");
+
     if (!(formNode instanceof HTMLFormElement)) {
         throw new Error("Create vault form is missing.");
     }
@@ -122,29 +189,36 @@ function showCreateVaultDialog() {
     if (!(submitBtnNode instanceof HTMLButtonElement) || !(cancelBtnNode instanceof HTMLButtonElement)) {
         throw new Error("Create vault buttons are missing.");
     }
+
     const form = formNode;
     const statusLine = statusLineNode;
     const submitBtn = submitBtnNode;
     const cancelBtn = cancelBtnNode;
+
     cancelBtn.addEventListener("click", () => dialog.close());
-    async function submit() {
+
+    async function submit(): Promise<void> {
         const formData = new FormData(form);
         submitBtn.disabled = true;
         cancelBtn.disabled = true;
         statusLine.textContent = "";
         submitBtn.textContent = "Creating...";
         statusLine.textContent = "Creating vault...";
+
         try {
-            await actions.createVault(String(formData.get("name") || ""), String(formData.get("passcode") || ""));
+            await actions.createVault(
+                String(formData.get("name") || ""),
+                String(formData.get("passcode") || ""),
+            );
             dialog.close();
-        }
-        catch (error) {
+        } catch (error) {
             submitBtn.disabled = false;
             cancelBtn.disabled = false;
             submitBtn.textContent = "Create";
             statusLine.textContent = errorMessage(error) || "Vault creation failed.";
         }
     }
+
     submitBtn.addEventListener("click", () => {
         void submit();
     });
@@ -153,10 +227,11 @@ function showCreateVaultDialog() {
         void submit();
     });
 }
-function initDrawer(vaults) {
+
+function initDrawer(vaults: VaultRecord[]): void {
     drawer = createVaultDrawer({
         vaults,
-        onVaultClick(vault) {
+        onVaultClick(vault: VaultRecord) {
             if (isUnlocked(vault.id)) {
                 drawer?.close();
                 navigate(currentState().lastCoreRoutes[vault.id] || identifiersHref(vault.id));
@@ -169,32 +244,40 @@ function initDrawer(vaults) {
         },
     });
 }
+
 actions = {
-    async refreshVaults(unlockedVaultId = currentState().unlockedVaultId, vaultSummary = currentState().vaultSummary) {
-        const { vaults } = await bridge.request(METHODS.vaultsList);
+    async refreshVaults(
+        unlockedVaultId = currentState().unlockedVaultId,
+        vaultSummary = currentState().vaultSummary,
+    ): Promise<VaultRecord[]> {
+        const { vaults } = await bridge.request<{ vaults: VaultRecord[] }>(METHODS.vaultsList);
         const decorated = decorateVaults(vaults, unlockedVaultId, vaultSummary);
         session.patch({ vaults: decorated });
         drawer?.refresh(decorated);
         return decorated;
     },
-    async openVault(vaultId, passcode = "") {
-        const { vault } = await bridge.request(METHODS.vaultsOpen, { vaultId, passcode });
+
+    async openVault(vaultId: string, passcode = ""): Promise<Record<string, unknown>> {
+        const { vault } = await bridge.request<{ vault: Record<string, unknown> }>(METHODS.vaultsOpen, { vaultId, passcode });
         session.patch({
             unlockedVaultId: vaultId,
-            vaultSummary: assumeType(vault),
+            vaultSummary: assumeType<VaultSummary>(vault),
             mobileNavOpen: false,
         });
-        await actions.refreshVaults(vaultId, assumeType(vault));
+        await actions.refreshVaults(vaultId, assumeType<VaultSummary>(vault));
         drawer?.close();
         navigate(currentState().lastCoreRoutes[vaultId] || identifiersHref(vaultId));
         return vault;
     },
-    async createVault(name, passcode = "") {
+
+    async createVault(name: string, passcode = ""): Promise<VaultRecord> {
         const currentVaultId = currentState().unlockedVaultId;
-        const { vault } = await bridge.request(METHODS.vaultsCreate, { name, passcode });
+        const { vault } = await bridge.request<{ vault: VaultRecord }>(METHODS.vaultsCreate, { name, passcode });
+
         if (currentVaultId) {
-            await bridge.request(METHODS.vaultsClose, { vaultId: currentVaultId }).catch(() => { });
+            await bridge.request(METHODS.vaultsClose, { vaultId: currentVaultId }).catch(() => {});
         }
+
         session.patch({
             unlockedVaultId: null,
             vaultSummary: null,
@@ -204,10 +287,12 @@ actions = {
         navigate(unlockHref(vault.id));
         return vault;
     },
-    async lockVault(vaultId) {
+
+    async lockVault(vaultId: string): Promise<void> {
         if (isUnlocked(vaultId)) {
-            await bridge.request(METHODS.vaultsClose, { vaultId }).catch(() => { });
+            await bridge.request(METHODS.vaultsClose, { vaultId }).catch(() => {});
         }
+
         session.patch({
             unlockedVaultId: null,
             vaultSummary: null,
@@ -216,32 +301,37 @@ actions = {
         await actions.refreshVaults(null, null).catch(() => null);
         navigate(unlockHref(vaultId));
     },
-    async createIdentifier(alias) {
+
+    async createIdentifier(alias: string): Promise<void> {
         const vaultId = requireUnlockedVaultId();
         await bridge.request(METHODS.identifiersCreate, { vaultId, alias });
-        const { vault } = await bridge.request(METHODS.vaultsSummary, { vaultId });
+        const { vault } = await bridge.request<{ vault: VaultSummary }>(METHODS.vaultsSummary, { vaultId });
         session.patch({ vaultSummary: vault });
         await actions.refreshVaults(vaultId, vault);
         await render();
     },
-    async resolveRemoteOobi(url, alias) {
+
+    async resolveRemoteOobi(url: string, alias: string): Promise<void> {
         const vaultId = requireUnlockedVaultId();
         await bridge.request(METHODS.remotesResolveOobi, { vaultId, url, alias });
-        const { vault } = await bridge.request(METHODS.vaultsSummary, { vaultId });
+        const { vault } = await bridge.request<{ vault: VaultSummary }>(METHODS.vaultsSummary, { vaultId });
         session.patch({ vaultSummary: vault });
         await actions.refreshVaults(vaultId, vault);
         await render();
     },
-    async updateRemote(aid, patch) {
+
+    async updateRemote(aid: string, patch: Record<string, unknown>): Promise<void> {
         const vaultId = requireUnlockedVaultId();
         await bridge.request(METHODS.remotesUpdate, { vaultId, aid, patch });
         await render();
     },
-    async loadKfBootstrap(bootUrl = "") {
+
+    async loadKfBootstrap(bootUrl = ""): Promise<BootstrapState> {
         const vaultId = requireUnlockedVaultId();
-        return assumeType(await bridge.request(METHODS.kfBootstrapGet, { vaultId, bootUrl }));
+        return assumeType<BootstrapState>(await bridge.request(METHODS.kfBootstrapGet, { vaultId, bootUrl }));
     },
-    async startKfOnboarding({ bootUrl, alias, witnessProfileCode, accountAid = "" }) {
+
+    async startKfOnboarding({ bootUrl, alias, witnessProfileCode, accountAid = "" }): Promise<void> {
         const vaultId = requireUnlockedVaultId();
         await bridge.request(METHODS.kfOnboardingStart, {
             vaultId,
@@ -252,7 +342,8 @@ actions = {
         });
         await render();
     },
-    async refreshKfWatcherStatuses(watcherEids = []) {
+
+    async refreshKfWatcherStatuses(watcherEids: string[] = []): Promise<void> {
         const vaultId = requireUnlockedVaultId();
         for (const watcherEid of watcherEids) {
             await bridge.request(METHODS.kfAccountWatchersStatus, {
@@ -262,41 +353,47 @@ actions = {
         }
         await render();
     },
-    setRemoteFilter(filter) {
+
+    setRemoteFilter(filter: string): void {
         session.patch({ remoteFilter: filter });
         void render();
     },
-    toggleNav() {
+
+    toggleNav(): void {
         session.patch({
             mobileNavOpen: !currentState().mobileNavOpen,
         });
         void render();
     },
-    closeNav() {
+
+    closeNav(): void {
         if (!currentState().mobileNavOpen) {
             return;
         }
         session.patch({ mobileNavOpen: false });
         void render();
     },
-    async toggleDrawer() {
+
+    async toggleDrawer(): Promise<void> {
         if (!drawer) {
             return;
         }
         if (document.body.contains(drawer.el)) {
             drawer.close();
-        }
-        else {
+        } else {
             await actions.refreshVaults(currentState().unlockedVaultId, currentState().vaultSummary);
             drawer.open();
         }
     },
 };
+
 /** Incremented on every render(); stale renders bail so tab taps do not stack concurrent bridge calls. */
 let renderGeneration = 0;
-async function render() {
+
+async function render(): Promise<void> {
     const thisGeneration = ++renderGeneration;
     const path = normalizeHash();
+
     if (path === "/_fixtures" || path === "/_fixtures/") {
         const indexRoute = { name: "fixture-index", shellMode: "home", navMode: "none", path, params: {} };
         renderShell(root, {
@@ -308,6 +405,7 @@ async function render() {
         });
         return;
     }
+
     if (isFixtureRoute(path)) {
         const fixture = loadFixture(path);
         if (fixture) {
@@ -315,33 +413,38 @@ async function render() {
                 route: fixture.route,
                 page: fixture.page,
                 state: currentState(),
-                vault: assumeType(fixture.vault),
+                vault: assumeType<ShellVault>(fixture.vault),
                 actions,
             });
-        }
-        else {
+        } else {
             const fallbackRoute = { name: "not-found", shellMode: "home", navMode: "none", path, params: {} };
             renderNotFoundRoute({ root, route: fallbackRoute, state: currentState(), vault: null, actions });
         }
         return;
     }
+
     const route = parseRoute();
     const state = currentState();
     const vault = route.requiresVault ? findVault(route.params.vaultId) : null;
+
     if (route.name !== "home" && route.requiresVault && !vault) {
         renderNotFoundRoute({ root, route, state, vault: null, actions });
         return;
     }
+
     const vaultId = route.params.vaultId;
     if (route.name === "unlock" && vaultId && isUnlocked(vaultId)) {
         navigate(currentState().lastCoreRoutes[vaultId] || identifiersHref(vaultId));
         return;
     }
+
     if (route.requiresUnlock && vaultId && !isUnlocked(vaultId)) {
         navigate(unlockHref(vaultId));
         return;
     }
+
     rememberCoreRoute(route);
+
     try {
         if (thisGeneration !== renderGeneration) {
             return;
@@ -350,8 +453,8 @@ async function render() {
             route,
             bridge,
             currentState,
-            findVault(vaultId) {
-                return assumeType(findVault(vaultId));
+            findVault(vaultId?: string) {
+                return assumeType<Record<string, unknown> | null>(findVault(vaultId));
             },
             isUnlocked,
             showCreateVaultDialog,
@@ -364,11 +467,10 @@ async function render() {
             route,
             page,
             state: currentState(),
-            vault: assumeType(loadedVault),
+            vault: assumeType<ShellVault>(loadedVault),
             actions,
         });
-    }
-    catch (error) {
+    } catch (error) {
         if (thisGeneration !== renderGeneration) {
             return;
         }
@@ -381,7 +483,7 @@ async function render() {
         });
         const code = errorCode(error);
         if (code === "NOT_FOUND") {
-            renderNotFoundRoute({ root, route, state: currentState(), vault: assumeType(vault), actions });
+            renderNotFoundRoute({ root, route, state: currentState(), vault: assumeType<ShellVault>(vault), actions });
             return;
         }
         if ((code === "LOCKED" || code === "TIMEOUT") && route.params.vaultId) {
@@ -397,27 +499,32 @@ async function render() {
             navigate(unlockHref(route.params.vaultId));
             return;
         }
+
         renderShell(root, {
             route: route.shellMode ? route : { ...route, shellMode: "home" },
-            page: renderErrorPage(assumeType(error)),
+            page: renderErrorPage(assumeType<RuntimeError>(error)),
             state: currentState(),
-            vault: assumeType(vault),
+            vault: assumeType<ShellVault>(vault),
             actions,
         });
     }
 }
+
 window.addEventListener("hashchange", () => {
     postLog("route_change", { path: normalizeHash() });
     session.patch({ mobileNavOpen: false });
     void render();
 });
+
 window.addEventListener("beforeunload", () => {
     bridge.destroy();
 });
-async function bootstrap() {
+
+async function bootstrap(): Promise<void> {
     installGlobalHandlers();
     await actions.refreshVaults();
     initDrawer(currentState().vaults);
     await render();
 }
+
 void bootstrap();
