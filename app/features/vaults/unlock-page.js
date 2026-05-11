@@ -1,5 +1,4 @@
 import { homeHref } from "../../app/router.js";
-import { formatDateLabel } from "../../shared/dom.js";
 
 export function renderUnlockPage({ vault, onOpenVault }) {
     return {
@@ -13,7 +12,6 @@ export function renderUnlockPage({ vault, onOpenVault }) {
                     <header class="unlock-dialog-card__header">
                         <div class="unlock-dialog-card__title-block">
                             <h1 id="unlock-title" data-unlock-title></h1>
-                            <p class="unlock-dialog-card__meta" data-unlock-meta></p>
                         </div>
                         <a class="unlock-dialog-card__close" href="${homeHref()}" aria-label="Back to Vaults">
                             <img src="./assets/icons/close.svg" alt="">
@@ -48,11 +46,6 @@ export function renderUnlockPage({ vault, onOpenVault }) {
         `,
         setup(root) {
             root.querySelector("[data-unlock-title]").textContent = `Open ${vault.alias}`;
-            root.querySelector("[data-unlock-meta]").textContent = [
-                vault.storageName,
-                `Created ${formatDateLabel(vault.createdAt)}`,
-                `2FA ${vault.otpConfigured ? "configured" : "deferred"}`,
-            ].join(" • ");
 
             const form = root.querySelector("[data-unlock-form]");
             const statusLine = root.querySelector("[data-unlock-status]");

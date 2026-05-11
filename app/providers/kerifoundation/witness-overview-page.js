@@ -9,9 +9,39 @@ function badgeHtml(label, tone = "neutral") {
     return `<span class="${toneClass(tone)}">${escapeHtml(label)}</span>`;
 }
 
-function profileLabel(option) {
-    const witnessLabel = option.witnessCount === 1 ? "1 witness" : `${option.witnessCount} witnesses`;
-    return `${option.code} · ${witnessLabel} · toad ${option.toad}`;
+function shortAid(aid = "") {
+    if (!aid || aid.length <= 18) {
+        return aid || "—";
+    }
+    return `${aid.slice(0, 8)}...${aid.slice(-6)}`;
+}
+
+function securityLevelTitle(option) {
+    if ((option.witnessCount || 0) === 1 && (option.toad || 0) === 1) {
+        return "Standard (recommended)";
+    }
+    if ((option.witnessCount || 0) >= 4 && (option.toad || 0) >= 3) {
+        return "Resilient";
+    }
+    return option.code || "Hosted protection";
+}
+
+function securityLevelDescription(option) {
+    if ((option.witnessCount || 0) === 1 && (option.toad || 0) === 1) {
+        return "1-of-1 hosted witness. Simple setup for most accounts.";
+    }
+    if ((option.witnessCount || 0) >= 4 && (option.toad || 0) >= 3) {
+        return "3-of-4 hosted witnesses for stronger resilience and recovery tolerance.";
+    }
+    const witnessCount = option.witnessCount || 0;
+    const witnessLabel = witnessCount === 1 ? "hosted witness" : "hosted witnesses";
+    return `${witnessCount}-of-${witnessCount} ${witnessLabel} with threshold ${option.toad || 0}.`;
+}
+
+function securityLevelMeta(option) {
+    const witnessCount = option.witnessCount || 0;
+    const witnessLabel = witnessCount === 1 ? "1 witness" : `${witnessCount} witnesses`;
+    return `${witnessLabel} · toad ${option.toad || 0}`;
 }
 
 function detailItem(label, value) {
@@ -32,38 +62,22 @@ function detailItem(label, value) {
     return wrapper;
 }
 
-function accountSummary(account, bootstrapState) {
-    const summary = document.createElement("dl");
-    summary.className = "detail-grid summary-grid";
-    summary.append(
-        detailItem("Account Alias", account.accountAlias || "—"),
-        detailItem("Account AID", account.accountAid || "—"),
-        detailItem("Profile", account.witnessProfileCode || "—"),
-        detailItem("Region", account.regionName || account.regionId || "—"),
-        detailItem("Witness Count", String(account.witnessCount || 0)),
-        detailItem("Witness Threshold", String(account.toad || 0)),
-        detailItem("Boot Service", bootstrapState.bootUrl || account.bootUrl || "—"),
-        detailItem("Boot Server AID", account.bootServerAid || "Pending verification"),
-    );
-    return summary;
-}
-
 function renderWitnessTable(witnesses) {
     const rows = witnesses.map((witness) => ({
         name: witness.name || `KF Witness ${witness.eid.slice(0, 12)}`,
         witnessAid: witness.eid,
         region: witness.regionName || witness.regionId || "—",
         hostedStatus: badgeHtml(witness.hostedStatus || "allocated", "info"),
-        localStatus: badgeHtml(witness.localStatus || "Pending local connect", witness.localStatusTone || "warning"),
+        localStatus: badgeHtml(witness.localStatus || "Connected", witness.localStatusTone || "success"),
         endpoint: witness.url || "—",
         _raw: witness,
     }));
 
     const table = renderPaginatedTable({
         icon: "./assets/icons/witness1.svg",
-        title: "Hosted Witnesses",
+        title: "Witnesses",
         titleTag: "h2",
-        searchPlaceholder: "Search hosted witnesses...",
+        searchPlaceholder: "Search witnesses...",
         columns: [
             { key: "name", label: "Name", width: "210px" },
             { key: "witnessAid", label: "Witness AID", width: "320px" },
@@ -74,9 +88,8 @@ function renderWitnessTable(witnesses) {
         ],
         rows,
         itemsPerPage: 10,
-        emptyTitle: "No Hosted Witness Rows",
-        emptyText:
-            "This KF account is onboarded locally, but the boot service did not return any witness rows yet.",
+        emptyTitle: "No witnesses yet",
+        emptyText: "Witness details will appear here once account protection is connected.",
     });
 
     return {
@@ -92,15 +105,132 @@ function renderWitnessTable(witnesses) {
     };
 }
 
-function renderOnboardingPage({ bootstrapState, onLoadBootstrap, onStartOnboarding }) {
+function createAuthSection(authPanels, { onDone = null } = {}) {
+    return {
+        render(container) {
+            const section = document.createElement("section");
+            section.className = "section-card";
+            section.dataset.kfAuthSection = "true";
+            section.innerHTML = `
+                <div class="panel__title">
+                    <h2>Witness authenticator QR codes</h2>
+                    <p class="muted">
+                        Scan these with your authenticator app and keep them safe. You may need them later when a hosted witness asks for authenticated receipting.
+                    </p>
+                </div>
+            `;
+
+            const grid = document.createElement("div");
+            grid.className = "kf-auth-grid";
+
+            authPanels.forEach((panel) => {
+                const card = document.createElement("article");
+                card.className = "kf-auth-card";
+
+                const header = document.createElement("div");
+                header.className = "kf-auth-card__header";
+                header.innerHTML = `
+                    <div>
+                        <p class="page-header__eyebrow">Authenticator ${escapeHtml(panel.number || "")}</p>
+                        <h3>${escapeHtml(panel.title || "Witness TOTP")}</h3>
+                        <p class="muted">${escapeHtml(panel.description || "")}</p>
+                    </div>
+                `;
+
+                const details = document.createElement("dl");
+                details.className = "detail-grid";
+                details.append(
+                    detailItem(
+                        "Controller",
+                        panel.controllerAlias
+                            ? `${panel.controllerAlias} (${shortAid(panel.controllerAid)})`
+                            : shortAid(panel.controllerAid),
+                    ),
+                    detailItem(
+                        "Witnesses",
+                        panel.witnessNames?.length
+                            ? panel.witnessNames.join(", ")
+                            : (panel.witnessEids || []).map((eid) => shortAid(eid)).join(", "),
+                    ),
+                );
+
+                const qrWrap = document.createElement("div");
+                qrWrap.className = "kf-auth-card__qr";
+                const qrImage = document.createElement("img");
+                qrImage.src = panel.qrSvgDataUri;
+                qrImage.alt = `${panel.title || "Witness"} authenticator QR code`;
+                qrImage.width = 240;
+                qrImage.height = 240;
+                qrWrap.append(qrImage);
+
+                const actions = document.createElement("div");
+                actions.className = "kf-auth-card__actions";
+                const copyBtn = document.createElement("button");
+                copyBtn.type = "button";
+                copyBtn.className = "button button--secondary button--small";
+                copyBtn.dataset.copyAuthUri = panel.uri;
+                copyBtn.textContent = "Copy setup link";
+                actions.append(copyBtn);
+
+                card.append(header, details, qrWrap, actions);
+                grid.append(card);
+            });
+
+            section.append(grid);
+            if (onDone) {
+                const footer = document.createElement("div");
+                footer.className = "panel__actions";
+                const doneButton = document.createElement("button");
+                doneButton.type = "button";
+                doneButton.className = "button button--primary";
+                doneButton.dataset.kfAuthDone = "true";
+                doneButton.textContent = "Done";
+                footer.append(doneButton);
+                section.append(footer);
+            }
+            container.append(section);
+        },
+        setup(root) {
+            root.querySelectorAll("[data-copy-auth-uri]").forEach((button) => {
+                button.addEventListener("click", () => {
+                    const value = button.dataset.copyAuthUri || "";
+                    if (!value) {
+                        return;
+                    }
+
+                    void (async () => {
+                        const original = button.textContent;
+                        try {
+                            await navigator.clipboard.writeText(value);
+                            button.textContent = "Copied";
+                        } catch (_error) {
+                            button.textContent = "Copy failed";
+                        }
+                        window.setTimeout(() => {
+                            button.textContent = original;
+                        }, 1600);
+                    })();
+                });
+            });
+
+            root.querySelector("[data-kf-auth-done]")?.addEventListener("click", () => {
+                root.querySelector("[data-kf-auth-section]")?.remove();
+                onDone?.();
+            });
+        },
+    };
+}
+
+function renderOnboardingPage({ bootstrapState, identifiers, onLoadBootstrap, onStartOnboarding, onCompleteOnboarding }) {
     const account = bootstrapState.account;
-    const initialOptions = bootstrapState.bootstrap?.accountOptions ?? [];
     const initialAlias = account?.accountAlias || "";
-    const initialBootUrl = bootstrapState.bootUrl || account?.bootUrl || "";
-    const initialProfile = account?.witnessProfileCode || initialOptions[0]?.code || "";
+    const initialProfile = account?.witnessProfileCode || bootstrapState.bootstrap?.accountOptions?.[0]?.code || "";
+    const initialSelectedAid = identifiers.some((identifier) => identifier.aid === account?.accountAid)
+        ? account.accountAid
+        : "";
 
     return {
-        title: "KERI Foundation Witnesses",
+        title: "KERI Foundation Setup",
         render(container) {
             container.replaceChildren();
 
@@ -109,160 +239,281 @@ function renderOnboardingPage({ bootstrapState, onLoadBootstrap, onStartOnboardi
             page.innerHTML = `
                 <header class="page-header">
                     <div>
-                        <h1>Witnesses</h1>
-                        <p>
-                            Fortweb now treats the witness route as the first real KERI Foundation entrypoint:
-                            boot connectivity, hosted onboarding, and the hosted witness list all live here.
-                        </p>
+                        <p class="page-header__eyebrow">KERI Foundation</p>
+                        <h1>Set up your KERI Foundation account</h1>
+                        <p>Choose or create the wallet identity for this account.</p>
                     </div>
                 </header>
-            `;
-
-            const columns = document.createElement("section");
-            columns.className = "page-columns";
-
-            const summaryCard = document.createElement("section");
-            summaryCard.className = "section-card section-card--summary";
-            summaryCard.innerHTML = `
-                <div class="panel__title">
-                    <h2>Boot Connection</h2>
-                    <p class="muted">
-                        Fortweb talks to the boot service, hosted witnesses, and hosted watchers through the local same-origin dev proxy.
-                    </p>
-                </div>
-                <dl class="detail-grid">
-                    <div class="detail-item">
-                        <dt>Boot URL</dt>
-                        <dd class="mono" data-kf-boot-url-label>${escapeHtml(initialBootUrl || "http://127.0.0.1:9723")}</dd>
-                    </div>
-                    <div class="detail-item">
-                        <dt>Connection</dt>
-                        <dd data-kf-connection-badge>${badgeHtml(bootstrapState.connection.ok ? "Connected" : "Disconnected", bootstrapState.connection.ok ? "success" : "warning")}</dd>
-                    </div>
-                    <div class="detail-item">
-                        <dt>Region</dt>
-                        <dd data-kf-region-label>${escapeHtml(bootstrapState.bootstrap?.regionName || bootstrapState.bootstrap?.regionId || "Unavailable")}</dd>
-                    </div>
-                    <div class="detail-item">
-                        <dt>Watcher Policy</dt>
-                        <dd data-kf-watcher-policy>${escapeHtml(bootstrapState.bootstrap ? (bootstrapState.bootstrap.watcherRequired ? "One hosted watcher required" : "Watcher optional") : "Unavailable")}</dd>
-                    </div>
-                    <div class="detail-item detail-item--span">
-                        <dt>Available Profiles</dt>
-                        <dd data-kf-profile-pills class="meta-pill-row"></dd>
-                    </div>
-                </dl>
-                <p class="status-line" data-kf-connection-status>${escapeHtml(account?.failureReason || bootstrapState.connection.error || "")}</p>
-            `;
-
-            const formCard = document.createElement("section");
-            formCard.className = "section-card section-card--form";
-            formCard.innerHTML = `
-                <div class="panel__title">
-                    <h2>Hosted Onboarding</h2>
-                    <p class="muted">
-                        Fortweb keeps the hidden ephemeral onboarding identifier inside the worker and only persists the permanent account AID after the hosted run completes.
-                    </p>
-                </div>
                 <form class="lk-form-stack" data-kf-onboarding-form>
-                    ${floatingInputHtml({ label: "Boot Service URL", name: "bootUrl" })}
-                    ${floatingInputHtml({ label: "Account Alias", name: "alias" })}
-                    <div class="kf-field-stack">
-                        <label class="kf-field-label" for="kf-witness-profile">Witness Profile</label>
-                        <select class="kf-select" id="kf-witness-profile" name="witnessProfileCode" data-kf-profile-select></select>
-                    </div>
-                    <p class="muted">
-                        Fortweb v1 creates or reuses one permanent local KF account AID for this vault. It does not expose raw witness boot servers or the hidden ephemeral onboarding AID in the shell.
-                    </p>
-                    <div class="panel__actions">
-                        <button class="button button--secondary" type="button" data-kf-refresh-bootstrap>Check Boot Connection</button>
-                        <button class="button button--primary" type="submit" data-kf-start-onboarding>Start Hosted Onboarding</button>
-                    </div>
-                    <p class="status-line" data-kf-onboarding-status></p>
+                    <section class="section-card">
+                        <div class="panel__title">
+                            <h2>Setup service</h2>
+                            <p class="muted">Setup can continue once the wallet can reach the KERI Foundation setup service.</p>
+                        </div>
+                        <dl class="detail-grid">
+                            <div class="detail-item">
+                                <dt>Status</dt>
+                                <dd data-kf-connection-badge></dd>
+                            </div>
+                            <div class="detail-item detail-item--span">
+                                <dt>Details</dt>
+                                <dd data-kf-connection-detail></dd>
+                            </div>
+                        </dl>
+                        <div class="panel__actions">
+                            <button class="button button--secondary" type="button" data-kf-refresh-bootstrap>Retry</button>
+                        </div>
+                    </section>
+
+                    <section class="section-card">
+                        <div class="panel__title">
+                            <h2>Choose your wallet identity</h2>
+                            <p class="muted">
+                                Choose the wallet identity for this account. You can use an existing wallet identity or create a new one during setup.
+                            </p>
+                        </div>
+                        <div class="kf-field-stack">
+                            <label class="kf-field-label" for="kf-wallet-identity">Wallet identity</label>
+                            <select class="kf-select" id="kf-wallet-identity" data-kf-account-select></select>
+                        </div>
+                        <p class="muted" data-kf-identity-hint></p>
+                        <div data-kf-alias-field>
+                            ${floatingInputHtml({ label: "Name this account", name: "alias" })}
+                        </div>
+                    </section>
+
+                    <section class="section-card">
+                        <div class="panel__title">
+                            <h2>Security level</h2>
+                            <p class="muted">Choose how much hosted protection to use for this account.</p>
+                        </div>
+                        <div class="summary-grid" data-kf-profile-grid></div>
+                        <p class="muted" data-kf-monitoring-copy></p>
+                    </section>
+
+                    <section class="section-card">
+                        <div class="panel__title">
+                            <h2>Review and start</h2>
+                            <p class="muted">Review the choices for this account, then start setup.</p>
+                        </div>
+                        <dl class="detail-grid">
+                            <div class="detail-item">
+                                <dt>Setup service</dt>
+                                <dd data-kf-review-connection></dd>
+                            </div>
+                            <div class="detail-item">
+                                <dt>Identity</dt>
+                                <dd data-kf-review-identity></dd>
+                            </div>
+                            <div class="detail-item">
+                                <dt>Account name</dt>
+                                <dd data-kf-review-account></dd>
+                            </div>
+                            <div class="detail-item">
+                                <dt>Security level</dt>
+                                <dd data-kf-review-security></dd>
+                            </div>
+                            <div class="detail-item detail-item--span">
+                                <dt>Included setup</dt>
+                                <dd data-kf-review-monitoring></dd>
+                            </div>
+                        </dl>
+                        <div class="panel__actions">
+                            <button class="button button--primary" type="submit" data-kf-start-onboarding>Start setup</button>
+                        </div>
+                        <p class="status-line" data-kf-onboarding-status></p>
+                    </section>
                 </form>
+                <div data-kf-onboarding-completion></div>
             `;
 
-            columns.append(summaryCard, formCard);
-            page.append(columns);
             container.append(page);
         },
         setup(root) {
             setupFloatingInputs(root);
 
-            const summaryStatus = root.querySelector("[data-kf-connection-status]");
-            const bootUrlLabel = root.querySelector("[data-kf-boot-url-label]");
-            const connectionBadge = root.querySelector("[data-kf-connection-badge]");
-            const regionLabel = root.querySelector("[data-kf-region-label]");
-            const watcherPolicy = root.querySelector("[data-kf-watcher-policy]");
-            const profilePills = root.querySelector("[data-kf-profile-pills]");
             const form = root.querySelector("[data-kf-onboarding-form]");
-            const bootUrlInput = form.querySelector("input[name='bootUrl']");
+            const aliasField = root.querySelector("[data-kf-alias-field]");
             const aliasInput = form.querySelector("input[name='alias']");
-            const profileSelect = form.querySelector("[data-kf-profile-select]");
-            const refreshButton = form.querySelector("[data-kf-refresh-bootstrap]");
-            const submitButton = form.querySelector("[data-kf-start-onboarding]");
-            const statusLine = form.querySelector("[data-kf-onboarding-status]");
+            const accountSelect = root.querySelector("[data-kf-account-select]");
+            const identityHint = root.querySelector("[data-kf-identity-hint]");
+            const connectionBadge = root.querySelector("[data-kf-connection-badge]");
+            const connectionDetail = root.querySelector("[data-kf-connection-detail]");
+            const refreshButton = root.querySelector("[data-kf-refresh-bootstrap]");
+            const profileGrid = root.querySelector("[data-kf-profile-grid]");
+            const monitoringCopy = root.querySelector("[data-kf-monitoring-copy]");
+            const reviewConnection = root.querySelector("[data-kf-review-connection]");
+            const reviewIdentity = root.querySelector("[data-kf-review-identity]");
+            const reviewAccount = root.querySelector("[data-kf-review-account]");
+            const reviewSecurity = root.querySelector("[data-kf-review-security]");
+            const reviewMonitoring = root.querySelector("[data-kf-review-monitoring]");
+            const submitButton = root.querySelector("[data-kf-start-onboarding]");
+            const statusLine = root.querySelector("[data-kf-onboarding-status]");
+            const completionHost = root.querySelector("[data-kf-onboarding-completion]");
 
             let currentSnapshot = bootstrapState;
 
+            function selectedIdentifier() {
+                return identifiers.find((identifier) => identifier.aid === accountSelect.value) || null;
+            }
+
+            function selectedProfileCode() {
+                return profileGrid.querySelector("input[name='kf-security-level']:checked")?.value || "";
+            }
+
+            function selectedProfile() {
+                const code = selectedProfileCode();
+                return (currentSnapshot.bootstrap?.accountOptions ?? []).find((option) => option.code === code) || null;
+            }
+
+            function renderIdentityOptions() {
+                const options = [
+                    '<option value="">Create a new wallet identity during setup</option>',
+                    ...identifiers.map(
+                        (identifier) =>
+                            `<option value="${escapeHtml(identifier.aid)}">${escapeHtml(identifier.alias)} (${escapeHtml(shortAid(identifier.aid))})</option>`,
+                    ),
+                ];
+                accountSelect.innerHTML = options.join("");
+                accountSelect.value = initialSelectedAid;
+            }
+
             function renderProfiles(options, preferredCode = "") {
-                const selectedCode = preferredCode || profileSelect.value || options[0]?.code || "";
-                profileSelect.innerHTML = options.length
-                    ? options
-                        .map(
-                            (option) => `
-                                <option value="${escapeHtml(option.code)}" ${selectedCode === option.code ? "selected" : ""}>
-                                    ${escapeHtml(profileLabel(option))}
-                                </option>
-                            `,
-                        )
-                        .join("")
-                    : '<option value="">No hosted profiles available</option>';
-                profileSelect.disabled = options.length === 0;
-                submitButton.disabled = options.length === 0 || !currentSnapshot.connection.ok;
+                if (!options.length) {
+                    profileGrid.innerHTML = `
+                        <div class="notice notice--warning">
+                            No hosted security levels are available right now.
+                        </div>
+                    `;
+                    return;
+                }
+
+                const selectedCode = options.some((option) => option.code === preferredCode)
+                    ? preferredCode
+                    : options[0].code;
+
+                profileGrid.innerHTML = options
+                    .map(
+                        (option) => `
+                            <label class="kf-radio-card ${selectedCode === option.code ? "is-selected" : ""}">
+                                <input
+                                    class="kf-radio-card__input"
+                                    type="radio"
+                                    name="kf-security-level"
+                                    value="${escapeHtml(option.code)}"
+                                    ${selectedCode === option.code ? "checked" : ""}
+                                >
+                                <span class="kf-radio-card__copy">
+                                    <strong>${escapeHtml(securityLevelTitle(option))}</strong>
+                                    <span>${escapeHtml(securityLevelDescription(option))}</span>
+                                </span>
+                                <span class="badge badge--neutral">${escapeHtml(securityLevelMeta(option))}</span>
+                            </label>
+                        `,
+                    )
+                    .join("");
+            }
+
+            function resolvedAlias() {
+                if (!accountSelect.value) {
+                    return aliasInput.value.trim();
+                }
+                return selectedIdentifier()?.alias || "";
+            }
+
+            function renderFormState() {
+                const profile = selectedProfile();
+                const identifier = selectedIdentifier();
+                const createNew = !accountSelect.value;
+                const connectionOk = currentSnapshot.connection.ok;
+
+                connectionBadge.innerHTML = badgeHtml(connectionOk ? "Ready" : "Unavailable", connectionOk ? "success" : "warning");
+                connectionDetail.textContent = connectionOk
+                    ? "The setup service is reachable. You can continue."
+                    : currentSnapshot.connection.error || "Retry after the setup service becomes reachable.";
+
+                identityHint.textContent = createNew
+                    ? "A new wallet identity will be created during setup for this account."
+                    : identifier
+                        ? `Use the existing wallet identity ${identifier.alias} (${shortAid(identifier.aid)}) for this account.`
+                        : "Choose an existing wallet identity or create a new one.";
+                aliasField.hidden = !createNew;
+
+                monitoringCopy.textContent = !currentSnapshot.bootstrap
+                    ? "Monitoring details appear after the setup service responds."
+                    : currentSnapshot.bootstrap.watcherRequired
+                        ? "A hosted watcher is included automatically. The wallet connects it before setup finishes."
+                        : "Hosted monitoring is available for this account when the service offers it.";
+
+                reviewConnection.textContent = connectionOk ? "Ready" : "Connection required";
+                reviewIdentity.textContent = createNew
+                    ? "Create a new wallet identity"
+                    : "Use an existing wallet identity";
+                reviewAccount.textContent = resolvedAlias() || "(account name required)";
+                reviewSecurity.textContent = profile ? securityLevelTitle(profile) : "(not selected)";
+                reviewMonitoring.textContent = !currentSnapshot.bootstrap
+                    ? "Hosted setup details appear after the setup service responds."
+                    : currentSnapshot.bootstrap.watcherRequired
+                        ? "Hosted witnesses and monitoring included automatically"
+                        : "Hosted witnesses included";
+
+                submitButton.disabled = !connectionOk || !resolvedAlias() || !profile;
             }
 
             function applySnapshot(nextSnapshot) {
                 currentSnapshot = nextSnapshot;
-                const options = nextSnapshot.bootstrap?.accountOptions ?? [];
-                const region = nextSnapshot.bootstrap?.regionName || nextSnapshot.bootstrap?.regionId || "Unavailable";
-                const watcherText = nextSnapshot.bootstrap
-                    ? nextSnapshot.bootstrap.watcherRequired
-                        ? "One hosted watcher required"
-                        : "Watcher optional"
-                    : "Unavailable";
-                const connectionLabel = nextSnapshot.connection.ok ? "Connected" : "Disconnected";
-                const connectionTone = nextSnapshot.connection.ok ? "success" : "warning";
-
-                bootUrlLabel.textContent = nextSnapshot.bootUrl || bootUrlInput.value || initialBootUrl || "—";
-                connectionBadge.innerHTML = badgeHtml(connectionLabel, connectionTone);
-                regionLabel.textContent = region;
-                watcherPolicy.textContent = watcherText;
-                profilePills.innerHTML = options.length
-                    ? options.map((option) => badgeHtml(profileLabel(option), "neutral")).join("")
-                    : '<span class="badge badge--warning">No hosted profiles returned</span>';
-                summaryStatus.textContent = nextSnapshot.account?.failureReason || nextSnapshot.connection.error || "";
-                renderProfiles(options, nextSnapshot.account?.witnessProfileCode || profileSelect.value || initialProfile);
+                renderProfiles(
+                    nextSnapshot.bootstrap?.accountOptions ?? [],
+                    nextSnapshot.account?.witnessProfileCode || selectedProfileCode() || initialProfile,
+                );
+                renderFormState();
             }
 
             async function refreshBootstrap() {
                 statusLine.textContent = "";
+                statusLine.classList.remove("is-neutral", "is-success");
                 refreshButton.disabled = true;
                 submitButton.disabled = true;
 
                 try {
-                    const nextSnapshot = await onLoadBootstrap(bootUrlInput.value);
+                    const nextSnapshot = await onLoadBootstrap();
                     applySnapshot(nextSnapshot);
-                    if (!nextSnapshot.connection.ok) {
-                        statusLine.textContent = nextSnapshot.connection.error || "Boot connection failed.";
-                    }
                 } catch (error) {
-                    statusLine.textContent = error.message || "Boot connection failed.";
+                    statusLine.textContent = error.message || "Setup service check failed.";
                 } finally {
                     refreshButton.disabled = false;
-                    submitButton.disabled = profileSelect.disabled || !currentSnapshot.connection.ok;
+                    renderFormState();
                 }
             }
+
+            function showAuthenticatorCodes(account) {
+                const authPanels = account?.witnessAuthPanels || [];
+                if (!authPanels.length) {
+                    onCompleteOnboarding?.();
+                    return;
+                }
+
+                form.hidden = true;
+                completionHost.replaceChildren();
+                const authSection = createAuthSection(authPanels, {
+                    onDone: () => onCompleteOnboarding?.(),
+                });
+                authSection.render(completionHost);
+                authSection.setup(completionHost);
+            }
+
+            accountSelect.addEventListener("change", () => {
+                renderFormState();
+            });
+
+            aliasInput.addEventListener("input", () => {
+                renderFormState();
+            });
+
+            profileGrid.addEventListener("change", () => {
+                renderProfiles(currentSnapshot.bootstrap?.accountOptions ?? [], selectedProfileCode());
+                renderFormState();
+            });
 
             refreshButton.addEventListener("click", () => {
                 void refreshBootstrap();
@@ -272,40 +523,53 @@ function renderOnboardingPage({ bootstrapState, onLoadBootstrap, onStartOnboardi
                 event.preventDefault();
                 void (async () => {
                     statusLine.textContent = "";
+                    statusLine.classList.remove("is-success");
                     refreshButton.disabled = true;
                     submitButton.disabled = true;
 
                     try {
                         if (!currentSnapshot.connection.ok) {
-                            const nextSnapshot = await onLoadBootstrap(bootUrlInput.value);
+                            const nextSnapshot = await onLoadBootstrap();
                             applySnapshot(nextSnapshot);
                             if (!nextSnapshot.connection.ok) {
-                                throw new Error(nextSnapshot.connection.error || "Boot connection failed.");
+                                throw new Error(nextSnapshot.connection.error || "Setup service unavailable.");
                             }
                         }
 
-                        statusLine.textContent = "Hosted onboarding in progress. Fortweb is allocating hosted resources and resolving the required OOBIs.";
-                        await onStartOnboarding({
-                            bootUrl: bootUrlInput.value,
-                            alias: aliasInput.value,
-                            witnessProfileCode: profileSelect.value,
+                        const alias = resolvedAlias();
+                        const witnessProfileCode = selectedProfileCode();
+                        if (!alias) {
+                            throw new Error("Choose or create the wallet identity for this account.");
+                        }
+                        if (!witnessProfileCode) {
+                            throw new Error("Choose a security level before starting setup.");
+                        }
+
+                        statusLine.textContent = "Setting up your account. This can take a minute.";
+                        statusLine.classList.add("is-neutral");
+                        const response = await onStartOnboarding({
+                            alias,
+                            witnessProfileCode,
+                            accountAid: accountSelect.value,
                         });
+                        showAuthenticatorCodes(response.account);
                     } catch (error) {
-                        statusLine.textContent = error.message || "Hosted onboarding failed.";
+                        statusLine.classList.remove("is-neutral");
+                        statusLine.textContent = error.message || "Account setup failed.";
                         refreshButton.disabled = false;
-                        submitButton.disabled = profileSelect.disabled || !currentSnapshot.connection.ok;
+                        renderFormState();
                     }
                 })();
             });
 
-            bootUrlInput.value = initialBootUrl || "http://127.0.0.1:9723";
+            renderIdentityOptions();
             aliasInput.value = initialAlias;
             applySnapshot(currentSnapshot);
         },
     };
 }
 
-function renderAccountWitnessesPage({ bootstrapState, witnesses, witnessError }) {
+function renderAccountWitnessesPage({ witnesses, witnessError }) {
     const table = renderWitnessTable(witnesses);
 
     return {
@@ -315,23 +579,15 @@ function renderAccountWitnessesPage({ bootstrapState, witnesses, witnessError })
 
             const page = document.createElement("section");
             page.className = "page-grid page-grid--table";
-
-            const header = document.createElement("header");
-            header.className = "page-header";
-            header.innerHTML = `
-                <div>
-                    <h1>Witnesses</h1>
-                    <p>
-                        Hosted witness rows come from the boot-backed KF account, not from Fortweb’s local identifier summaries.
-                    </p>
-                </div>
+            page.innerHTML = `
+                <header class="page-header">
+                    <div>
+                        <p class="page-header__eyebrow">KERI Foundation</p>
+                        <h1>Witnesses</h1>
+                        <p>Hosted witnesses connected for your KERI Foundation account.</p>
+                    </div>
+                </header>
             `;
-
-            const summaryCard = document.createElement("section");
-            summaryCard.className = "section-card section-card--summary";
-            summaryCard.append(accountSummary(bootstrapState.account, bootstrapState));
-
-            page.append(header, summaryCard);
 
             if (witnessError) {
                 const warning = document.createElement("p");
@@ -353,9 +609,17 @@ function renderAccountWitnessesPage({ bootstrapState, witnesses, witnessError })
     };
 }
 
+export function renderKfSetupPage(props) {
+    return renderOnboardingPage(props);
+}
+
+export function renderKfWitnessesPage(props) {
+    return renderAccountWitnessesPage(props);
+}
+
 export function renderWitnessOverviewPage(props) {
     if (props.bootstrapState.account?.status === "onboarded") {
-        return renderAccountWitnessesPage(props);
+        return renderKfWitnessesPage(props);
     }
-    return renderOnboardingPage(props);
+    return renderKfSetupPage(props);
 }

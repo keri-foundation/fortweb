@@ -6,20 +6,6 @@ function badgeHtml(label, tone = "neutral") {
     return `<span class="${toneClass(tone)}">${escapeHtml(label)}</span>`;
 }
 
-function detailItem(label, value) {
-    const wrapper = document.createElement("div");
-    wrapper.className = "detail-item";
-
-    const term = document.createElement("dt");
-    term.textContent = label;
-
-    const description = document.createElement("dd");
-    description.textContent = value;
-
-    wrapper.append(term, description);
-    return wrapper;
-}
-
 function renderWatcherTable(watchers) {
     const rows = watchers.map((watcher) => ({
         name: watcher.name || `KF Watcher ${watcher.eid.slice(0, 12)}`,
@@ -32,9 +18,9 @@ function renderWatcherTable(watchers) {
 
     const table = renderPaginatedTable({
         icon: "./assets/icons/watcher.svg",
-        title: "Hosted Watchers",
+        title: "Watchers",
         titleTag: "h2",
-        searchPlaceholder: "Search hosted watchers...",
+        searchPlaceholder: "Search watchers...",
         columns: [
             { key: "name", label: "Name", width: "210px" },
             { key: "watcherAid", label: "Watcher AID", width: "320px" },
@@ -45,9 +31,8 @@ function renderWatcherTable(watchers) {
         ],
         rows,
         itemsPerPage: 10,
-        emptyTitle: "No Hosted Watcher Rows",
-        emptyText:
-            "This KF account is onboarded locally, but the boot service did not return any watcher rows yet.",
+        emptyTitle: "No watchers yet",
+        emptyText: "Monitoring details will appear here once the account has watcher data to show.",
     });
 
     return {
@@ -71,18 +56,13 @@ function renderPlaceholder({ vault, bootstrapState }) {
                 <header class="page-header">
                     <div>
                         <h1>Watchers</h1>
-                        <p>
-                            Hosted watcher rows only become truthful after this vault completes the KF witness onboarding flow.
-                        </p>
+                        <p>Set up your KERI Foundation account first, then come back here for hosted monitoring details.</p>
                     </div>
                 </header>
                 <section class="section-card">
                     <div class="empty-state">
-                        <h2>No Hosted Watcher Account Yet</h2>
-                        <p>
-                            Start from the Witnesses route, connect Fortweb to <code>${escapeHtml(bootstrapState.bootUrl || "http://127.0.0.1:9723")}</code>,
-                            and complete one hosted onboarding run before returning here.
-                        </p>
+                        <h2>No monitoring account yet</h2>
+                        <p>Finish account setup from the Witnesses page before returning here.</p>
                         <div class="panel__actions">
                             <a class="button button--primary" href="${kfWitnessesHref(vault.id)}">Open Witnesses</a>
                         </div>
@@ -93,7 +73,7 @@ function renderPlaceholder({ vault, bootstrapState }) {
     };
 }
 
-export function renderWatcherOverviewPage({ vault, bootstrapState, watchers, watcherError, onRefreshStatuses }) {
+export function renderWatcherOverviewPage({ vault, bootstrapState, watchers, watcherError }) {
     if (bootstrapState.account?.status !== "onboarded") {
         return renderPlaceholder({ vault, bootstrapState });
     }
@@ -110,32 +90,12 @@ export function renderWatcherOverviewPage({ vault, bootstrapState, watchers, wat
             page.innerHTML = `
                 <header class="page-header">
                     <div>
+                        <p class="page-header__eyebrow">KERI Foundation</p>
                         <h1>Watchers</h1>
-                        <p>
-                            Hosted watcher rows are boot-backed account data. Manual status refresh stays explicit in this first Fortweb slice.
-                        </p>
-                    </div>
-                    <div class="page-header__actions page-header__actions--stacked">
-                        <button class="button button--secondary" type="button" data-kf-refresh-watchers>Refresh Status</button>
-                        <p class="page-header__note">Refresh calls the approved-account watcher status route for each hosted watcher.</p>
+                        <p>Hosted monitoring connected for your KERI Foundation account.</p>
                     </div>
                 </header>
             `;
-
-            const summaryCard = document.createElement("section");
-            summaryCard.className = "section-card section-card--summary";
-            const summary = document.createElement("dl");
-            summary.className = "detail-grid summary-grid";
-            summary.append(
-                detailItem("Account Alias", bootstrapState.account.accountAlias || "—"),
-                detailItem("Account AID", bootstrapState.account.accountAid || "—"),
-                detailItem("Region", bootstrapState.account.regionName || bootstrapState.account.regionId || "—"),
-                detailItem("Watcher Policy", bootstrapState.account.watcherRequired ? "Required" : "Optional"),
-                detailItem("Boot Service", bootstrapState.bootUrl || bootstrapState.account.bootUrl || "—"),
-                detailItem("Boot Server AID", bootstrapState.account.bootServerAid || "Pending verification"),
-            );
-            summaryCard.append(summary);
-            page.append(summaryCard);
 
             if (watcherError) {
                 const warning = document.createElement("p");
@@ -149,30 +109,10 @@ export function renderWatcherOverviewPage({ vault, bootstrapState, watchers, wat
             table.render(tableSection);
             page.append(tableSection);
 
-            const statusLine = document.createElement("p");
-            statusLine.className = "status-line";
-            statusLine.dataset.kfWatcherStatusLine = "true";
-            page.append(statusLine);
-
             container.append(page);
         },
         setup(root) {
             table.setup(root);
-
-            const refreshButton = root.querySelector("[data-kf-refresh-watchers]");
-            const statusLine = root.querySelector("[data-kf-watcher-status-line]");
-            refreshButton?.addEventListener("click", () => {
-                void (async () => {
-                    refreshButton.disabled = true;
-                    statusLine.textContent = "Refreshing hosted watcher status...";
-                    try {
-                        await onRefreshStatuses();
-                    } catch (error) {
-                        statusLine.textContent = error.message || "Watcher status refresh failed.";
-                        refreshButton.disabled = false;
-                    }
-                })();
-            });
         },
     };
 }

@@ -1,6 +1,8 @@
 import {
     homeHref,
     identifiersHref,
+    kfHomeHref,
+    kfIdentifiersHref,
     remotesHref,
     kfWitnessesHref,
     kfWatchersHref,
@@ -18,7 +20,7 @@ function isCoreActive(routeName, target) {
     return routeName === target;
 }
 
-function sidebarNav(route, vaultId) {
+function coreSidebarNav(route, vaultId) {
     const links = [
         {
             label: "Identifiers",
@@ -49,7 +51,34 @@ function sidebarNav(route, vaultId) {
             active: isCoreActive(route.name, "settings"),
         },
     ];
-    const pluginLinks = [
+
+    return `
+        <div class="lk-sidebar-shell" data-nav-shell>
+            <nav class="lk-sidebar" aria-label="Vault navigation">
+                <div class="lk-sidebar__nav">
+                    ${links.map((link) => menuButtonHtml(link)).join("")}
+                </div>
+                <div class="lk-sidebar__plugin-entry">
+                    <div class="lk-sidebar__divider lk-sidebar__divider--plugin"></div>
+                    ${menuButtonHtml({
+                        label: "KERI Foundation",
+                        icon: "./assets/brand/SymbolLogo.svg",
+                        href: kfHomeHref(vaultId),
+                    })}
+                </div>
+            </nav>
+        </div>
+    `;
+}
+
+function pluginSidebarNav(route, vaultId, backHref) {
+    const links = [
+        {
+            label: "Identifiers",
+            icon: "./assets/icons/identifiers.png",
+            href: kfIdentifiersHref(vaultId),
+            active: route.name === "kf-identifiers",
+        },
         {
             label: "Witnesses",
             icon: "./assets/icons/witness1.svg",
@@ -66,41 +95,43 @@ function sidebarNav(route, vaultId) {
 
     return `
         <div class="lk-sidebar-shell" data-nav-shell>
-            <nav class="lk-sidebar" aria-label="Vault navigation">
-                <div class="lk-sidebar__nav">
+            <nav class="lk-sidebar" aria-label="KERI Foundation navigation">
+                <a class="lk-sidebar__back" href="${backHref}">
+                    <img src="./assets/icons/arrow_back.svg" alt="" width="24" height="24">
+                    <span>Back</span>
+                </a>
+                <a
+                    class="lk-sidebar__plugin-brand-link"
+                    href="${kfHomeHref(vaultId)}"
+                    aria-current="${route.name === "kf-home" ? "page" : "false"}"
+                >
+                    <img src="./assets/brand/SymbolLogo.svg" alt="" width="80" height="80">
+                    <span class="lk-sidebar__plugin-brand-label">KERI Foundation</span>
+                </a>
+                <div class="lk-sidebar__nav lk-sidebar__nav--plugin">
                     ${links.map((link) => menuButtonHtml(link)).join("")}
-                </div>
-                <div class="lk-sidebar__plugin-block">
-                    <div class="lk-sidebar__divider lk-sidebar__divider--plugin"></div>
-                    <div class="lk-sidebar__plugin">
-                        <a
-                            class="lk-menu-btn lk-menu-btn--plugin ${route.navMode === "plugin" ? "is-active" : ""}"
-                            href="${kfWitnessesHref(vaultId)}"
-                            aria-current="${route.navMode === "plugin" ? "page" : "false"}"
-                            aria-expanded="${route.navMode === "plugin" ? "true" : "false"}"
-                        >
-                        <img src="./assets/brand/SymbolLogo.svg" alt="" width="32" height="32">
-                        <span class="lk-menu-btn__label">KERI Foundation</span>
-                        </a>
-                        <div
-                            class="lk-sidebar__plugin-links ${route.navMode === "plugin" ? "is-open" : ""}"
-                            role="group"
-                            aria-label="KERI Foundation"
-                            ${route.navMode === "plugin" ? "" : "hidden"}
-                        >
-                            ${pluginLinks.map((link) => menuButtonHtml(link)).join("")}
-                        </div>
-                    </div>
                 </div>
             </nav>
         </div>
     `;
 }
 
+function sidebarNav(route, vaultId, state) {
+    if (route.navMode === "plugin") {
+        return pluginSidebarNav(
+            route,
+            vaultId,
+            state?.lastCoreRoutes?.[vaultId] || identifiersHref(vaultId),
+        );
+    }
+
+    return coreSidebarNav(route, vaultId);
+}
+
 export function renderShell(root, { route, page, state, vault, actions }) {
     const isVaultShell = route.shellMode === "vault";
 
-    const sidebarMarkup = isVaultShell && vault ? sidebarNav(route, vault.id) : "";
+    const sidebarMarkup = isVaultShell && vault ? sidebarNav(route, vault.id, state) : "";
     const mobileNavOpen = Boolean(state?.mobileNavOpen);
 
     root.innerHTML = `

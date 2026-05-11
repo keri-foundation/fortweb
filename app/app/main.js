@@ -2,6 +2,8 @@ import { createRuntimeBridge } from "../runtime/bridge.js";
 import {
     homeHref,
     identifiersHref,
+    kfHomeHref,
+    kfWitnessesHref,
     navigate,
     parseRoute,
     unlockHref,
@@ -21,8 +23,13 @@ import { renderRemotesPage } from "../features/remotes/remotes-page.js";
 import { renderSettingsPage } from "../features/settings/settings-page.js";
 import { renderUnlockPage } from "../features/vaults/unlock-page.js";
 import { renderVaultPickerPage } from "../features/vaults/vault-picker-page.js";
+import { resolveKfSurfaceConfig } from "../providers/kerifoundation/config.js";
+import { renderKfIdentifiersPage } from "../providers/kerifoundation/identifiers-page.js";
 import { renderWatcherOverviewPage } from "../providers/kerifoundation/watcher-overview-page.js";
-import { renderWitnessOverviewPage } from "../providers/kerifoundation/witness-overview-page.js";
+import {
+    renderKfSetupPage,
+    renderKfWitnessesPage,
+} from "../providers/kerifoundation/witness-overview-page.js";
 
 const METHODS = {
     vaultsList: "vaults.list",
@@ -42,7 +49,6 @@ const METHODS = {
     kfOnboardingStart: "kf.onboarding.start",
     kfAccountWitnessesList: "kf.account.witnesses.list",
     kfAccountWatchersList: "kf.account.watchers.list",
-    kfAccountWatchersStatus: "kf.account.watchers.status",
 };
 
 const root = document.querySelector("#app-root");
@@ -68,6 +74,21 @@ function requireUnlockedVaultId() {
         throw new Error("Open a vault before continuing.");
     }
     return vaultId;
+}
+
+function kfSurfaceConfig() {
+    return resolveKfSurfaceConfig(window.location.origin);
+}
+
+function isKfOnboarded(bootstrapState) {
+    return bootstrapState.account?.status === "onboarded";
+}
+
+async function loadKfBootstrapState(vaultId, surfaceConfig) {
+    return bridge.request(METHODS.kfBootstrapGet, {
+        vaultId,
+        surfaceConfig,
+    });
 }
 
 function findVault(vaultId) {
@@ -116,9 +137,6 @@ function showCreateVaultDialog() {
             <form data-create-vault-form style="display:flex;flex-direction:column;gap:16px;padding:16px 0;">
                 ${floatingInputHtml({ label: "Name", name: "name" })}
                 ${floatingInputHtml({ label: "Passcode", name: "passcode", password: true })}
-                <p class="muted">
-                    Passcode support is limited to vault reopen in this slice. Browser 2-factor authentication remains deferred.
-                </p>
                 <p class="status-line" data-create-vault-status></p>
             </form>
         `,
@@ -340,36 +358,23 @@ const actions = {
         return response.remote;
     },
 
-    async loadKfBootstrap(bootUrl = "") {
+    async loadKfBootstrap() {
         const vaultId = requireUnlockedVaultId();
-        return bridge.request(METHODS.kfBootstrapGet, { vaultId, bootUrl });
+        return bridge.request(METHODS.kfBootstrapGet, {
+            vaultId,
+            surfaceConfig: kfSurfaceConfig(),
+        });
     },
 
-    async startKfOnboarding({ bootUrl, alias, witnessProfileCode, accountAid = "" }) {
+    async startKfOnboarding({ alias, witnessProfileCode, accountAid = "" }) {
         const vaultId = requireUnlockedVaultId();
-        const response = await bridge.request(METHODS.kfOnboardingStart, {
+        return bridge.request(METHODS.kfOnboardingStart, {
             vaultId,
-            bootUrl,
+            surfaceConfig: kfSurfaceConfig(),
             alias,
             witnessProfileCode,
             accountAid,
-        });
-        await render();
-        return response;
-    },
-
-    async refreshKfWatcherStatuses(watcherEids = []) {
-        const vaultId = requireUnlockedVaultId();
-        const refreshed = [];
-        for (const watcherEid of watcherEids) {
-            const { watcher } = await bridge.request(METHODS.kfAccountWatchersStatus, {
-                vaultId,
-                watcherEid,
-            });
-            refreshed.push(watcher);
-        }
-        await render();
-        return refreshed;
+        }, 120_000);
     },
 
     setRemoteFilter(filter) {
@@ -494,26 +499,77 @@ async function loadPage(route) {
         };
     }
 
-    if (route.name === "kf-witnesses") {
+    if (route.name === "kf-home") {
         const vaultId = route.params.vaultId;
-        const bootstrapState = await bridge.request(METHODS.kfBootstrapGet, { vaultId });
-        let witnesses = [];
-        let witnessError = "";
-        if (bootstrapState.account?.status === "onboarded") {
-            try {
-                ({ witnesses } = await bridge.request(METHODS.kfAccountWitnessesList, { vaultId }));
-            } catch (error) {
-                witnessError = error.message || "Failed to load hosted witness rows.";
-            }
+        const surfaceConfig = kfSurfaceConfig();
+        const { identifiers } = await bridge.request(METHODS.identifiersList, { vaultId });
+        const bootstrapState = await loadKfBootstrapState(vaultId, surfaceConfig);
+        if (isKfOnboarded(bootstrapState)) {
+            return {
+                redirectHref: kfWitnessesHref(vaultId),
+                vault: findVault(vaultId),
+            };
         }
         return {
-            page: renderWitnessOverviewPage({
+            page: renderKfSetupPage({
+                vault: findVault(vaultId),
+                bootstrapState,
+                identifiers,
+                onLoadBootstrap: actions.loadKfBootstrap,
+                onStartOnboarding: actions.startKfOnboarding,
+                onCompleteOnboarding() {
+                    navigate(kfWitnessesHref(vaultId));
+                },
+            }),
+            vault: findVault(vaultId),
+        };
+    }
+
+    if (route.name === "kf-identifiers") {
+        const vaultId = route.params.vaultId;
+        const { identifiers } = await bridge.request(METHODS.identifiersList, { vaultId });
+        const bootstrapState = await loadKfBootstrapState(vaultId, kfSurfaceConfig());
+        if (!isKfOnboarded(bootstrapState)) {
+            return {
+                redirectHref: kfHomeHref(vaultId),
+                vault: findVault(vaultId),
+            };
+        }
+        return {
+            page: renderKfIdentifiersPage({
+                bootstrapState,
+                identifiers,
+            }),
+            vault: findVault(vaultId),
+        };
+    }
+
+    if (route.name === "kf-witnesses") {
+        const vaultId = route.params.vaultId;
+        const surfaceConfig = kfSurfaceConfig();
+        const bootstrapState = await loadKfBootstrapState(vaultId, surfaceConfig);
+        if (!isKfOnboarded(bootstrapState)) {
+            return {
+                redirectHref: kfHomeHref(vaultId),
+                vault: findVault(vaultId),
+            };
+        }
+        let witnesses = [];
+        let witnessError = "";
+        try {
+            ({ witnesses } = await bridge.request(METHODS.kfAccountWitnessesList, {
+                vaultId,
+                surfaceConfig,
+            }));
+        } catch (error) {
+            witnessError = error.message || "Failed to load hosted witness rows.";
+        }
+        return {
+            page: renderKfWitnessesPage({
                 vault: findVault(vaultId),
                 bootstrapState,
                 witnesses,
                 witnessError,
-                onLoadBootstrap: actions.loadKfBootstrap,
-                onStartOnboarding: actions.startKfOnboarding,
             }),
             vault: findVault(vaultId),
         };
@@ -521,15 +577,23 @@ async function loadPage(route) {
 
     if (route.name === "kf-watchers") {
         const vaultId = route.params.vaultId;
-        const bootstrapState = await bridge.request(METHODS.kfBootstrapGet, { vaultId });
+        const surfaceConfig = kfSurfaceConfig();
+        const bootstrapState = await loadKfBootstrapState(vaultId, surfaceConfig);
+        if (!isKfOnboarded(bootstrapState)) {
+            return {
+                redirectHref: kfHomeHref(vaultId),
+                vault: findVault(vaultId),
+            };
+        }
         let watchers = [];
         let watcherError = "";
-        if (bootstrapState.account?.status === "onboarded") {
-            try {
-                ({ watchers } = await bridge.request(METHODS.kfAccountWatchersList, { vaultId }));
-            } catch (error) {
-                watcherError = error.message || "Failed to load hosted watcher rows.";
-            }
+        try {
+            ({ watchers } = await bridge.request(METHODS.kfAccountWatchersList, {
+                vaultId,
+                surfaceConfig,
+            }));
+        } catch (error) {
+            watcherError = error.message || "Failed to load hosted watcher rows.";
         }
         return {
             page: renderWatcherOverviewPage({
@@ -537,9 +601,6 @@ async function loadPage(route) {
                 bootstrapState,
                 watchers,
                 watcherError,
-                onRefreshStatuses() {
-                    return actions.refreshKfWatcherStatuses(watchers.map((watcher) => watcher.eid));
-                },
             }),
             vault: findVault(vaultId),
         };
@@ -574,7 +635,11 @@ async function render() {
     rememberCoreRoute(route);
 
     try {
-        const { page, vault: loadedVault } = await loadPage(route);
+        const { page, vault: loadedVault, redirectHref } = await loadPage(route);
+        if (redirectHref) {
+            navigate(redirectHref);
+            return;
+        }
         renderShell(root, {
             route,
             page,
