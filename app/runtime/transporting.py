@@ -171,13 +171,6 @@ def install_browser_clienter_proxy(httping):
     clienter._fortweb_proxy_patch = True
 
 
-def cesr_content_type(modules):
-    value = str(getattr(modules["httping"], "CESR_CONTENT_TYPE", "") or "").strip()
-    if value and value != "application/cesr":
-        return value
-    return "application/cesr+json"
-
-
 def _js_error_name(exc):
     try:
         return str(getattr(exc, "name", "") or "")
@@ -426,7 +419,7 @@ async def post_cesr(
 ):
     modules = vaulting.load_modules()
     headers = {
-        "Content-Type": cesr_content_type(modules),
+        "Content-Type": str(getattr(modules["httping"], "CESR_CONTENT_TYPE", "") or "application/cesr"),
         "Content-Length": str(len(body)),
     }
     if attachment:

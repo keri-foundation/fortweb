@@ -614,7 +614,7 @@ async def _submit_witness_rotation_receipt(hab, witness: dict, auth_header: str,
     modules = vaulting.load_modules()
     body, attachment = transporting._split_cesr_message(msg)
     headers = {
-        "Content-Type": transporting.cesr_content_type(modules),
+        "Content-Type": str(getattr(modules["httping"], "CESR_CONTENT_TYPE", "") or "application/cesr"),
         "Content-Length": str(len(body)),
         modules["httping"].CESR_DESTINATION_HEADER: witness["eid"],
         "Authorization": auth_header,
