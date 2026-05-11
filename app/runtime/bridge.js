@@ -44,29 +44,67 @@ function parseRuntimeResponse(rawResponse) {
 }
 
 export function createRuntimeBridge({ workerUrl, configUrl }) {
-    const workerPromise = (async () => {
-        const response = await fetch(configUrl.toString());
-        if (!response.ok) {
-            throw new Error(`Unable to load runtime config from ${configUrl.toString()}.`);
-        }
-
-        const config = parseToml(await response.text());
-        return PyWorker(workerUrl.toString(), {
-            type: "pyodide",
-            configURL: configUrl.toString(),
-            config,
-        });
-    })();
+    let workerPromise = null;
     let requestCounter = 0;
     let bootedWorker = null;
+
+    function terminateWorker(worker) {
+        try {
+            worker?.terminate?.();
+        } catch (_error) {
+            // Best effort only. A timed-out worker should never block reset.
+        }
+    }
+
+    function resetWorker() {
+        const liveWorker = bootedWorker;
+        const pendingBoot = workerPromise;
+        bootedWorker = null;
+        workerPromise = null;
+
+        if (liveWorker) {
+            terminateWorker(liveWorker);
+            return;
+        }
+
+        if (pendingBoot) {
+            void pendingBoot.then(terminateWorker).catch(() => {});
+        }
+    }
+
+    function ensureWorkerPromise() {
+        if (workerPromise) {
+            return workerPromise;
+        }
+
+        workerPromise = (async () => {
+            const response = await fetch(configUrl.toString());
+            if (!response.ok) {
+                throw new Error(`Unable to load runtime config from ${configUrl.toString()}.`);
+            }
+
+            const config = parseToml(await response.text());
+            return PyWorker(workerUrl.toString(), {
+                type: "pyodide",
+                configURL: configUrl.toString(),
+                config,
+            });
+        })();
+        return workerPromise;
+    }
 
     async function getWorker(timeoutMs) {
         if (bootedWorker) {
             return bootedWorker;
         }
 
-        bootedWorker = await withTimeout(workerPromise, timeoutMs, "worker boot");
-        return bootedWorker;
+        try {
+            bootedWorker = await withTimeout(ensureWorkerPromise(), timeoutMs, "worker boot");
+            return bootedWorker;
+        } catch (error) {
+            resetWorker();
+            throw error;
+        }
     }
 
     async function rawRequest(rawPayload, timeoutMs = 30_000, label = "raw runtime request") {
@@ -75,8 +113,15 @@ export function createRuntimeBridge({ workerUrl, configUrl }) {
         }
 
         const worker = await getWorker(timeoutMs);
-        const rawResponse = await withTimeout(worker.sync.handle_request(rawPayload), timeoutMs, label);
-        return parseRuntimeResponse(rawResponse);
+        try {
+            const rawResponse = await withTimeout(worker.sync.handle_request(rawPayload), timeoutMs, label);
+            return parseRuntimeResponse(rawResponse);
+        } catch (error) {
+            if (error?.code === "TIMEOUT") {
+                resetWorker();
+            }
+            throw error;
+        }
     }
 
     async function request(method, params = {}, timeoutMs = 30_000) {
@@ -103,9 +148,7 @@ export function createRuntimeBridge({ workerUrl, configUrl }) {
         request,
         rawRequest,
         destroy() {
-            void workerPromise.then((worker) => {
-                worker.terminate?.();
-            });
+            resetWorker();
         },
     };
 }

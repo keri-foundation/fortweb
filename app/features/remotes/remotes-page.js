@@ -16,7 +16,6 @@ function createResolveRemoteDialog(onResolveRemote) {
             <form class="lk-form-stack" data-resolve-remote-form>
                 ${floatingInputHtml({ label: "Blind OOBI URL", name: "oobiUrl" })}
                 ${floatingInputHtml({ label: "Alias", name: "alias" })}
-                <p class="muted">Blind OOBI connect is the only enabled add path in this slice. File import remains deferred.</p>
                 <p class="status-line" data-resolve-remote-status></p>
             </form>
         `,
@@ -177,7 +176,6 @@ export function renderRemotesPage({
                 ${filterButton("Transferable", "transferable", filter)}
                 ${filterButton("Non-transferable", "non-transferable", filter)}
             </div>
-            <p class="lk-table-header__note">Connect by blind OOBI only. File import remains deferred in this slice.</p>
         `,
         searchPlaceholder: "Search...",
         addButtonText: "Add Remote Identifier",
