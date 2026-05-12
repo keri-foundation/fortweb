@@ -1,4 +1,4 @@
-import { identifiersHref, navigate, type Route, unlockHref } from "./router.js";
+import { type Route } from "./router.js";
 import { renderNotFoundPage, type PageRecord } from "./page-feedback.js";
 import { loadRouteData } from "./page-loader.js";
 import { renderIdentifierDetailPage } from "../features/identifiers/identifier-detail-page.js";
@@ -13,7 +13,6 @@ import { renderWitnessOverviewPage } from "../providers/kerifoundation/witness-o
 
 type RecordValue = Record<string, unknown>;
 
-type VaultPickerProps = Parameters<typeof renderVaultPickerPage>[0];
 type UnlockPageProps = Parameters<typeof renderUnlockPage>[0];
 type IdentifiersPageProps = Parameters<typeof renderIdentifiersPage>[0];
 type IdentifierDetailProps = Parameters<typeof renderIdentifierDetailPage>[0];
@@ -33,8 +32,6 @@ interface RuntimeBridgeLike {
 
 interface StateSnapshot {
     remoteFilter: string;
-    lastCoreRoutes: Record<string, string>;
-    vaults: VaultPickerProps["vaults"];
 }
 
 interface PageActions {
@@ -83,18 +80,7 @@ export async function loadPage({
 }: PageFactoryContext): Promise<LoadedPageResult> {
     if (route.name === "home") {
         return {
-            page: renderVaultPickerPage({
-                vaults: currentState().vaults,
-                onCreateVault: showCreateVaultDialog,
-                onSelectVault(vault: VaultPickerProps["vaults"][number]) {
-                    if (isUnlocked(vault.id)) {
-                        navigate(currentState().lastCoreRoutes[vault.id] || identifiersHref(vault.id));
-                        return;
-                    }
-
-                    navigate(unlockHref(vault.id));
-                },
-            }),
+            page: renderVaultPickerPage(),
             vault: null,
         };
     }

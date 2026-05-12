@@ -1,4 +1,3 @@
-import { identifiersHref, navigate, unlockHref } from "./router.js";
 import { renderNotFoundPage } from "./page-feedback.js";
 import { loadRouteData } from "./page-loader.js";
 import { renderIdentifierDetailPage } from "../features/identifiers/identifier-detail-page.js";
@@ -16,17 +15,7 @@ function assumeType(value) {
 export async function loadPage({ actions, bridge, currentState, findVault, isUnlocked, route, showCreateVaultDialog, }) {
     if (route.name === "home") {
         return {
-            page: renderVaultPickerPage({
-                vaults: currentState().vaults,
-                onCreateVault: showCreateVaultDialog,
-                onSelectVault(vault) {
-                    if (isUnlocked(vault.id)) {
-                        navigate(currentState().lastCoreRoutes[vault.id] || identifiersHref(vault.id));
-                        return;
-                    }
-                    navigate(unlockHref(vault.id));
-                },
-            }),
+            page: renderVaultPickerPage(),
             vault: null,
         };
     }

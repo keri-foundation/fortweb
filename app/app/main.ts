@@ -28,7 +28,15 @@ type ShellVault = ShellProps["vault"];
 type PageFactoryContext = Parameters<typeof loadPage>[0];
 type LoadPageActions = Parameters<typeof loadPage>[0]["actions"];
 
-type VaultRecord = ReturnType<PageFactoryContext["currentState"]>["vaults"][number];
+interface VaultRecord {
+    id: string;
+    alias: string;
+    storageName?: string;
+    createdAt: string;
+    identifierCount?: number;
+    remoteCount?: number;
+    locked?: boolean;
+}
 
 type VaultSummary = {
     identifierCount?: number;
