@@ -1,8 +1,10 @@
-let liveRegion = null;
-function ensureLiveRegion() {
+let liveRegion: HTMLElement | null = null;
+
+function ensureLiveRegion(): HTMLElement {
     if (liveRegion && document.body.contains(liveRegion)) {
         return liveRegion;
     }
+
     liveRegion = document.createElement("div");
     liveRegion.setAttribute("role", "status");
     liveRegion.setAttribute("aria-live", "polite");
@@ -12,7 +14,8 @@ function ensureLiveRegion() {
     document.body.appendChild(liveRegion);
     return liveRegion;
 }
-export function announce(message, priority = "polite") {
+
+export function announce(message: string, priority: "polite" | "assertive" = "polite"): void {
     const region = ensureLiveRegion();
     region.setAttribute("aria-live", priority);
     region.textContent = "";
@@ -20,41 +23,60 @@ export function announce(message, priority = "polite") {
         region.textContent = message;
     });
 }
-export function captureFocusReturn() {
+
+export function captureFocusReturn(): () => void {
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+
     return () => {
         if (previousFocus && typeof previousFocus.focus === "function") {
             previousFocus.focus({ preventScroll: true });
         }
     };
 }
-export function rovingTabindex(container, itemSelector, options = {}) {
+
+interface RovingTabindexOptions {
+    orientation?: "horizontal" | "vertical" | "both";
+}
+
+export function rovingTabindex(
+    container: HTMLElement,
+    itemSelector: string,
+    options: RovingTabindexOptions = {},
+): () => void {
     const { orientation = "horizontal" } = options;
-    function getItems() {
-        return Array.from(container.querySelectorAll(itemSelector)).filter((item) => item instanceof HTMLElement);
+
+    function getItems(): HTMLElement[] {
+        return Array.from(container.querySelectorAll(itemSelector)).filter(
+            (item): item is HTMLElement => item instanceof HTMLElement,
+        );
     }
-    function initTabindex() {
+
+    function initTabindex(): void {
         const items = getItems();
         items.forEach((item, index) => {
             item.setAttribute("tabindex", index === 0 ? "0" : "-1");
         });
     }
-    function moveFocus(items, currentIndex, delta) {
+
+    function moveFocus(items: HTMLElement[], currentIndex: number, delta: number): void {
         const nextIndex = (currentIndex + delta + items.length) % items.length;
         items.forEach((item, index) => {
             item.setAttribute("tabindex", index === nextIndex ? "0" : "-1");
         });
         items[nextIndex]?.focus();
     }
-    function handleKeydown(event) {
+
+    function handleKeydown(event: KeyboardEvent): void {
         const items = getItems();
         const currentTarget = event.target;
         const current = currentTarget instanceof HTMLElement ? items.indexOf(currentTarget) : -1;
         if (current === -1) {
             return;
         }
+
         const isHorizontal = orientation === "horizontal" || orientation === "both";
         const isVertical = orientation === "vertical" || orientation === "both";
+
         switch (event.key) {
             case "ArrowRight":
                 if (isHorizontal) {
@@ -90,6 +112,7 @@ export function rovingTabindex(container, itemSelector, options = {}) {
                 break;
         }
     }
+
     initTabindex();
     container.addEventListener("keydown", handleKeydown);
     return () => container.removeEventListener("keydown", handleKeydown);
