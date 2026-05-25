@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urljoin, urlparse
 from uuid import uuid4
 
 import js
+import pyscript
 from pyscript import sync
 
 warnings.filterwarnings("ignore", category=SyntaxWarning, module=r"^keri(\.|$)")
@@ -143,6 +144,10 @@ class KfVaultState:
 
 
 def _origin():
+    contract_origin = _runtime_contract_text(("documentOrigin",))
+    if contract_origin:
+        return contract_origin.rstrip("/")
+
     try:
         return str(js.location.origin or "")
     except Exception:
@@ -159,6 +164,10 @@ def _is_bundled_app_shell():
 
 
 def _absolute_url(path: str):
+    app_base_url = _runtime_contract_text(("appBaseUrl",))
+    if app_base_url and path.startswith("/"):
+        return f"{app_base_url.rstrip('/')}{path}"
+
     origin = _origin()
     if origin and path.startswith("/"):
         return f"{origin}{path}"
@@ -440,6 +449,85 @@ def _perf_ms():
 
 
 _DIAGNOSTIC_KIND = "fortweb.runtime.diagnostic"
+
+
+def _config_dict():
+    raw_config = getattr(pyscript, "config", {})
+    if isinstance(raw_config, dict):
+        return raw_config
+    try:
+        return dict(raw_config)
+    except Exception:
+        return {}
+
+
+def _runtime_origin_contract():
+    contract = _config_dict().get("fort_runtime_origin")
+    return contract if isinstance(contract, dict) else None
+
+
+def _runtime_contract_text(path: tuple[str, ...], default: str = ""):
+    value = _runtime_origin_contract()
+    for key in path:
+        if not isinstance(value, dict):
+            return default
+        value = value.get(key)
+    if isinstance(value, str):
+        return value.strip() or default
+    return default
+
+
+def _runtime_contract_bool(path: tuple[str, ...], default=False):
+    value = _runtime_origin_contract()
+    for key in path:
+        if not isinstance(value, dict):
+            return default
+        value = value.get(key)
+    return value if isinstance(value, bool) else default
+
+
+def _url_scheme(value: str):
+    parsed = urlparse(value)
+    return parsed.scheme.lower() if parsed.scheme else ""
+
+
+def _runtime_contract_summary():
+    contract = _runtime_origin_contract()
+    if contract is None:
+        return {"present": False}
+
+    return {
+        "present": True,
+        "platform": str(contract.get("platform") or ""),
+        "mode": str(contract.get("mode") or ""),
+        "document_origin_scheme": _url_scheme(str(contract.get("documentOrigin") or "")),
+        "app_base_scheme": _url_scheme(str(contract.get("appBaseUrl") or "")),
+        "worker_scheme": _url_scheme(str(contract.get("workerUrl") or "")),
+        "config_scheme": _url_scheme(str(contract.get("configUrl") or "")),
+        "storage_namespace": _runtime_contract_text(("storage", "storageNamespace")),
+    }
+
+
+def _validate_runtime_origin_contract():
+    contract = _runtime_origin_contract()
+    if contract is None:
+        emit_runtime_diagnostic("runtime_origin_contract_missing", fallback="browser_defaults")
+        return
+
+    if contract.get("schema") != "fortweb.runtime-origin.v1" or contract.get("version") != 1:
+        raise RuntimeFault("BAD_CONFIG", "Runtime origin contract was invalid.")
+
+    if _runtime_contract_text(("platform",)) == "ios-wkwebview":
+        if _runtime_contract_text(("mode",)) != "bundled-offline":
+            raise RuntimeFault("BAD_CONFIG", "iOS runtime origin contract mode was invalid.")
+        if _runtime_contract_text(("documentOrigin",)).rstrip("/") != "app://local":
+            raise RuntimeFault("BAD_CONFIG", "iOS runtime origin contract document origin was invalid.")
+        if _runtime_contract_bool(("capabilities", "networkAllowed"), True):
+            raise RuntimeFault("BAD_CONFIG", "iOS runtime origin contract cannot allow network bootstrap.")
+        if not _runtime_contract_bool(("capabilities", "bundledAssetsOnly"), False):
+            raise RuntimeFault("BAD_CONFIG", "iOS runtime origin contract must require bundled assets.")
+
+    emit_runtime_diagnostic("runtime_origin_contract_present", **_runtime_contract_summary())
 
 
 def emit_runtime_diagnostic(event: str, *, level: str = "info", **fields: object) -> None:
@@ -2154,6 +2242,8 @@ async def handle_request(raw_message):
 async def _preload():
     t0 = _perf_ms()
     try:
+        emit_runtime_diagnostic("worker_preload_start", **_runtime_contract_summary())
+        _validate_runtime_origin_contract()
         await _ensure_runtime_packages()
         _load_modules()
         dur = round(_perf_ms() - t0)

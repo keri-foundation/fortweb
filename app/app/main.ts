@@ -22,6 +22,11 @@ import { renderFixtureIndexPage } from "../fixtures/fixture-index-page.js";
 import { installGlobalHandlers } from "../runtime/global-handlers.js";
 import { METHODS } from "../runtime/method-catalog.js";
 import { postLog } from "../runtime/logger.js";
+import {
+    describeRuntimeOriginContract,
+    readWindowRuntimeOriginContract,
+    RuntimeOriginContractError,
+} from "../runtime/origin-contract.js";
 
 type ShellProps = Parameters<typeof renderShell>[1];
 type ShellVault = ShellProps["vault"];
@@ -82,9 +87,36 @@ if (!(rootNode instanceof HTMLElement)) {
 }
 const root = rootNode;
 
+function readRuntimeOriginContractOrRenderStartupError() {
+    try {
+        return readWindowRuntimeOriginContract();
+    } catch (error) {
+        const message = error instanceof RuntimeOriginContractError
+            ? error.message
+            : "Runtime origin contract was invalid.";
+        postLog("runtime_origin_contract_invalid", {
+            level: "error",
+            message,
+        });
+        renderErrorPage({ message }).render?.(root);
+        throw error;
+    }
+}
+
+const runtimeOriginContract = readRuntimeOriginContractOrRenderStartupError();
+if (runtimeOriginContract) {
+    postLog("runtime_origin_contract_present", describeRuntimeOriginContract(runtimeOriginContract));
+} else {
+    postLog("runtime_origin_contract_missing", {
+        level: "info",
+        fallback: "browser_defaults",
+    });
+}
+
 const bridge = createRuntimeBridge({
-    workerUrl: new URL("../runtime/wallet-worker.py", import.meta.url),
-    configUrl: new URL("../../pyscript-ci.toml", import.meta.url),
+    workerUrl: runtimeOriginContract?.workerUrl ?? new URL("../runtime/wallet-worker.py", import.meta.url),
+    configUrl: runtimeOriginContract?.configUrl ?? new URL("../../pyscript-ci.toml", import.meta.url),
+    runtimeOriginContract,
 });
 const session = createSessionStore({
     vaultSummary: null,

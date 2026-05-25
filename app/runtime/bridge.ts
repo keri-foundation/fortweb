@@ -2,6 +2,10 @@ import { PyWorker, type PyWorkerHandle } from "../../vendor/pyscript/2025.11.2/c
 import { parse as parseToml } from "../../vendor/pyscript/2025.11.2/toml-BK2RWy-G.js";
 import { createRuntimeRequest, isRuntimeResponse, type RuntimeResponse } from "./messages.js";
 import { postLog, postLifecycle } from "./logger.js";
+import {
+    describeRuntimeOriginContract,
+    type FortRuntimeOriginContractV1,
+} from "./origin-contract.js";
 
 const WORKER_DIAGNOSTIC_KIND = "fortweb.runtime.diagnostic";
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -30,8 +34,9 @@ interface WorkerDiagnostic {
 }
 
 interface RuntimeBridgeOptions {
-    workerUrl: URL;
-    configUrl: URL;
+    workerUrl: URL | string;
+    configUrl: URL | string;
+    runtimeOriginContract?: FortRuntimeOriginContractV1 | null;
 }
 
 interface RuntimeBridge {
@@ -160,7 +165,7 @@ function parseWorkerDiagnostic(rawPayload: unknown): WorkerDiagnostic | null {
     };
 }
 
-export function createRuntimeBridge({ workerUrl, configUrl }: RuntimeBridgeOptions): RuntimeBridge {
+export function createRuntimeBridge({ workerUrl, configUrl, runtimeOriginContract = null }: RuntimeBridgeOptions): RuntimeBridge {
     let requestCounter = 0;
     let bootedWorker: PyWorkerHandle | null = null;
     let workerPromise: Promise<PyWorkerHandle> | null = null;
@@ -193,15 +198,22 @@ export function createRuntimeBridge({ workerUrl, configUrl }: RuntimeBridgeOptio
             postLifecycle("boot");
 
             try {
-                const response = await fetch(configUrl.toString());
+                const workerUrlString = workerUrl.toString();
+                const configUrlString = configUrl.toString();
+                const response = await fetch(configUrlString);
                 if (!response.ok) {
-                    throw new Error(`Unable to load runtime config from ${configUrl.toString()}.`);
+                    throw new Error(`Unable to load runtime config from ${configUrlString}.`);
                 }
 
-                const config = parseToml(await response.text());
-                const worker = await PyWorker(workerUrl.toString(), {
+                const config = parseToml(await response.text()) as Record<string, unknown>;
+                if (runtimeOriginContract) {
+                    config.fort_runtime_origin = runtimeOriginContract;
+                    postLog("runtime_origin_contract_forwarded", describeRuntimeOriginContract(runtimeOriginContract));
+                }
+
+                const worker = await PyWorker(workerUrlString, {
                     type: "pyodide",
-                    configURL: configUrl.toString(),
+                    configURL: configUrlString,
                     config,
                 });
                 postLifecycle("ready");

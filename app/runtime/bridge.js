@@ -2,6 +2,7 @@ import { PyWorker } from "../../vendor/pyscript/2025.11.2/core.js";
 import { parse as parseToml } from "../../vendor/pyscript/2025.11.2/toml-BK2RWy-G.js";
 import { createRuntimeRequest, isRuntimeResponse } from "./messages.js";
 import { postLog, postLifecycle } from "./logger.js";
+import { describeRuntimeOriginContract, } from "./origin-contract.js";
 const WORKER_DIAGNOSTIC_KIND = "fortweb.runtime.diagnostic";
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const WORKER_LIVENESS_TIMEOUT_MS = 3_000;
@@ -107,7 +108,7 @@ function parseWorkerDiagnostic(rawPayload) {
         fields,
     };
 }
-export function createRuntimeBridge({ workerUrl, configUrl }) {
+export function createRuntimeBridge({ workerUrl, configUrl, runtimeOriginContract = null }) {
     let requestCounter = 0;
     let bootedWorker = null;
     let workerPromise = null;
@@ -135,14 +136,20 @@ export function createRuntimeBridge({ workerUrl, configUrl }) {
             console.time("[bridge] worker boot");
             postLifecycle("boot");
             try {
-                const response = await fetch(configUrl.toString());
+                const workerUrlString = workerUrl.toString();
+                const configUrlString = configUrl.toString();
+                const response = await fetch(configUrlString);
                 if (!response.ok) {
-                    throw new Error(`Unable to load runtime config from ${configUrl.toString()}.`);
+                    throw new Error(`Unable to load runtime config from ${configUrlString}.`);
                 }
                 const config = parseToml(await response.text());
-                const worker = await PyWorker(workerUrl.toString(), {
+                if (runtimeOriginContract) {
+                    config.fort_runtime_origin = runtimeOriginContract;
+                    postLog("runtime_origin_contract_forwarded", describeRuntimeOriginContract(runtimeOriginContract));
+                }
+                const worker = await PyWorker(workerUrlString, {
                     type: "pyodide",
-                    configURL: configUrl.toString(),
+                    configURL: configUrlString,
                     config,
                 });
                 postLifecycle("ready");
