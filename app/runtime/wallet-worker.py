@@ -64,6 +64,15 @@ DEFAULT_SETTINGS = {
     "keyTier": "low",
     "witnessProfile": "Direct",
 }
+ERROR_MESSAGE_MAX_CHARS = 240
+IOS_APP_LOCAL_ORIGIN = "app://local"
+IOS_LOOPBACK_HOST = "127.0.0.1"
+IOS_LOOPBACK_PREFIX = "_fortios"
+IOS_LOOPBACK_NONCE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{16,}$")
+SENSITIVE_ERROR_PATTERN = re.compile(
+    r"(pass(code|word)?|secret|seed|mnemonic|private[_-]?key|token|api[_-]?key|authorization|cookie|credential)",
+    re.IGNORECASE,
+)
 PYODIDE_PACKAGE_NAMES = [
     "cryptography",
     "jsonschema",
@@ -401,7 +410,31 @@ async def _ensure_registry():
 
     await _ensure_runtime_packages()
     modules = _load_modules()
-    db = await modules["webdbing"].WebDBer.open(name=REGISTRY_NAME, stores=[REGISTRY_STORE])
+    started_at = _perf_ms()
+    emit_runtime_diagnostic(
+        "webdber.open.registry.start",
+        registry_name=REGISTRY_NAME,
+        registry_store=REGISTRY_STORE,
+        **_runtime_contract_summary(),
+    )
+    try:
+        db = await modules["webdbing"].WebDBer.open(name=REGISTRY_NAME, stores=[REGISTRY_STORE])
+    except Exception as exc:
+        emit_runtime_diagnostic(
+            "webdber.open.registry.error",
+            level="error",
+            registry_name=REGISTRY_NAME,
+            registry_store=REGISTRY_STORE,
+            duration_ms=_duration_ms(started_at),
+            **_diagnostic_error_fields(exc),
+        )
+        raise
+    emit_runtime_diagnostic(
+        "webdber.open.registry.end",
+        registry_name=REGISTRY_NAME,
+        registry_store=REGISTRY_STORE,
+        duration_ms=_duration_ms(started_at),
+    )
     store = db.env.open_db(REGISTRY_STORE)
     _REGISTRY = {"db": db, "store": store}
     return _REGISTRY
@@ -491,6 +524,91 @@ def _url_scheme(value: str):
     return parsed.scheme.lower() if parsed.scheme else ""
 
 
+def _parse_runtime_contract_url(path: tuple[str, ...]):
+    value = _runtime_contract_text(path)
+    parsed = urlparse(value)
+    if not parsed.scheme or not parsed.netloc:
+        raise RuntimeFault("BAD_CONFIG", "Runtime origin contract URL was invalid.")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise RuntimeFault("BAD_CONFIG", "Runtime origin contract URL included unsupported components.")
+    return parsed
+
+
+def _runtime_url_origin(parsed):
+    try:
+        port = parsed.port
+    except ValueError as error:
+        raise RuntimeFault("BAD_CONFIG", "Runtime origin contract port was invalid.") from error
+    return parsed.scheme.lower(), (parsed.hostname or "").lower(), port
+
+
+def _same_runtime_origin(left, right):
+    return _runtime_url_origin(left) == _runtime_url_origin(right)
+
+
+def _validate_ios_common_runtime_contract():
+    if _runtime_contract_bool(("capabilities", "networkAllowed"), True):
+        raise RuntimeFault("BAD_CONFIG", "iOS runtime origin contract cannot allow network bootstrap.")
+    if not _runtime_contract_bool(("capabilities", "bundledAssetsOnly"), False):
+        raise RuntimeFault("BAD_CONFIG", "iOS runtime origin contract must require bundled assets.")
+    if _runtime_contract_bool(("capabilities", "httpsLikeAssetOrigin"), True):
+        raise RuntimeFault("BAD_CONFIG", "iOS runtime origin contract HTTPS-like asset flag was invalid.")
+    if _runtime_contract_bool(("capabilities", "implicitBlobOriginSafe"), True):
+        raise RuntimeFault("BAD_CONFIG", "iOS runtime origin contract blob safety flag was invalid.")
+
+
+def _validate_ios_app_local_runtime_contract():
+    if _runtime_contract_text(("documentOrigin",)).rstrip("/") != IOS_APP_LOCAL_ORIGIN:
+        raise RuntimeFault("BAD_CONFIG", "iOS app-local runtime origin contract document origin was invalid.")
+    if _runtime_contract_text(("appBaseUrl",)).rstrip("/") != IOS_APP_LOCAL_ORIGIN:
+        raise RuntimeFault("BAD_CONFIG", "iOS app-local runtime origin contract app base URL was invalid.")
+    if _runtime_contract_text(("storage", "originPartition")).rstrip("/") != IOS_APP_LOCAL_ORIGIN:
+        raise RuntimeFault("BAD_CONFIG", "iOS app-local runtime origin contract origin partition was invalid.")
+    for path in (("entryUrl",), ("workerUrl",), ("configUrl",)):
+        if not _runtime_contract_text(path).startswith(f"{IOS_APP_LOCAL_ORIGIN}/"):
+            raise RuntimeFault("BAD_CONFIG", "iOS app-local runtime origin contract asset URL was invalid.")
+    if not _runtime_contract_bool(("capabilities", "customScheme"), False):
+        raise RuntimeFault("BAD_CONFIG", "iOS app-local runtime origin contract custom scheme flag was invalid.")
+    _validate_ios_common_runtime_contract()
+
+
+def _validate_ios_loopback_runtime_contract():
+    document_origin_text = _runtime_contract_text(("documentOrigin",))
+    if not document_origin_text.startswith(f"http://{IOS_LOOPBACK_HOST}:"):
+        raise RuntimeFault("BAD_CONFIG", "iOS loopback runtime origin contract host was invalid.")
+
+    document_origin = _parse_runtime_contract_url(("documentOrigin",))
+    document_parts = _runtime_url_origin(document_origin)
+    if document_parts[0] != "http" or document_parts[1] != IOS_LOOPBACK_HOST or not document_parts[2]:
+        raise RuntimeFault("BAD_CONFIG", "iOS loopback runtime origin contract origin was invalid.")
+    if document_parts[2] == 0 or document_origin.path not in ("", "/"):
+        raise RuntimeFault("BAD_CONFIG", "iOS loopback runtime origin contract origin shape was invalid.")
+
+    app_base_url = _parse_runtime_contract_url(("appBaseUrl",))
+    origin_partition = _parse_runtime_contract_url(("storage", "originPartition"))
+    if not _same_runtime_origin(app_base_url, document_origin):
+        raise RuntimeFault("BAD_CONFIG", "iOS loopback runtime origin contract app base origin was invalid.")
+    if not _same_runtime_origin(origin_partition, document_origin) or origin_partition.path not in ("", "/"):
+        raise RuntimeFault("BAD_CONFIG", "iOS loopback runtime origin contract origin partition was invalid.")
+
+    app_base_segments = [segment for segment in app_base_url.path.split("/") if segment]
+    if len(app_base_segments) != 2 or app_base_segments[0] != IOS_LOOPBACK_PREFIX:
+        raise RuntimeFault("BAD_CONFIG", "iOS loopback runtime origin contract path prefix was invalid.")
+    nonce = app_base_segments[1]
+    if not IOS_LOOPBACK_NONCE_PATTERN.fullmatch(nonce):
+        raise RuntimeFault("BAD_CONFIG", "iOS loopback runtime origin contract nonce was invalid.")
+    nonce_prefix = f"/{IOS_LOOPBACK_PREFIX}/{nonce}/"
+
+    for path in (("entryUrl",), ("workerUrl",), ("configUrl",)):
+        parsed = _parse_runtime_contract_url(path)
+        if not _same_runtime_origin(parsed, document_origin) or not parsed.path.startswith(nonce_prefix):
+            raise RuntimeFault("BAD_CONFIG", "iOS loopback runtime origin contract asset URL was invalid.")
+
+    if _runtime_contract_bool(("capabilities", "customScheme"), True):
+        raise RuntimeFault("BAD_CONFIG", "iOS loopback runtime origin contract custom scheme flag was invalid.")
+    _validate_ios_common_runtime_contract()
+
+
 def _runtime_contract_summary():
     contract = _runtime_origin_contract()
     if contract is None:
@@ -520,12 +638,10 @@ def _validate_runtime_origin_contract():
     if _runtime_contract_text(("platform",)) == "ios-wkwebview":
         if _runtime_contract_text(("mode",)) != "bundled-offline":
             raise RuntimeFault("BAD_CONFIG", "iOS runtime origin contract mode was invalid.")
-        if _runtime_contract_text(("documentOrigin",)).rstrip("/") != "app://local":
-            raise RuntimeFault("BAD_CONFIG", "iOS runtime origin contract document origin was invalid.")
-        if _runtime_contract_bool(("capabilities", "networkAllowed"), True):
-            raise RuntimeFault("BAD_CONFIG", "iOS runtime origin contract cannot allow network bootstrap.")
-        if not _runtime_contract_bool(("capabilities", "bundledAssetsOnly"), False):
-            raise RuntimeFault("BAD_CONFIG", "iOS runtime origin contract must require bundled assets.")
+        if _runtime_contract_text(("documentOrigin",)).rstrip("/") == IOS_APP_LOCAL_ORIGIN:
+            _validate_ios_app_local_runtime_contract()
+        else:
+            _validate_ios_loopback_runtime_contract()
 
     emit_runtime_diagnostic("runtime_origin_contract_present", **_runtime_contract_summary())
 
@@ -539,6 +655,26 @@ def emit_runtime_diagnostic(event: str, *, level: str = "info", **fields: object
         js.self.postMessage(json.dumps(payload))
     except Exception:
         pass
+
+
+def _duration_ms(started_at):
+    return round(_perf_ms() - started_at)
+
+
+def _safe_error_message(error):
+    message = " ".join(str(error).split())
+    if SENSITIVE_ERROR_PATTERN.search(message):
+        return "[redacted]"
+    if len(message) > ERROR_MESSAGE_MAX_CHARS:
+        return f"{message[:ERROR_MESSAGE_MAX_CHARS]}..."
+    return message
+
+
+def _diagnostic_error_fields(error):
+    return {
+        "error_class": error.__class__.__name__,
+        "error_message": _safe_error_message(error),
+    }
 
 
 async def _build_vault_state(record, *, bran: str = ""):
@@ -579,7 +715,18 @@ async def _build_vault_state(record, *, bran: str = ""):
         phase="vault_state.keeper.reopen.start",
         storage_name=storage_name,
     )
-    await keeper.reopen()
+    try:
+        await keeper.reopen()
+    except Exception as exc:
+        emit_runtime_diagnostic(
+            "worker_phase",
+            level="error",
+            phase="vault_state.keeper.reopen.error",
+            storage_name=storage_name,
+            duration_ms=_duration_ms(t2),
+            **_diagnostic_error_fields(exc),
+        )
+        raise
     js.console.log(f"[worker] keeper.reopen: {_perf_ms() - t2:.0f}ms")
     emit_runtime_diagnostic(
         "worker_phase",
@@ -594,7 +741,18 @@ async def _build_vault_state(record, *, bran: str = ""):
         phase="vault_state.baser.reopen.start",
         storage_name=storage_name,
     )
-    await baser.reopen()
+    try:
+        await baser.reopen()
+    except Exception as exc:
+        emit_runtime_diagnostic(
+            "worker_phase",
+            level="error",
+            phase="vault_state.baser.reopen.error",
+            storage_name=storage_name,
+            duration_ms=_duration_ms(t3),
+            **_diagnostic_error_fields(exc),
+        )
+        raise
     js.console.log(f"[worker] baser.reopen: {_perf_ms() - t3:.0f}ms")
     emit_runtime_diagnostic(
         "worker_phase",
@@ -1909,30 +2067,136 @@ async def _dispatch(method: str, params: dict):
         return {"vaults": [_vault_view(record) for record in _registry_records(registry)]}
 
     if method == "vaults.create":
-        registry = await _ensure_registry()
-        alias = _require_text(params.get("name"), field="Vault name")
+        create_started_at = _perf_ms()
+        emit_runtime_diagnostic("vaults.create.enter", **_runtime_contract_summary())
+        try:
+            ensure_started_at = _perf_ms()
+            emit_runtime_diagnostic(
+                "vaults.create.ensure_registry.start",
+                registry_name=REGISTRY_NAME,
+            )
+            try:
+                registry = await _ensure_registry()
+            except Exception as exc:
+                emit_runtime_diagnostic(
+                    "vaults.create.ensure_registry.error",
+                    level="error",
+                    registry_name=REGISTRY_NAME,
+                    duration_ms=_duration_ms(ensure_started_at),
+                    **_diagnostic_error_fields(exc),
+                )
+                raise
+            emit_runtime_diagnostic(
+                "vaults.create.ensure_registry.end",
+                registry_name=REGISTRY_NAME,
+                duration_ms=_duration_ms(ensure_started_at),
+            )
 
-        if _registry_record_by_alias(registry, alias) is not None:
-            raise RuntimeFault("CONFLICT", f"Vault '{alias}' already exists.")
+            alias = _require_text(params.get("name"), field="Vault name")
 
-        vault_id = _vault_id_for_alias(alias, {record["id"] for record in _registry_records(registry)})
-        passcode = str(params.get("passcode") or "")
-        encrypted = bool(passcode.strip())
-        record = _vault_record(
-            vault_id=vault_id,
-            alias=alias,
-            encrypted=encrypted,
-            root_salt=_generate_root_salt(),
-            passcode_kdf=_normalize_passcode_kdf(),
-        )
-        bran = _prepare_bran(passcode, record["passcodeKdf"]) if encrypted else ""
+            lookup_started_at = _perf_ms()
+            emit_runtime_diagnostic("registry.record.lookup.start", registry_name=REGISTRY_NAME)
+            try:
+                existing_record = _registry_record_by_alias(registry, alias)
+            except Exception as exc:
+                emit_runtime_diagnostic(
+                    "registry.record.lookup.error",
+                    level="error",
+                    registry_name=REGISTRY_NAME,
+                    duration_ms=_duration_ms(lookup_started_at),
+                    **_diagnostic_error_fields(exc),
+                )
+                raise
+            emit_runtime_diagnostic(
+                "registry.record.lookup.end",
+                registry_name=REGISTRY_NAME,
+                found=existing_record is not None,
+                duration_ms=_duration_ms(lookup_started_at),
+            )
 
-        temp_state = await _build_vault_state(record, bran=bran)
-        await temp_state["hby"].aclose(clear=False)
+            if existing_record is not None:
+                raise RuntimeFault("CONFLICT", f"Vault '{alias}' already exists.")
 
-        _set_registry_record(registry, record)
-        await registry["db"].flush()
-        return {"vault": _vault_view(record)}
+            vault_id = _vault_id_for_alias(alias, {record["id"] for record in _registry_records(registry)})
+            passcode = str(params.get("passcode") or "")
+            encrypted = bool(passcode.strip())
+            record = _vault_record(
+                vault_id=vault_id,
+                alias=alias,
+                encrypted=encrypted,
+                root_salt=_generate_root_salt(),
+                passcode_kdf=_normalize_passcode_kdf(),
+            )
+            bran = _prepare_bran(passcode, record["passcodeKdf"]) if encrypted else ""
+
+            temp_state = await _build_vault_state(record, bran=bran)
+            await temp_state["hby"].aclose(clear=False)
+
+            write_started_at = _perf_ms()
+            emit_runtime_diagnostic(
+                "registry.record.write.start",
+                registry_name=REGISTRY_NAME,
+                vault_id=vault_id,
+                storage_name=record["storageName"],
+            )
+            try:
+                _set_registry_record(registry, record)
+            except Exception as exc:
+                emit_runtime_diagnostic(
+                    "registry.record.write.error",
+                    level="error",
+                    registry_name=REGISTRY_NAME,
+                    vault_id=vault_id,
+                    storage_name=record["storageName"],
+                    duration_ms=_duration_ms(write_started_at),
+                    **_diagnostic_error_fields(exc),
+                )
+                raise
+            emit_runtime_diagnostic(
+                "registry.record.write.end",
+                registry_name=REGISTRY_NAME,
+                vault_id=vault_id,
+                storage_name=record["storageName"],
+                duration_ms=_duration_ms(write_started_at),
+            )
+
+            flush_started_at = _perf_ms()
+            emit_runtime_diagnostic(
+                "registry.flush.start",
+                registry_name=REGISTRY_NAME,
+            )
+            try:
+                flushed_stores = await registry["db"].flush()
+            except Exception as exc:
+                emit_runtime_diagnostic(
+                    "registry.flush.error",
+                    level="error",
+                    registry_name=REGISTRY_NAME,
+                    duration_ms=_duration_ms(flush_started_at),
+                    **_diagnostic_error_fields(exc),
+                )
+                raise
+            emit_runtime_diagnostic(
+                "registry.flush.end",
+                registry_name=REGISTRY_NAME,
+                flushed_stores=flushed_stores,
+                duration_ms=_duration_ms(flush_started_at),
+            )
+            emit_runtime_diagnostic(
+                "vaults.create.success",
+                vault_id=vault_id,
+                storage_name=record["storageName"],
+                duration_ms=_duration_ms(create_started_at),
+            )
+            return {"vault": _vault_view(record)}
+        except Exception as exc:
+            emit_runtime_diagnostic(
+                "vaults.create.error",
+                level="error",
+                duration_ms=_duration_ms(create_started_at),
+                **_diagnostic_error_fields(exc),
+            )
+            raise
 
     if method == "vaults.open":
         registry = await _ensure_registry()

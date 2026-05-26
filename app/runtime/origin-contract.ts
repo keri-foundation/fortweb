@@ -37,6 +37,11 @@ export type FortRuntimeOriginContractV1 = {
 
 const RUNTIME_ORIGIN_SCHEMA = "fortweb.runtime-origin.v1";
 const RUNTIME_ORIGIN_VERSION = 1 as const;
+const IOS_APP_LOCAL_ORIGIN = "app://local";
+const IOS_LOOPBACK_HOST = "127.0.0.1";
+const IOS_LOOPBACK_PROTOCOL = "http:";
+const IOS_LOOPBACK_PATH_PREFIX = "_fortios";
+const IOS_LOOPBACK_NONCE_PATTERN = /^[A-Za-z0-9_-]{16,}$/;
 const SECRET_FIELD_PATTERN = /(pass(code|word)?|secret|seed|mnemonic|private[_-]?key|token|api[_-]?key|authorization|cookie|credential)/i;
 
 export class RuntimeOriginContractError extends Error {
@@ -113,6 +118,134 @@ function urlScheme(url: string): string {
     return new URL(url).protocol.replace(/:$/, "").toLowerCase();
 }
 
+function parseContractUrl(value: string, field: string): URL {
+    try {
+        const url = new URL(value);
+        assertRuntimeContract(!url.username && !url.password, `${field} must not include credentials.`);
+        assertRuntimeContract(!url.search && !url.hash, `${field} must not include query or fragment components.`);
+        return url;
+    } catch (error) {
+        if (error instanceof RuntimeOriginContractError) {
+            throw error;
+        }
+        throw new RuntimeOriginContractError(`${field} must be an absolute URL.`);
+    }
+}
+
+function sameOrigin(left: URL, right: URL): boolean {
+    return left.protocol === right.protocol && left.hostname === right.hostname && left.port === right.port;
+}
+
+function validateIosCommonCapabilities(contract: FortRuntimeOriginContractV1): void {
+    assertRuntimeContract(
+        contract.capabilities.httpsLikeAssetOrigin === false,
+        "Bundled iOS runtime origin contract must set httpsLikeAssetOrigin=false.",
+    );
+    assertRuntimeContract(
+        contract.capabilities.implicitBlobOriginSafe === false,
+        "Bundled iOS runtime origin contract must set implicitBlobOriginSafe=false.",
+    );
+    assertRuntimeContract(
+        contract.capabilities.networkAllowed === false,
+        "Bundled iOS runtime origin contract must set networkAllowed=false.",
+    );
+    assertRuntimeContract(
+        contract.capabilities.bundledAssetsOnly === true,
+        "Bundled iOS runtime origin contract must set bundledAssetsOnly=true.",
+    );
+}
+
+function validateIosAppLocalContract(contract: FortRuntimeOriginContractV1): void {
+    assertRuntimeContract(
+        normalizeBaseUrl(contract.documentOrigin) === IOS_APP_LOCAL_ORIGIN,
+        "Bundled iOS app-local runtime origin contract must use document origin app://local.",
+    );
+    assertRuntimeContract(
+        normalizeBaseUrl(contract.appBaseUrl) === IOS_APP_LOCAL_ORIGIN,
+        "Bundled iOS app-local runtime origin contract must use app base URL app://local.",
+    );
+    assertRuntimeContract(
+        normalizeBaseUrl(contract.storage.originPartition) === IOS_APP_LOCAL_ORIGIN,
+        "Bundled iOS app-local runtime origin contract must use origin partition app://local.",
+    );
+
+    for (const [field, value] of [
+        ["entryUrl", contract.entryUrl],
+        ["workerUrl", contract.workerUrl],
+        ["configUrl", contract.configUrl],
+    ] as const) {
+        assertRuntimeContract(
+            value.startsWith(`${IOS_APP_LOCAL_ORIGIN}/`),
+            `Bundled iOS app-local runtime origin contract must use app://local URLs for ${field}.`,
+        );
+        assertRuntimeContract(
+            !value.startsWith("http://") && !value.startsWith("https://"),
+            `Bundled iOS app-local runtime origin contract must not use network URLs for ${field}.`,
+        );
+        assertRuntimeContract(
+            !value.includes("localhost") && !value.includes(IOS_LOOPBACK_HOST),
+            `Bundled iOS app-local runtime origin contract must not use loopback URLs for ${field}.`,
+        );
+    }
+
+    assertRuntimeContract(contract.capabilities.customScheme, "Bundled iOS app-local runtime origin contract must set customScheme=true.");
+    validateIosCommonCapabilities(contract);
+}
+
+function validateIosLoopbackContract(contract: FortRuntimeOriginContractV1): void {
+    const documentOrigin = parseContractUrl(contract.documentOrigin, "Runtime origin contract.documentOrigin");
+    assertRuntimeContract(
+        contract.documentOrigin.startsWith(`http://${IOS_LOOPBACK_HOST}:`),
+        "Bundled iOS loopback runtime origin contract must use canonical 127.0.0.1 HTTP origin.",
+    );
+    assertRuntimeContract(
+        documentOrigin.protocol === IOS_LOOPBACK_PROTOCOL && documentOrigin.hostname === IOS_LOOPBACK_HOST,
+        "Bundled iOS loopback runtime origin contract must use 127.0.0.1 over HTTP.",
+    );
+    assertRuntimeContract(
+        documentOrigin.port.length > 0 && documentOrigin.port !== "0",
+        "Bundled iOS loopback runtime origin contract must use an explicit non-zero port.",
+    );
+    assertRuntimeContract(
+        documentOrigin.pathname === "/",
+        "Bundled iOS loopback runtime origin contract must not include a document path.",
+    );
+
+    const appBaseUrl = parseContractUrl(contract.appBaseUrl, "Runtime origin contract.appBaseUrl");
+    const originPartition = parseContractUrl(contract.storage.originPartition, "Runtime origin contract.storage.originPartition");
+    assertRuntimeContract(sameOrigin(appBaseUrl, documentOrigin), "Bundled iOS loopback runtime origin contract must use one origin.");
+    assertRuntimeContract(sameOrigin(originPartition, documentOrigin), "Bundled iOS loopback runtime origin contract must use document origin as origin partition.");
+    assertRuntimeContract(originPartition.pathname === "/", "Bundled iOS loopback runtime origin partition must not include a path.");
+
+    const appBaseSegments = appBaseUrl.pathname.split("/").filter(Boolean);
+    assertRuntimeContract(
+        appBaseSegments.length === 2 && appBaseSegments[0] === IOS_LOOPBACK_PATH_PREFIX,
+        "Bundled iOS loopback runtime origin contract must use the hardened path prefix.",
+    );
+    const nonce = appBaseSegments[1];
+    assertRuntimeContract(
+        IOS_LOOPBACK_NONCE_PATTERN.test(nonce),
+        "Bundled iOS loopback runtime origin contract must include a non-trivial nonce path segment.",
+    );
+    const noncePathPrefix = `/${IOS_LOOPBACK_PATH_PREFIX}/${nonce}/`;
+
+    for (const [field, value] of [
+        ["entryUrl", contract.entryUrl],
+        ["workerUrl", contract.workerUrl],
+        ["configUrl", contract.configUrl],
+    ] as const) {
+        const url = parseContractUrl(value, `Runtime origin contract.${field}`);
+        assertRuntimeContract(sameOrigin(url, documentOrigin), `Bundled iOS loopback runtime origin contract must use one origin for ${field}.`);
+        assertRuntimeContract(
+            url.pathname.startsWith(noncePathPrefix),
+            `Bundled iOS loopback runtime origin contract must keep ${field} under the nonce path prefix.`,
+        );
+    }
+
+    assertRuntimeContract(contract.capabilities.customScheme === false, "Bundled iOS loopback runtime origin contract must set customScheme=false.");
+    validateIosCommonCapabilities(contract);
+}
+
 function rejectSecretBearingFields(value: unknown, path = "contract"): void {
     if (Array.isArray(value)) {
         value.forEach((item, index) => rejectSecretBearingFields(item, `${path}[${index}]`));
@@ -157,55 +290,12 @@ function validateIosBundledOfflineContract(contract: FortRuntimeOriginContractV1
         "Bundled iOS runtime origin contract must declare mode bundled-offline.",
     );
 
-    assertRuntimeContract(
-        normalizeBaseUrl(contract.documentOrigin) === "app://local",
-        "Bundled iOS runtime origin contract must use document origin app://local.",
-    );
-    assertRuntimeContract(
-        normalizeBaseUrl(contract.appBaseUrl) === "app://local",
-        "Bundled iOS runtime origin contract must use app base URL app://local.",
-    );
-    assertRuntimeContract(
-        normalizeBaseUrl(contract.storage.originPartition) === "app://local",
-        "Bundled iOS runtime origin contract must use origin partition app://local.",
-    );
-
-    for (const [field, value] of [
-        ["entryUrl", contract.entryUrl],
-        ["workerUrl", contract.workerUrl],
-        ["configUrl", contract.configUrl],
-    ] as const) {
-        assertRuntimeContract(
-            value.startsWith("app://local/"),
-            `Bundled iOS runtime origin contract must use app://local URLs for ${field}.`,
-        );
-        assertRuntimeContract(
-            !value.startsWith("http://") && !value.startsWith("https://"),
-            `Bundled iOS runtime origin contract must not use network URLs for ${field}.`,
-        );
-        assertRuntimeContract(
-            !value.includes("localhost") && !value.includes("127.0.0.1"),
-            `Bundled iOS runtime origin contract must not use loopback URLs for ${field}.`,
-        );
+    if (normalizeBaseUrl(contract.documentOrigin) === IOS_APP_LOCAL_ORIGIN) {
+        validateIosAppLocalContract(contract);
+        return;
     }
 
-    assertRuntimeContract(contract.capabilities.customScheme, "Bundled iOS runtime origin contract must set customScheme=true.");
-    assertRuntimeContract(
-        contract.capabilities.httpsLikeAssetOrigin === false,
-        "Bundled iOS runtime origin contract must set httpsLikeAssetOrigin=false.",
-    );
-    assertRuntimeContract(
-        contract.capabilities.implicitBlobOriginSafe === false,
-        "Bundled iOS runtime origin contract must set implicitBlobOriginSafe=false.",
-    );
-    assertRuntimeContract(
-        contract.capabilities.networkAllowed === false,
-        "Bundled iOS runtime origin contract must set networkAllowed=false.",
-    );
-    assertRuntimeContract(
-        contract.capabilities.bundledAssetsOnly === true,
-        "Bundled iOS runtime origin contract must set bundledAssetsOnly=true.",
-    );
+    validateIosLoopbackContract(contract);
 }
 
 export function validateRuntimeOriginContract(rawValue: unknown): FortRuntimeOriginContractV1 {
