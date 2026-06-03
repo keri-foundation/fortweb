@@ -562,9 +562,19 @@ window.addEventListener("beforeunload", () => {
 
 async function bootstrap(): Promise<void> {
     installGlobalHandlers();
-    await actions.refreshVaults();
-    initDrawer(currentState().vaults);
     await render();
+
+    try {
+        await actions.refreshVaults();
+        initDrawer(currentState().vaults);
+        await render();
+    } catch (error) {
+        postLog("initial_vault_refresh_failed", {
+            level: "warning",
+            code: errorCode(error),
+            message: errorMessage(error),
+        });
+    }
 }
 
 void bootstrap();

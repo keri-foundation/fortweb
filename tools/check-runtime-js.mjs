@@ -11,14 +11,26 @@ function isConcreteTypeScriptPath(includePath) {
     return includePath.endsWith('.ts') && !includePath.endsWith('.d.ts') && !includePath.includes('*');
 }
 
+function normalizeRelativePath(filePath) {
+    return filePath.split(path.sep).join('/');
+}
+
 export async function loadRuntimeOutputPaths(projectDir = DEFAULT_PROJECT_DIR) {
     const tsconfigPath = path.join(projectDir, 'tsconfig.build.json');
     const tsconfig = JSON.parse(await readFile(tsconfigPath, 'utf8'));
     const includes = Array.isArray(tsconfig.include) ? tsconfig.include : [];
+    const rawOutDir = tsconfig.compilerOptions?.outDir;
+    const rawRootDir = tsconfig.compilerOptions?.rootDir;
+    const outDir = typeof rawOutDir === 'string' && rawOutDir.length > 0 ? rawOutDir : '';
+    const rootDir = typeof rawRootDir === 'string' && rawRootDir.length > 0 ? rawRootDir : '';
 
     return includes
         .filter(isConcreteTypeScriptPath)
-        .map((includePath) => includePath.replace(/\.ts$/u, '.js'));
+        .map((includePath) => {
+            const sourcePath = rootDir ? path.relative(rootDir, includePath) : includePath;
+            const outputPath = outDir ? path.join(outDir, sourcePath) : sourcePath;
+            return normalizeRelativePath(outputPath).replace(/\.ts$/u, '.js');
+        });
 }
 
 async function fileFingerprint(filePath) {
@@ -117,20 +129,32 @@ async function readGitStatus(projectDir, relativePaths) {
     });
 }
 
-export function createFailureMessage(changedOutputs, preExistingDirtyOutputs = []) {
+function collectMissingOutputs(snapshot) {
+    const missing = [];
+
+    for (const [relativePath, entry] of snapshot.entries()) {
+        if (!entry.exists) {
+            missing.push(relativePath);
+        }
+    }
+
+    return missing.sort();
+}
+
+export function createFailureMessage(changedOutputs, missingOutputs = []) {
     const lines = [
-        '[check-runtime-js] stale runtime JavaScript detected.',
+        '[check-runtime-js] generated runtime JavaScript output is invalid.',
         'TypeScript is the source of truth for FortWeb runtime modules.',
-        'Adjacent .js runtime artifacts changed when the runtime build was re-run.',
-        'Run `npm run build:runtime`, review the emitted .js changes, and include them before staging Fort-ios payloads.',
-        'Do not stage Fort-ios payloads from stale JS.',
-        '',
-        'Changed runtime artifacts:',
-        ...changedOutputs.map((outputPath) => `- ${outputPath}`),
+        'Generated runtime output under `dist/runtime` must exist and remain stable across repeated builds.',
+        'Run `npm run build:runtime`, review the emitted output contract, and fix any non-deterministic or missing runtime JS before relying on it.',
     ];
 
-    if (preExistingDirtyOutputs.length > 0) {
-        lines.push('', 'Pre-existing dirty runtime artifacts before the check:', ...preExistingDirtyOutputs.map((entry) => `- ${entry}`));
+    if (missingOutputs.length > 0) {
+        lines.push('', 'Missing generated runtime outputs:', ...missingOutputs.map((outputPath) => `- ${outputPath}`));
+    }
+
+    if (changedOutputs.length > 0) {
+        lines.push('', 'Generated runtime outputs that changed across repeated builds:', ...changedOutputs.map((outputPath) => `- ${outputPath}`));
     }
 
     return lines.join('\n');
@@ -138,19 +162,28 @@ export function createFailureMessage(changedOutputs, preExistingDirtyOutputs = [
 
 export async function main(projectDir = DEFAULT_PROJECT_DIR) {
     const runtimeOutputs = await loadRuntimeOutputPaths(projectDir);
-    const beforeSnapshot = await captureSnapshot(projectDir, runtimeOutputs);
-    const preExistingDirtyOutputs = await readGitStatus(projectDir, runtimeOutputs);
+    await runCommand('npm', ['run', 'build:runtime'], projectDir);
+
+    const firstSnapshot = await captureSnapshot(projectDir, runtimeOutputs);
+    const missingOutputs = collectMissingOutputs(firstSnapshot);
 
     await runCommand('npm', ['run', 'build:runtime'], projectDir);
 
-    const afterSnapshot = await captureSnapshot(projectDir, runtimeOutputs);
-    const changedOutputs = diffSnapshots(beforeSnapshot, afterSnapshot);
+    const secondSnapshot = await captureSnapshot(projectDir, runtimeOutputs);
+    const changedOutputs = diffSnapshots(firstSnapshot, secondSnapshot);
+    const remainingMissingOutputs = collectMissingOutputs(secondSnapshot);
+    const allMissingOutputs = Array.from(new Set([...missingOutputs, ...remainingMissingOutputs])).sort();
 
-    if (changedOutputs.length > 0) {
-        throw new Error(createFailureMessage(changedOutputs, preExistingDirtyOutputs));
+    if (allMissingOutputs.length > 0 || changedOutputs.length > 0) {
+        throw new Error(createFailureMessage(changedOutputs, allMissingOutputs));
     }
 
-    process.stdout.write('[check-runtime-js] runtime JavaScript artifacts are in sync with TypeScript.\n');
+    const dirtyGeneratedOutputs = await readGitStatus(projectDir, runtimeOutputs);
+    if (dirtyGeneratedOutputs.length > 0) {
+        process.stdout.write(`[check-runtime-js] note: generated runtime outputs are ignored/untracked or locally modified:\n${dirtyGeneratedOutputs.map((entry) => `- ${entry}`).join('\n')}\n`);
+    }
+
+    process.stdout.write('[check-runtime-js] generated runtime JavaScript output exists and is deterministic.\n');
 }
 
 const entrypointPath = process.argv[1] ? path.resolve(process.argv[1]) : null;
