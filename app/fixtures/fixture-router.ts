@@ -56,13 +56,13 @@ const loadBootstrapFixture =
 
 const FIXTURES: Record<string, FixtureFactory> = {
     "vaults/empty": () => ({
-        page: renderVaultPickerPage({ vaults: [], onCreateVault: noop, onSelectVault: noop }),
+        page: renderVaultPickerPage(),
         vault: null,
         route: { name: "home", shellMode: "home", navMode: "none", path: "/_fixtures/vaults/empty", params: {} },
     }),
 
     "vaults/populated": () => ({
-        page: renderVaultPickerPage({ vaults: fixtureVaults, onCreateVault: noop, onSelectVault: noop }),
+        page: renderVaultPickerPage(),
         vault: null,
         route: { name: "home", shellMode: "home", navMode: "none", path: "/_fixtures/vaults/populated", params: {} },
     }),

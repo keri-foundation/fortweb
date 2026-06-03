@@ -7,18 +7,18 @@ import { renderRemoteDetailPage } from "../features/remotes/remote-detail-page.j
 import { renderSettingsPage } from "../features/settings/settings-page.js";
 import { renderWitnessOverviewPage } from "../providers/kerifoundation/witness-overview-page.js";
 import { renderWatcherOverviewPage } from "../providers/kerifoundation/watcher-overview-page.js";
-import { fixtureVault, fixtureVaultLocked, fixtureVaults, fixtureIdentifiers, fixtureRemotes, fixtureSettings, fixtureBootstrapDisconnected, fixtureBootstrapConnected, fixtureBootstrapOnboarded, fixtureWitnesses, fixtureWatchers, FIXTURE_VAULT_ID_CONST, } from "./data.js";
+import { fixtureVault, fixtureVaultLocked, fixtureIdentifiers, fixtureRemotes, fixtureSettings, fixtureBootstrapDisconnected, fixtureBootstrapConnected, fixtureBootstrapOnboarded, fixtureWitnesses, fixtureWatchers, FIXTURE_VAULT_ID_CONST, } from "./data.js";
 const noop = () => { };
 const asyncNoop = async () => { };
 const loadBootstrapFixture = (snapshot) => async (_bootUrl) => snapshot;
 const FIXTURES = {
     "vaults/empty": () => ({
-        page: renderVaultPickerPage({ vaults: [], onCreateVault: noop, onSelectVault: noop }),
+        page: renderVaultPickerPage(),
         vault: null,
         route: { name: "home", shellMode: "home", navMode: "none", path: "/_fixtures/vaults/empty", params: {} },
     }),
     "vaults/populated": () => ({
-        page: renderVaultPickerPage({ vaults: fixtureVaults, onCreateVault: noop, onSelectVault: noop }),
+        page: renderVaultPickerPage(),
         vault: null,
         route: { name: "home", shellMode: "home", navMode: "none", path: "/_fixtures/vaults/populated", params: {} },
     }),

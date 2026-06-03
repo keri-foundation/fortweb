@@ -12,8 +12,6 @@ import { renderWatcherOverviewPage } from "../providers/kerifoundation/watcher-o
 import { renderWitnessOverviewPage } from "../providers/kerifoundation/witness-overview-page.js";
 
 type RecordValue = Record<string, unknown>;
-
-type VaultPickerProps = Parameters<typeof renderVaultPickerPage>[0];
 type UnlockPageProps = Parameters<typeof renderUnlockPage>[0];
 type IdentifiersPageProps = Parameters<typeof renderIdentifiersPage>[0];
 type IdentifierDetailProps = Parameters<typeof renderIdentifierDetailPage>[0];
@@ -22,6 +20,16 @@ type RemoteDetailProps = Parameters<typeof renderRemoteDetailPage>[0];
 type SettingsPageProps = Parameters<typeof renderSettingsPage>[0];
 type WitnessOverviewProps = Parameters<typeof renderWitnessOverviewPage>[0];
 type WatcherOverviewProps = Parameters<typeof renderWatcherOverviewPage>[0];
+
+interface VaultRecord {
+    id: string;
+    alias: string;
+    storageName?: string;
+    createdAt: string;
+    identifierCount?: number;
+    remoteCount?: number;
+    locked?: boolean;
+}
 
 interface RuntimeBridgeLike {
     request<T extends RecordValue = RecordValue>(
@@ -34,7 +42,7 @@ interface RuntimeBridgeLike {
 interface StateSnapshot {
     remoteFilter: string;
     lastCoreRoutes: Record<string, string>;
-    vaults: VaultPickerProps["vaults"];
+    vaults: VaultRecord[];
 }
 
 interface PageActions {
@@ -83,18 +91,7 @@ export async function loadPage({
 }: PageFactoryContext): Promise<LoadedPageResult> {
     if (route.name === "home") {
         return {
-            page: renderVaultPickerPage({
-                vaults: currentState().vaults,
-                onCreateVault: showCreateVaultDialog,
-                onSelectVault(vault: VaultPickerProps["vaults"][number]) {
-                    if (isUnlocked(vault.id)) {
-                        navigate(currentState().lastCoreRoutes[vault.id] || identifiersHref(vault.id));
-                        return;
-                    }
-
-                    navigate(unlockHref(vault.id));
-                },
-            }),
+            page: renderVaultPickerPage(),
             vault: null,
         };
     }
