@@ -8,6 +8,7 @@ import { renderRemotesPage } from "../features/remotes/remotes-page.js";
 import { renderSettingsPage } from "../features/settings/settings-page.js";
 import { renderUnlockPage } from "../features/vaults/unlock-page.js";
 import { renderVaultPickerPage } from "../features/vaults/vault-picker-page.js";
+import { renderKfIdentifiersPage } from "../providers/kerifoundation/identifiers-page.js";
 import { renderWatcherOverviewPage } from "../providers/kerifoundation/watcher-overview-page.js";
 import { renderWitnessOverviewPage } from "../providers/kerifoundation/witness-overview-page.js";
 
@@ -18,6 +19,7 @@ type IdentifierDetailProps = Parameters<typeof renderIdentifierDetailPage>[0];
 type RemotesPageProps = Parameters<typeof renderRemotesPage>[0];
 type RemoteDetailProps = Parameters<typeof renderRemoteDetailPage>[0];
 type SettingsPageProps = Parameters<typeof renderSettingsPage>[0];
+type KfIdentifiersPageProps = Parameters<typeof renderKfIdentifiersPage>[0];
 type WitnessOverviewProps = Parameters<typeof renderWitnessOverviewPage>[0];
 type WatcherOverviewProps = Parameters<typeof renderWatcherOverviewPage>[0];
 
@@ -170,6 +172,17 @@ export async function loadPage({
                 settings: assumeType<SettingsPageProps["settings"]>(pageData.settings),
             }),
             vault: findVault(route.params.vaultId),
+        };
+    }
+
+    if (route.name === "kf-identifiers") {
+        const vaultId = route.params.vaultId ?? "";
+        return {
+            page: renderKfIdentifiersPage({
+                bootstrapState: assumeType<KfIdentifiersPageProps["bootstrapState"]>(pageData.bootstrapState),
+                identifiers: assumeType<KfIdentifiersPageProps["identifiers"]>(pageData.identifiers || []),
+            }),
+            vault: findVault(vaultId),
         };
     }
 

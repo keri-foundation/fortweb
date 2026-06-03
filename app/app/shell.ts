@@ -1,6 +1,7 @@
 import {
     homeHref,
     identifiersHref,
+    kfIdentifiersHref,
     remotesHref,
     kfWitnessesHref,
     kfWatchersHref,
@@ -82,6 +83,12 @@ const CORE_NAV_LINKS: ReadonlyArray<MenuLinkConfig> = Object.freeze([
 ]);
 
 const FOUNDATION_LINKS: ReadonlyArray<PluginLinkConfig> = Object.freeze([
+    {
+        icon: "./assets/icons/identifiers.png",
+        href: kfIdentifiersHref,
+        label: "Identifiers",
+        isActive: (name) => name === "kf-identifiers",
+    },
     {
         icon: "./assets/icons/witness1.svg",
         href: kfWitnessesHref,

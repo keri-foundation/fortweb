@@ -27,6 +27,17 @@ export async function loadRouteData({ bridge, route }) {
             vaultId: route.params.vaultId,
         });
     }
+    if (route.name === "kf-identifiers") {
+        const vaultId = route.params.vaultId ?? "";
+        const bootstrapState = await bridge.request(METHODS.kfBootstrapGet, { vaultId });
+        const { identifiers } = await bridge.request(METHODS.identifiersList, {
+            vaultId,
+        });
+        return {
+            bootstrapState,
+            identifiers,
+        };
+    }
     if (route.name === "kf-witnesses") {
         const vaultId = route.params.vaultId ?? "";
         const bootstrapState = await bridge.request(METHODS.kfBootstrapGet, { vaultId });

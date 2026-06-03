@@ -8,6 +8,7 @@ type RouteName =
     | "remotes"
     | "remote-detail"
     | "settings"
+    | "kf-identifiers"
     | "kf-witnesses"
     | "kf-watchers"
     | "not-found";
@@ -122,6 +123,14 @@ export function parseRoute(hash = window.location.hash): Route {
             requiresUnlock: true,
         },
         {
+            name: "kf-identifiers",
+            regex: /^\/vaults\/([^/]+)\/kf\/identifiers$/,
+            shellMode: "vault",
+            navMode: "plugin",
+            requiresVault: true,
+            requiresUnlock: true,
+        },
+        {
             name: "kf-witnesses",
             regex: /^\/vaults\/([^/]+)\/kf\/witnesses$/,
             shellMode: "vault",
@@ -201,6 +210,10 @@ export function remoteDetailHref(vaultId: string, aid: string): string {
 
 export function settingsHref(vaultId: string): string {
     return `#/vaults/${encodeURIComponent(vaultId)}/settings`;
+}
+
+export function kfIdentifiersHref(vaultId: string): string {
+    return `#/vaults/${encodeURIComponent(vaultId)}/kf/identifiers`;
 }
 
 export function kfWitnessesHref(vaultId: string): string {

@@ -62,6 +62,18 @@ export async function loadRouteData({ bridge, route }: RouteDataLoaderContext): 
         });
     }
 
+    if (route.name === "kf-identifiers") {
+        const vaultId = route.params.vaultId ?? "";
+        const bootstrapState = await bridge.request<RecordValue>(METHODS.kfBootstrapGet, { vaultId });
+        const { identifiers } = await bridge.request<{ identifiers: RecordValue[] }>(METHODS.identifiersList, {
+            vaultId,
+        });
+        return {
+            bootstrapState,
+            identifiers,
+        };
+    }
+
     if (route.name === "kf-witnesses") {
         const vaultId = route.params.vaultId ?? "";
         const bootstrapState = await bridge.request<RecordValue>(METHODS.kfBootstrapGet, { vaultId });

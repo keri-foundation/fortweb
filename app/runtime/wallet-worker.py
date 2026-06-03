@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import base64
 import importlib
@@ -5,15 +7,30 @@ import json
 import re
 import traceback
 import warnings
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from inspect import isawaitable
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urljoin, urlparse
 from uuid import uuid4
 
 import js
-import pyscript
-from pyscript import sync
+try:
+    import pyscript
+except ModuleNotFoundError:
+    pyscript = SimpleNamespace(config={})
+
+try:
+    from pyscript import sync
+except ModuleNotFoundError:
+    sync = SimpleNamespace()
+
+import onboarding
+import transporting
+import vaulting
+
+NullConfiger = vaulting.NullConfiger
+RuntimeFault = vaulting.RuntimeFault
+KfVaultState = onboarding.KfVaultState
 
 warnings.filterwarnings("ignore", category=SyntaxWarning, module=r"^keri(\.|$)")
 warnings.filterwarnings("ignore", category=SyntaxWarning, module=r"^hio(\.|$)")
@@ -52,11 +69,18 @@ ALLOWED_METHODS = {
     "kf.account.watchers.list",
     "kf.account.watchers.status",
 }
-REMOTE_METADATA_FIELDS = ("alias", "company", "org", "note")
 DEFAULT_KF_BOOT_URL = "http://127.0.0.1:9723"
 KF_STATE_KEY = "state"
 KF_STATE_SUBDB = "kfst."
 KF_PROXY_PREFIX = "/_fortweb_proxy"
+KF_ONBOARDING_AUTH_NAMESPACE = "kf_onboarding"
+KF_ONBOARDING_AUTH_ALIAS_PREFIX = "kf-onboarding"
+KF_BOOTSTRAP_TIMEOUT_MS = 15_000
+KF_ACCOUNT_QUERY_TIMEOUT_MS = 15_000
+KF_WITNESS_REGISTRATION_TIMEOUT_MS = 30_000
+KF_CESR_TIMEOUT_MS = 30_000
+KF_CESR_REPLY_MESSAGE_LIMIT = 16
+KF_CESR_REPLY_STEP_LIMIT = 4_096
 DEFAULT_SETTINGS = {
     "tempDatastore": False,
     "storageBackend": "Browser IndexedDB via WebBaser and WebKeeper",
@@ -64,6 +88,7 @@ DEFAULT_SETTINGS = {
     "keyTier": "low",
     "witnessProfile": "Direct",
 }
+REMOTE_METADATA_FIELDS = ("alias", "company", "org", "note")
 ERROR_MESSAGE_MAX_CHARS = 240
 IOS_APP_LOCAL_ORIGIN = "app://local"
 IOS_LOOPBACK_HOST = "127.0.0.1"
@@ -95,6 +120,7 @@ LOCAL_WHEEL_PATHS = [
     "/fortweb/vendor/pyodide/0.29.3/wheels/prettytable-3.17.0-py3-none-any.whl",
     "/fortweb/vendor/pyodide/0.29.3/wheels/pyasn1-0.6.2-py3-none-any.whl",
     "/fortweb/vendor/pyodide/0.29.3/wheels/pyasn1_alt_modules-0.4.7-py3-none-any.whl",
+    "/fortweb/vendor/pyodide/0.29.3/wheels/pypng-0.20220715.0-py3-none-any.whl",
     "/fortweb/vendor/pyodide/0.29.3/wheels/qrcode-7.4.2-py3-none-any.whl",
     "/fortweb/vendor/pyodide/0.29.3/wheels/semver-3.0.4-py3-none-any.whl",
     "/fortweb/vendor/pyodide/0.29.3/wheels/wheel-0.45.1-py3-none-any.whl",
@@ -106,50 +132,9 @@ LOCAL_WHEEL_PATHS = [
 ]
 
 
-class NullConfiger:
-    def __init__(self):
-        self.opened = True
-        self.temp = False
-
-    def get(self, human=None):
-        return {}
-
-    def close(self, clear=False):
-        self.opened = False
-        return True
-
-
-class RuntimeFault(Exception):
-    def __init__(self, code: str, message: str):
-        super().__init__(message)
-        self.code = code
-
-
 _MODULES = None
-_STATE = None
-_REGISTRY = None
 _REQUEST_LOCK = asyncio.Lock()
 _RUNTIME_PACKAGES_TASK = None  # Shared task so _preload and _dispatch coalesce package loads
-
-
-@dataclass
-class KfVaultState:
-    boot_url: str = DEFAULT_KF_BOOT_URL
-    account_aid: str = ""
-    account_alias: str = ""
-    status: str = ""
-    created_at: str = ""
-    onboarded_at: str = ""
-    witness_profile_code: str = ""
-    witness_count: int = 0
-    toad: int = 0
-    watcher_required: bool = True
-    region_id: str = ""
-    region_name: str = ""
-    boot_server_aid: str = ""
-    witness_eids: list[str] = field(default_factory=list)
-    watcher_eid: str = ""
-    failure_reason: str = ""
 
 
 def _origin():
@@ -225,7 +210,9 @@ def _load_modules():
             "koming": importlib.import_module("keri.db.koming"),
             "oobiing": importlib.import_module("keri.app.oobiing"),
             "organizing": importlib.import_module("keri.app.organizing"),
+            "eventing": importlib.import_module("keri.core.eventing"),
             "parsing": importlib.import_module("keri.core.parsing"),
+            "routing": importlib.import_module("keri.core.routing"),
             "recording": importlib.import_module("keri.recording"),
             "serdering": importlib.import_module("keri.core.serdering"),
             "kering": importlib.import_module("keri.kering"),
@@ -233,6 +220,7 @@ def _load_modules():
             "exchanging": importlib.import_module("keri.peer.exchanging"),
             "signing": importlib.import_module("keri.core.signing"),
         }
+    transporting.install_browser_clienter_proxy(_MODULES["httping"])
     return _MODULES
 
 
@@ -999,7 +987,7 @@ def _load_kf_state(hby):
     return record
 
 
-def _save_kf_state(hby, record: KfVaultState):
+def _save_kf_state(hby, record):
     if not record.created_at:
         record.created_at = _now_iso()
     if not record.boot_url:
@@ -1008,11 +996,11 @@ def _save_kf_state(hby, record: KfVaultState):
     return record
 
 
-def _has_kf_account(record: KfVaultState):
+def _has_kf_account(record):
     return bool(record.account_aid or record.account_alias or record.status)
 
 
-def _kf_state_view(record: KfVaultState):
+def _kf_state_view(record):
     if not _has_kf_account(record):
         return None
 
@@ -1612,7 +1600,7 @@ def _select_account_option(snapshot: dict, code: str):
     return None
 
 
-def _require_kf_account_hab(hby, record: KfVaultState):
+def _require_kf_account_hab(hby, record):
     if record.status != "onboarded" or not record.account_aid:
         raise RuntimeFault("CONFLICT", "This vault does not have an onboarded KERI Foundation account yet.")
 
@@ -1625,7 +1613,7 @@ def _require_kf_account_hab(hby, record: KfVaultState):
     return hab
 
 
-def _create_or_load_kf_account_hab(hby, record: KfVaultState, *, alias: str, requested_account_aid: str, witness_eids: list[str], toad: int):
+def _create_or_load_kf_account_hab(hby, record, *, alias: str, requested_account_aid: str, witness_eids: list[str], toad: int):
     existing = None
 
     if requested_account_aid:
@@ -1762,7 +1750,7 @@ def _local_connection_status(hby, organizer, aid: str):
     return "Pending local connect", "warning"
 
 
-async def _list_kf_account_witnesses(hby, organizer, record: KfVaultState):
+async def _list_kf_account_witnesses(hby, organizer, record):
     hab = _require_kf_account_hab(hby, record)
     reply = await _send_kf_exn(
         hby,
@@ -1796,7 +1784,7 @@ async def _list_kf_account_witnesses(hby, organizer, record: KfVaultState):
     return rows
 
 
-async def _list_kf_account_watchers(hby, organizer, record: KfVaultState):
+async def _list_kf_account_watchers(hby, organizer, record):
     hab = _require_kf_account_hab(hby, record)
     reply = await _send_kf_exn(
         hby,
@@ -1830,7 +1818,7 @@ async def _list_kf_account_watchers(hby, organizer, record: KfVaultState):
     return rows
 
 
-async def _refresh_kf_watcher_status(hby, organizer, record: KfVaultState, watcher_id: str):
+async def _refresh_kf_watcher_status(hby, organizer, record, watcher_id: str):
     hab = _require_kf_account_hab(hby, record)
     reply = await _send_kf_exn(
         hby,
@@ -2438,6 +2426,43 @@ async def _dispatch(method: str, params: dict):
     raise RuntimeFault("BAD_REQUEST", f"Runtime method '{method}' is not allowed.")
 
 
+vaulting.configure_runtime(
+    ensure_runtime_packages=_ensure_runtime_packages,
+    load_modules=_load_modules,
+    wallet_storage_prefix=WALLET_STORAGE_PREFIX,
+    registry_name=REGISTRY_NAME,
+    registry_store=REGISTRY_STORE,
+    legacy_root_salt=LEGACY_ROOT_SALT,
+    passcode_kdf_defaults=PASSCODE_KDF_DEFAULTS,
+    default_settings=DEFAULT_SETTINGS,
+    kf_state_subdb=KF_STATE_SUBDB,
+)
+transporting.configure_runtime(
+    origin=_origin,
+    default_boot_url=DEFAULT_KF_BOOT_URL,
+    kf_proxy_prefix=KF_PROXY_PREFIX,
+    bootstrap_timeout_ms=KF_BOOTSTRAP_TIMEOUT_MS,
+    cesr_timeout_ms=KF_CESR_TIMEOUT_MS,
+    reply_message_limit=KF_CESR_REPLY_MESSAGE_LIMIT,
+    reply_step_limit=KF_CESR_REPLY_STEP_LIMIT,
+)
+onboarding.configure_runtime(
+    kf_state_key=KF_STATE_KEY,
+    kf_state_subdb=KF_STATE_SUBDB,
+    onboarding_auth_namespace=KF_ONBOARDING_AUTH_NAMESPACE,
+    onboarding_auth_alias_prefix=KF_ONBOARDING_AUTH_ALIAS_PREFIX,
+    account_query_timeout_ms=KF_ACCOUNT_QUERY_TIMEOUT_MS,
+    witness_registration_timeout_ms=KF_WITNESS_REGISTRATION_TIMEOUT_MS,
+    cesr_timeout_ms=KF_CESR_TIMEOUT_MS,
+)
+
+
+async def _dispatch(method: str, params: dict):
+    if method.startswith("kf."):
+        return await onboarding.dispatch(method, params)
+    return await vaulting.dispatch(method, params)
+
+
 def _error_payload(message_id: str, code: str, message: str):
     return json.dumps(
         {
@@ -2491,7 +2516,7 @@ async def handle_request(raw_message):
                 "result": result,
             }
         )
-    except RuntimeFault as exc:
+    except (RuntimeFault, vaulting.RuntimeFault) as exc:
         js.console.log(f"[worker] << {method} FAULT({exc.code}): {_perf_ms() - t_dispatch:.0f}ms")
         return _error_payload(message_id, exc.code, str(exc))
     except Exception:

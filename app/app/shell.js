@@ -1,4 +1,4 @@
-import { homeHref, identifiersHref, remotesHref, kfWitnessesHref, kfWatchersHref, settingsHref, } from "./router.js";
+import { homeHref, identifiersHref, kfIdentifiersHref, remotesHref, kfWitnessesHref, kfWatchersHref, settingsHref, } from "./router.js";
 import { menuButtonHtml } from "../shared/components.js";
 const CORE_NAV_LINKS = Object.freeze([
     {
@@ -21,6 +21,12 @@ const CORE_NAV_LINKS = Object.freeze([
     },
 ]);
 const FOUNDATION_LINKS = Object.freeze([
+    {
+        icon: "./assets/icons/identifiers.png",
+        href: kfIdentifiersHref,
+        label: "Identifiers",
+        isActive: (name) => name === "kf-identifiers",
+    },
     {
         icon: "./assets/icons/witness1.svg",
         href: kfWitnessesHref,
