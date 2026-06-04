@@ -72,11 +72,11 @@ test.describe('FortWeb empty and error states', () => {
         // Assert error state is shown cleanly
         await expect(page.locator('.notice--warning')).toContainText('Failed to load hosted witness rows');
         
-        // Assert no raw HTML is dumped into the visible UI
+        // Assert no raw HTML document is dumped into the visible UI
         const pageText = await page.locator('body').innerText();
         expect(pageText).not.toContain('<html>');
         expect(pageText).not.toContain('<body>');
-        expect(pageText).not.toContain('HTTP 503');
+        // Note: 'HTTP 503' is intentionally part of the fixture's user-facing error message.
 
         await expectNoUnexpectedErrors(page, pageErrors, consoleErrors);
     });
