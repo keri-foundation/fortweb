@@ -5,20 +5,19 @@
  *   - render(props) returns an HTML string
  *   - bind(root, props) attaches event listeners and returns a cleanup function
  *   - destroy() is called implicitly by the cleanup function
- *
- * @typedef {Object} ViewSpec
- * @property {function(Object): string} render
- * @property {function(HTMLElement, Object): (function|null)} [bind]
- *
- * @typedef {Object} ViewInstance
- * @property {function(HTMLElement, Object): function} mount
  */
+
+export interface ViewSpec<TProps = Record<string, unknown>> {
+    render: (props: TProps) => string;
+    bind?: (root: HTMLElement, props: TProps) => (() => void) | null;
+}
+
+export interface ViewInstance<TProps = Record<string, unknown>> {
+    mount: (root: HTMLElement, props: TProps) => () => void;
+}
 
 /**
  * Define a reusable view from a render/bind spec.
- *
- * @param {ViewSpec} spec
- * @returns {ViewInstance}
  *
  * @example
  * const MyCard = defineView({
@@ -36,11 +35,13 @@
  * const cleanup = MyCard.mount(container, { title: "Hi", body: "..." });
  * // later: cleanup();
  */
-export function defineView({ render, bind }) {
+export function defineView<TProps = Record<string, unknown>>(
+    spec: ViewSpec<TProps>,
+): ViewInstance<TProps> {
     return {
-        mount(root, props) {
-            root.innerHTML = render(props);
-            const cleanup = bind?.(root, props) ?? null;
+        mount(root: HTMLElement, props: TProps): () => void {
+            root.innerHTML = spec.render(props);
+            const cleanup = spec.bind?.(root, props) ?? null;
             return () => {
                 cleanup?.();
             };
@@ -51,12 +52,11 @@ export function defineView({ render, bind }) {
 /**
  * Mount a view into a container, replacing any existing content.
  * Returns a cleanup function.
- *
- * @param {HTMLElement} container
- * @param {ViewInstance} view
- * @param {Object} props
- * @returns {function} cleanup
  */
-export function mountView(container, view, props) {
+export function mountView<TProps = Record<string, unknown>>(
+    container: HTMLElement,
+    view: ViewInstance<TProps>,
+    props: TProps,
+): () => void {
     return view.mount(container, props);
 }

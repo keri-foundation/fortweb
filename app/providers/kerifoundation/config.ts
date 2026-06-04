@@ -1,7 +1,14 @@
 const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 const HTTP_PROTOCOLS = new Set(["http:", "https:"]);
 
-const KF_SURFACE_CONFIGS = {
+interface SurfaceConfig {
+    onboardingUrl: string;
+    accountUrl: string;
+    onboardingDestination: string;
+    accountDestination: string;
+}
+
+const KF_SURFACE_CONFIGS: Record<string, SurfaceConfig> = {
     development: {
         onboardingUrl: "http://127.0.0.1:9723/onboarding",
         accountUrl: "http://127.0.0.1:9723/account",
@@ -16,7 +23,7 @@ const KF_SURFACE_CONFIGS = {
     },
 };
 
-function surfaceRoot(url) {
+function surfaceRoot(url: string): string {
     if (!url) {
         return "";
     }
@@ -29,7 +36,7 @@ function surfaceRoot(url) {
     }
 }
 
-function resolveSurfaceUrl(url, origin) {
+function resolveSurfaceUrl(url: string, origin: string): string {
     if (!url) {
         return "";
     }
@@ -45,7 +52,16 @@ function resolveSurfaceUrl(url, origin) {
     }
 }
 
-export function resolveKfSurfaceConfig(origin = window.location.origin) {
+export interface KfSurfaceConfig {
+    environment: string;
+    bootUrl: string;
+    onboardingUrl: string;
+    accountUrl: string;
+    onboardingDestination: string;
+    accountDestination: string;
+}
+
+export function resolveKfSurfaceConfig(origin: string = window.location.origin): KfSurfaceConfig {
     let environment = "development";
     try {
         const { hostname, protocol } = new URL(origin);

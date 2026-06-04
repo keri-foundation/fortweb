@@ -1,6 +1,39 @@
 import { renderPaginatedTable } from "../../shared/components.js";
 
-function accountIdentifierRows(bootstrapState, identifiers) {
+interface BootstrapState {
+    account?: {
+        accountAid?: string;
+        accountAlias?: string;
+    };
+}
+
+interface Identifier {
+    aid: string;
+    alias?: string;
+    prefix?: string;
+    sequenceNumber?: number | string;
+    witnessSummary?: string;
+}
+
+interface AccountIdentifierRow {
+    alias: string;
+    prefix: string;
+    sequenceNumber: number | string;
+    witnessSummary: string;
+}
+
+interface KfIdentifiersPageProps {
+    bootstrapState: BootstrapState;
+    identifiers: Identifier[];
+}
+
+interface PageRecord {
+    title: string;
+    render: (container: HTMLElement) => void;
+    setup: (root: HTMLElement | null) => void;
+}
+
+function accountIdentifierRows(bootstrapState: BootstrapState, identifiers: Identifier[]): AccountIdentifierRow[] {
     const account = bootstrapState.account || {};
     const matchedIdentifier = identifiers.find((identifier) => identifier.aid === account.accountAid) || null;
 
@@ -18,7 +51,7 @@ function accountIdentifierRows(bootstrapState, identifiers) {
     ];
 }
 
-export function renderKfIdentifiersPage({ bootstrapState, identifiers }) {
+export function renderKfIdentifiersPage({ bootstrapState, identifiers }: KfIdentifiersPageProps): PageRecord {
     const rows = accountIdentifierRows(bootstrapState, identifiers);
 
     const table = renderPaginatedTable({
@@ -40,7 +73,7 @@ export function renderKfIdentifiersPage({ bootstrapState, identifiers }) {
 
     return {
         title: "KERI Foundation Identifiers",
-        render(container) {
+        render(container: HTMLElement): void {
             container.replaceChildren();
 
             const page = document.createElement("section");
@@ -66,8 +99,8 @@ export function renderKfIdentifiersPage({ bootstrapState, identifiers }) {
             page.append(tableSection);
             container.append(page);
         },
-        setup(root) {
-            table.setup(root.querySelector("[data-kf-identifiers-table]"));
+        setup(root: HTMLElement | null): void {
+            table.setup(root?.querySelector("[data-kf-identifiers-table]") ?? null);
         },
     };
 }

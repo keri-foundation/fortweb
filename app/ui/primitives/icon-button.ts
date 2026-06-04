@@ -1,21 +1,17 @@
 import { escapeHtml } from "../../shared/dom.js";
 
-/**
- * @typedef {Object} IconButtonProps
- * @property {string} ariaLabel - required accessible label
- * @property {string} iconSrc - path to icon image
- * @property {string} [dataAction] - value for data-action attribute
- * @property {boolean} [disabled=false]
- * @property {string} [className] - additional CSS classes
- */
+export interface IconButtonProps {
+    ariaLabel: string;
+    iconSrc: string;
+    dataAction?: string;
+    disabled?: boolean;
+    className?: string;
+}
 
 /**
  * Render an icon-only button with required accessible label.
- *
- * @param {IconButtonProps} props
- * @returns {string}
  */
-export function iconButtonHtml(props) {
+export function iconButtonHtml(props: IconButtonProps): string {
     const {
         ariaLabel,
         iconSrc,

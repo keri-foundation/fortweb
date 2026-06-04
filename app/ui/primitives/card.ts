@@ -1,22 +1,18 @@
 import { escapeHtml } from "../../shared/dom.js";
 
-/**
- * @typedef {Object} CardProps
- * @property {string} [title]
- * @property {string} [eyebrow] - small label above the title
- * @property {string} [body] - HTML content for the card body
- * @property {string} [actionsHtml] - HTML for the card action area
- * @property {"default"|"danger"} [tone="default"]
- * @property {string} [className] - additional CSS classes
- */
+export interface CardProps {
+    title?: string;
+    eyebrow?: string;
+    body?: string;
+    actionsHtml?: string;
+    tone?: "default" | "danger";
+    className?: string;
+}
 
 /**
  * Render a surface card with optional title, eyebrow, body, and actions.
- *
- * @param {CardProps} props
- * @returns {string}
  */
-export function cardHtml(props) {
+export function cardHtml(props: CardProps): string {
     const {
         title = "",
         eyebrow = "",

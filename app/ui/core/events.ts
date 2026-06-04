@@ -5,15 +5,14 @@
 /**
  * Attach a delegated click handler for elements matching a selector.
  * Returns a cleanup function that removes the listener.
- *
- * @param {HTMLElement} root
- * @param {string} selector
- * @param {function(Event, HTMLElement): void} handler
- * @returns {function} cleanup
  */
-export function delegateClick(root, selector, handler) {
-    function listener(event) {
-        const target = /** @type {HTMLElement} */ (event.target).closest(selector);
+export function delegateClick(
+    root: HTMLElement,
+    selector: string,
+    handler: (event: Event, target: HTMLElement) => void,
+): () => void {
+    function listener(event: Event): void {
+        const target = (event.target as HTMLElement).closest(selector) as HTMLElement | null;
         if (target && root.contains(target)) {
             handler(event, target);
         }
@@ -25,12 +24,11 @@ export function delegateClick(root, selector, handler) {
 /**
  * Attach multiple delegated handlers at once.
  * Returns a single cleanup function.
- *
- * @param {HTMLElement} root
- * @param {Object<string, function(Event, HTMLElement): void>} selectorMap
- * @returns {function} cleanup
  */
-export function delegateAll(root, selectorMap) {
+export function delegateAll(
+    root: HTMLElement,
+    selectorMap: Record<string, (event: Event, target: HTMLElement) => void>,
+): () => void {
     const cleanups = Object.entries(selectorMap).map(
         ([selector, handler]) => delegateClick(root, selector, handler),
     );

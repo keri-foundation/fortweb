@@ -1,32 +1,33 @@
 import { escapeHtml } from "../../shared/dom.js";
 import { captureFocusReturn } from "../core/a11y.js";
 
-/**
- * @typedef {Object} SheetProps
- * @property {string} title
- * @property {string} [subtitle]
- * @property {string} content - HTML content for the sheet body
- * @property {Array<{label: string, tone?: string, dataAction?: string}>} [actions]
- * @property {function} [onDismiss]
- */
+export interface SheetAction {
+    label: string;
+    tone?: string;
+    dataAction?: string;
+}
 
-/**
- * @typedef {Object} SheetController
- * @property {function} open
- * @property {function} close
- * @property {function} destroy
- */
+export interface SheetProps {
+    title: string;
+    subtitle?: string;
+    content: string;
+    actions?: SheetAction[];
+    onDismiss?: () => void;
+}
+
+export interface SheetController {
+    open: () => void;
+    close: () => void;
+    destroy: () => void;
+}
 
 /**
  * Create a bottom sheet overlay with focus management.
- *
- * @param {SheetProps} props
- * @returns {SheetController}
  */
-export function createSheet(props) {
+export function createSheet(props: SheetProps): SheetController {
     const { title, subtitle = "", content, actions = [], onDismiss } = props;
 
-    let restoreFocus = null;
+    let restoreFocus: (() => void) | null = null;
 
     const root = document.createElement("div");
     root.className = "lk-dialog-root lk-dialog-root--sheet";
@@ -65,7 +66,7 @@ export function createSheet(props) {
         </div>
     `;
 
-    function close() {
+    function close(): void {
         root.classList.remove("is-visible");
         root.addEventListener("transitionend", () => root.remove(), { once: true });
         setTimeout(() => root.remove(), 350);
@@ -77,17 +78,17 @@ export function createSheet(props) {
         el.addEventListener("click", close);
     });
 
-    function open() {
+    function open(): void {
         restoreFocus = captureFocusReturn();
         document.body.appendChild(root);
         requestAnimationFrame(() => {
             root.classList.add("is-visible");
-            const firstFocusable = root.querySelector("button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])");
-            /** @type {HTMLElement|null} */ (firstFocusable)?.focus();
+            const firstFocusable = root.querySelector("button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])") as HTMLElement | null;
+            firstFocusable?.focus();
         });
     }
 
-    function destroy() {
+    function destroy(): void {
         root.remove();
         restoreFocus?.();
     }

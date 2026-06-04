@@ -1,16 +1,14 @@
-/**
- * @typedef {Object} ToastMessage
- * @property {string} message
- * @property {"info"|"success"|"warning"|"error"} [tone="info"]
- * @property {number} [durationMs=3000]
- * @property {string} [actionLabel] - optional action button text
- * @property {function} [onAction] - callback for the action button
- */
+export interface ToastMessage {
+    message: string;
+    tone?: "info" | "success" | "warning" | "error";
+    durationMs?: number;
+    actionLabel?: string;
+    onAction?: () => void;
+}
 
-/** @type {HTMLElement|null} */
-let toastContainer = null;
+let toastContainer: HTMLElement | null = null;
 
-function ensureContainer() {
+function ensureContainer(): HTMLElement {
     if (toastContainer && document.body.contains(toastContainer)) {
         return toastContainer;
     }
@@ -24,10 +22,8 @@ function ensureContainer() {
 
 /**
  * Show a toast notification.
- *
- * @param {ToastMessage} props
  */
-export function showToast(props) {
+export function showToast(props: ToastMessage): void {
     const {
         message,
         tone = "info",
@@ -61,9 +57,9 @@ export function showToast(props) {
     container.appendChild(toast);
     requestAnimationFrame(() => toast.classList.add("is-visible"));
 
-    let timer = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
 
-    function dismiss() {
+    function dismiss(): void {
         if (timer) clearTimeout(timer);
         toast.classList.remove("is-visible");
         toast.addEventListener("transitionend", () => toast.remove(), { once: true });

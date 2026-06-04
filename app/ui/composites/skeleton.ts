@@ -1,17 +1,13 @@
-/**
- * @typedef {Object} SkeletonProps
- * @property {"list"|"detail"|"form"|"card"} [preset="list"]
- * @property {number} [count=3] - number of skeleton rows for list preset
- * @property {string} [className]
- */
+export interface SkeletonProps {
+    preset?: "list" | "detail" | "form" | "card";
+    count?: number;
+    className?: string;
+}
 
 /**
  * Render a skeleton loading placeholder.
- *
- * @param {SkeletonProps} props
- * @returns {string}
  */
-export function skeletonHtml(props) {
+export function skeletonHtml(props: SkeletonProps): string {
     const { preset = "list", count = 3, className = "" } = props;
     const classes = ["ui-skeleton", `ui-skeleton--${preset}`, className].filter(Boolean).join(" ");
 
