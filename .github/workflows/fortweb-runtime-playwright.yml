@@ -5,8 +5,11 @@ on:
   push:
     branches:
       - main
-      - runtime-origin-contract-clean-shell-20260525-145142
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
