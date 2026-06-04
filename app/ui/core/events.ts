@@ -12,7 +12,10 @@ export function delegateClick(
     handler: (event: Event, target: HTMLElement) => void,
 ): () => void {
     function listener(event: Event): void {
-        const target = (event.target as HTMLElement).closest(selector) as HTMLElement | null;
+        if (!(event.target instanceof Element)) {
+            return;
+        }
+        const target = event.target.closest(selector) as HTMLElement | null;
         if (target && root.contains(target)) {
             handler(event, target);
         }

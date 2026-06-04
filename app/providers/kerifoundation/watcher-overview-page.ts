@@ -73,7 +73,9 @@ function renderWatcherTable(watchers: WatcherRecord[]) {
         watcherAid: watcher.eid,
         region: watcher.regionName || watcher.regionId || "\u2014",
         hostedStatus: badgeHtml(watcher.hostedStatus || "created", "info"),
+        hostedStatusText: watcher.hostedStatus || "created",
         localStatus: badgeHtml(watcher.localStatus || "Pending local connect", watcher.localStatusTone || "warning"),
+        localStatusText: watcher.localStatus || "Pending local connect",
         endpoint: watcher.url || "\u2014",
     }));
 
@@ -86,8 +88,8 @@ function renderWatcherTable(watchers: WatcherRecord[]) {
             { key: "name", label: "Name", width: "210px" },
             { key: "watcherAid", label: "Watcher AID", width: "320px" },
             { key: "region", label: "Region", width: "160px" },
-            { key: "hostedStatus", label: "Hosted Status", width: "150px", html: true },
-            { key: "localStatus", label: "Local Status", width: "160px", html: true },
+            { key: "hostedStatus", label: "Hosted Status", width: "150px", html: true, searchKey: "hostedStatusText" },
+            { key: "localStatus", label: "Local Status", width: "160px", html: true, searchKey: "localStatusText" },
             { key: "endpoint", label: "Endpoint", width: "280px" },
         ],
         rows,

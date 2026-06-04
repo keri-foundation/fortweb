@@ -147,7 +147,9 @@ function createRemoteEditDialog(
 
     modal.open();
 
-    const root = document.querySelector(`[role='dialog'][aria-label='Edit ${remote.alias}']`);
+    const root = Array.from(document.querySelectorAll("[role='dialog']")).find(
+        (el) => el.getAttribute("aria-label") === `Edit ${remote.alias}`
+    ) as HTMLElement | null;
     if (!(root instanceof HTMLElement)) {
         return;
     }

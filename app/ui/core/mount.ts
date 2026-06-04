@@ -4,14 +4,26 @@
 
 /**
  * Create an element from an HTML string and append it to a parent.
+ * Returns the first element child of the inserted HTML, or the parent's last element child as a fallback.
  */
 export function insertHTML(
     parent: HTMLElement,
     html: string,
     position: InsertPosition = "beforeend",
 ): HTMLElement {
-    parent.insertAdjacentHTML(position, html);
-    return parent.lastElementChild as HTMLElement;
+    const template = document.createElement("template");
+    template.innerHTML = html;
+    const firstChild = template.content.firstElementChild as HTMLElement | null;
+
+    if (position === "beforeend") {
+        parent.append(template.content);
+    } else if (position === "afterbegin") {
+        parent.prepend(template.content);
+    } else {
+        parent.insertAdjacentHTML(position, html);
+    }
+
+    return firstChild || (parent.lastElementChild as HTMLElement);
 }
 
 /**
