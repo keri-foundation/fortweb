@@ -99,7 +99,7 @@ test.describe('FortWeb route acceptance', () => {
 
         await page.goto('/fortweb/app/#/_fixtures/witnesses/disconnected');
 
-        await expect(page.getByRole('heading', { name: 'Witnesses' })).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'Witnesses', level: 1 })).toBeVisible();
         await expect(page.locator('dl').getByText('Disconnected')).toBeVisible();
 
         await expectNoUnexpectedErrors(page, pageErrors, consoleErrors);
@@ -111,7 +111,7 @@ test.describe('FortWeb route acceptance', () => {
 
         await page.goto('/fortweb/app/#/_fixtures/watchers/placeholder');
 
-        await expect(page.getByRole('heading', { name: 'Watchers' })).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'Watchers', level: 1 })).toBeVisible();
 
         await expectNoUnexpectedErrors(page, pageErrors, consoleErrors);
     });

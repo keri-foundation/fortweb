@@ -52,7 +52,7 @@ test.describe('FortWeb empty and error states', () => {
         await page.goto('/fortweb/app/#/_fixtures/witnesses/connected');
 
         // Assert Witnesses page renders
-        await expect(page.getByRole('heading', { name: 'Witnesses' })).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'Witnesses', level: 1 })).toBeVisible();
         
         // Assert connected state is visible (no disconnected badge)
         await expect(page.locator('.badge--success')).toContainText('Connected');
@@ -67,7 +67,7 @@ test.describe('FortWeb empty and error states', () => {
         await page.goto('/fortweb/app/#/_fixtures/witnesses/error');
 
         // Assert Witnesses page renders
-        await expect(page.getByRole('heading', { name: 'Witnesses' })).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'Witnesses', level: 1 })).toBeVisible();
         
         // Assert error state is shown cleanly
         await expect(page.locator('.badge--error')).toContainText('Error');
@@ -88,7 +88,7 @@ test.describe('FortWeb empty and error states', () => {
         await page.goto('/fortweb/app/#/_fixtures/watchers/populated');
 
         // Assert Watchers page renders
-        await expect(page.getByRole('heading', { name: 'Watchers' })).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'Watchers', level: 1 })).toBeVisible();
         
         // Assert populated watcher data is visible (stable row text)
         await expect(page.getByText('KF Watcher')).toBeVisible();
