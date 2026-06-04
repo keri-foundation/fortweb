@@ -70,7 +70,7 @@ test.describe('FortWeb empty and error states', () => {
         await expect(page.getByRole('heading', { name: 'Witnesses', level: 1 })).toBeVisible();
         
         // Assert error state is shown cleanly
-        await expect(page.locator('.badge--error')).toContainText('Error');
+        await expect(page.locator('.notice--warning')).toContainText('Failed to load hosted witness rows');
         
         // Assert no raw HTML is dumped into the visible UI
         const pageText = await page.locator('body').innerText();
@@ -91,7 +91,7 @@ test.describe('FortWeb empty and error states', () => {
         await expect(page.getByRole('heading', { name: 'Watchers', level: 1 })).toBeVisible();
         
         // Assert populated watcher data is visible (stable row text)
-        await expect(page.getByText('KF Watcher')).toBeVisible();
+        await expect(page.getByRole('cell', { name: 'KF Watcher EWatcher0' })).toBeVisible();
 
         await expectNoUnexpectedErrors(page, pageErrors, consoleErrors);
     });
