@@ -210,6 +210,9 @@ node_modules/
 playwright-report/
 test-results/
 
+# Local temp artifacts (server logs, PID files)
+.tmp/
+
 # Screenshot regression tooling — current and diff are ephemeral
 tools/screenshots/current/
 tools/screenshots/diffs/
