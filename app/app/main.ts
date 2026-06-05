@@ -489,7 +489,7 @@ async function render(): Promise<void> {
         if (thisGeneration !== renderGeneration) {
             return;
         }
-        const { page, vault: loadedVault } = await loadPage({
+        const result = await loadPage({
             route,
             bridge,
             currentState,
@@ -503,11 +503,15 @@ async function render(): Promise<void> {
         if (thisGeneration !== renderGeneration) {
             return;
         }
+        if (result.redirectHref) {
+            navigate(result.redirectHref);
+            return;
+        }
         renderShell(root, {
             route,
-            page,
+            page: result.page!,
             state: currentState(),
-            vault: assumeType<ShellVault>(loadedVault),
+            vault: assumeType<ShellVault>(result.vault),
             actions,
         });
     } catch (error) {

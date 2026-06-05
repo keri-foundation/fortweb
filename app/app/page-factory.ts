@@ -1,4 +1,4 @@
-import { identifiersHref, navigate, type Route, unlockHref } from "./router.js";
+import { kfWitnessesHref, type Route } from "./router.js";
 import { renderNotFoundPage, type PageRecord } from "./page-feedback.js";
 import { loadRouteData } from "./page-loader.js";
 import { renderIdentifierDetailPage } from "../features/identifiers/identifier-detail-page.js";
@@ -74,8 +74,9 @@ interface PageFactoryContext {
 }
 
 export interface LoadedPageResult {
-    page: PageRecord;
+    page?: PageRecord;
     vault: Record<string, unknown> | null;
+    redirectHref?: string;
 }
 
 function assumeType<T>(value: unknown): T {
@@ -172,6 +173,14 @@ export async function loadPage({
                 settings: assumeType<SettingsPageProps["settings"]>(pageData.settings),
             }),
             vault: findVault(route.params.vaultId),
+        };
+    }
+
+    if (route.name === "kf-home") {
+        const vaultId = route.params.vaultId ?? "";
+        return {
+            redirectHref: kfWitnessesHref(vaultId),
+            vault: findVault(vaultId),
         };
     }
 
