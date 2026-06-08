@@ -9,7 +9,8 @@
     "typecheck": "tsc --project tsconfig.json",
     "pretest:e2e": "npm run build:runtime",
     "test:e2e": "playwright test",
-    "test:e2e:headed": "playwright test --headed"
+    "test:e2e:headed": "playwright test --headed",
+    "package:runtime": "node tools/package-runtime.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.58.2",
