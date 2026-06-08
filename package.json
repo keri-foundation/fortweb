@@ -5,6 +5,7 @@
   "scripts": {
     "build:runtime": "node tools/build-runtime.mjs",
     "check:runtime-js": "node tools/check-runtime-js.mjs",
+    "verify:runtime-package": "node tools/verify-runtime-package.mjs",
     "test:runtime-js-check": "node --test tools/check-runtime-js.test.mjs",
     "typecheck": "tsc --project tsconfig.json",
     "pretest:e2e": "npm run build:runtime",

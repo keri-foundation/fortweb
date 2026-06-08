@@ -63,13 +63,7 @@ jobs:
 
           ZIP_PATH=$(printf '%s\n' "$ZIP_MATCHES")
           ZIP_NAME=$(basename "$ZIP_PATH")
-          VERIFY_DIR=$(mktemp -d /tmp/fortweb-runtime-package-verify.XXXXXX)
-          unzip -q "$ZIP_PATH" -d "$VERIFY_DIR"
-          test -f "$VERIFY_DIR/fortweb-runtime/manifest.json"
-          test -f "$VERIFY_DIR/fortweb-runtime/checksums.sha256"
-          python3 -m json.tool "$VERIFY_DIR/fortweb-runtime/manifest.json" >/dev/null
-          (cd "$VERIFY_DIR/fortweb-runtime" && sha256sum -c checksums.sha256)
-          rm -rf "$VERIFY_DIR"
+          npm run verify:runtime-package -- "$ZIP_PATH"
 
           echo "artifact-name=runtime-package" >> "$GITHUB_OUTPUT"
           echo "package-sha=$(sha256sum "$ZIP_PATH" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
@@ -118,17 +112,14 @@ jobs:
           set -euo pipefail
           ZIP_PATH=$(find .tmp/runtime-packages -maxdepth 1 -type f -name 'fortweb-runtime-*.zip' | sort | tail -1)
           test -n "$ZIP_PATH"
-          unzip -q "$ZIP_PATH" -d /tmp/fortweb-runtime-pr-preview
-          python3 -m json.tool /tmp/fortweb-runtime-pr-preview/fortweb-runtime/manifest.json >/dev/null
+          npm run verify:runtime-package -- "$ZIP_PATH"
 
       - name: Verify checksums
         run: |
           set -euo pipefail
           ZIP_PATH=$(find .tmp/runtime-packages -maxdepth 1 -type f -name 'fortweb-runtime-*.zip' | sort | tail -1)
           test -n "$ZIP_PATH"
-          rm -rf /tmp/fortweb-runtime-pr-preview
-          unzip -q "$ZIP_PATH" -d /tmp/fortweb-runtime-pr-preview
-          (cd /tmp/fortweb-runtime-pr-preview/fortweb-runtime && sha256sum -c checksums.sha256)
+          npm run verify:runtime-package -- "$ZIP_PATH"
 
   release-assets:
     name: Release Assets
@@ -164,14 +155,11 @@ jobs:
           set -euo pipefail
           ZIP_PATH=$(find .tmp/runtime-packages -maxdepth 1 -type f -name 'fortweb-runtime-*.zip' | sort | tail -1)
           test -n "$ZIP_PATH"
-          unzip -q "$ZIP_PATH" -d /tmp/fortweb-runtime-release
-          python3 -m json.tool /tmp/fortweb-runtime-release/fortweb-runtime/manifest.json >/dev/null
+          npm run verify:runtime-package -- "$ZIP_PATH"
 
       - name: Verify checksums
         run: |
           set -euo pipefail
           ZIP_PATH=$(find .tmp/runtime-packages -maxdepth 1 -type f -name 'fortweb-runtime-*.zip' | sort | tail -1)
           test -n "$ZIP_PATH"
-          rm -rf /tmp/fortweb-runtime-release
-          unzip -q "$ZIP_PATH" -d /tmp/fortweb-runtime-release
-          (cd /tmp/fortweb-runtime-release/fortweb-runtime && sha256sum -c checksums.sha256)
+          npm run verify:runtime-package -- "$ZIP_PATH"
