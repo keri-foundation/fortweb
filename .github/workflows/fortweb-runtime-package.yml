@@ -1,0 +1,177 @@
+name: FortWeb Runtime Package
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag for release (e.g., 0.1.0)"
+        required: false
+        default: ""
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  package-runtime:
+    name: Package Runtime
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-name: ${{ steps.package.outputs.artifact-name }}
+      package-sha: ${{ steps.package.outputs.package-sha }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build runtime
+        run: npm run build:runtime
+
+      - name: Check runtime JS
+        run: npm run check:runtime-js
+
+      - name: Test runtime JS check
+        run: npm run test:runtime-js-check
+
+      - name: Package runtime
+        id: package
+        run: |
+          set -euo pipefail
+          npm run package:runtime
+          ZIP_MATCHES=$(find .tmp/runtime-packages -maxdepth 1 -type f -name 'fortweb-runtime-*.zip' | sort)
+          ZIP_COUNT=$(printf '%s\n' "$ZIP_MATCHES" | sed '/^$/d' | wc -l | tr -d ' ')
+          if [ "$ZIP_COUNT" -ne 1 ]; then
+            echo "Expected exactly one runtime ZIP, found $ZIP_COUNT"
+            printf '%s\n' "$ZIP_MATCHES"
+            exit 1
+          fi
+
+          ZIP_PATH=$(printf '%s\n' "$ZIP_MATCHES")
+          ZIP_NAME=$(basename "$ZIP_PATH")
+          VERIFY_DIR=$(mktemp -d /tmp/fortweb-runtime-package-verify.XXXXXX)
+          unzip -q "$ZIP_PATH" -d "$VERIFY_DIR"
+          test -f "$VERIFY_DIR/fortweb-runtime/manifest.json"
+          test -f "$VERIFY_DIR/fortweb-runtime/checksums.sha256"
+          python3 -m json.tool "$VERIFY_DIR/fortweb-runtime/manifest.json" >/dev/null
+          (cd "$VERIFY_DIR/fortweb-runtime" && sha256sum -c checksums.sha256)
+          rm -rf "$VERIFY_DIR"
+
+          echo "artifact-name=runtime-package" >> "$GITHUB_OUTPUT"
+          echo "package-sha=$(sha256sum "$ZIP_PATH" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "zip-path=${ZIP_PATH}" >> "$GITHUB_OUTPUT"
+          echo "zip-name=${ZIP_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload runtime package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-package
+          path: ${{ steps.package.outputs.zip-path }}
+          retention-days: 7
+          if-no-files-found: error
+
+  pr-preview:
+    name: PR Preview
+    runs-on: ubuntu-latest
+    needs: package-runtime
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Download runtime package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: runtime-package
+          path: .tmp/runtime-packages/
+
+      - name: Display package info
+        run: |
+          set -euo pipefail
+          ZIP_MATCHES=$(find .tmp/runtime-packages -maxdepth 1 -type f -name 'fortweb-runtime-*.zip' | sort)
+          ZIP_COUNT=$(printf '%s\n' "$ZIP_MATCHES" | sed '/^$/d' | wc -l | tr -d ' ')
+          if [ "$ZIP_COUNT" -ne 1 ]; then
+            echo "Expected exactly one runtime ZIP after download, found $ZIP_COUNT"
+            printf '%s\n' "$ZIP_MATCHES"
+            exit 1
+          fi
+          ZIP_PATH=$(printf '%s\n' "$ZIP_MATCHES")
+          echo "=== PR Preview Runtime Package ==="
+          echo "Artifact: $(basename "$ZIP_PATH")"
+          echo "SHA: $(sha256sum "$ZIP_PATH" | cut -d' ' -f1)"
+          echo "Files: $(unzip -l "$ZIP_PATH" | grep -c 'Length:')"
+          unzip -l "$ZIP_PATH" | head -20
+
+      - name: Verify manifest
+        run: |
+          set -euo pipefail
+          ZIP_PATH=$(find .tmp/runtime-packages -maxdepth 1 -type f -name 'fortweb-runtime-*.zip' | sort | tail -1)
+          test -n "$ZIP_PATH"
+          unzip -q "$ZIP_PATH" -d /tmp/fortweb-runtime-pr-preview
+          python3 -m json.tool /tmp/fortweb-runtime-pr-preview/fortweb-runtime/manifest.json >/dev/null
+
+      - name: Verify checksums
+        run: |
+          set -euo pipefail
+          ZIP_PATH=$(find .tmp/runtime-packages -maxdepth 1 -type f -name 'fortweb-runtime-*.zip' | sort | tail -1)
+          test -n "$ZIP_PATH"
+          rm -rf /tmp/fortweb-runtime-pr-preview
+          unzip -q "$ZIP_PATH" -d /tmp/fortweb-runtime-pr-preview
+          (cd /tmp/fortweb-runtime-pr-preview/fortweb-runtime && sha256sum -c checksums.sha256)
+
+  release-assets:
+    name: Release Assets
+    runs-on: ubuntu-latest
+    needs: package-runtime
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Download runtime package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: runtime-package
+          path: .tmp/runtime-packages/
+
+      - name: Display package info
+        run: |
+          set -euo pipefail
+          ZIP_MATCHES=$(find .tmp/runtime-packages -maxdepth 1 -type f -name 'fortweb-runtime-*.zip' | sort)
+          ZIP_COUNT=$(printf '%s\n' "$ZIP_MATCHES" | sed '/^$/d' | wc -l | tr -d ' ')
+          if [ "$ZIP_COUNT" -ne 1 ]; then
+            echo "Expected exactly one runtime ZIP after download, found $ZIP_COUNT"
+            printf '%s\n' "$ZIP_MATCHES"
+            exit 1
+          fi
+          ZIP_PATH=$(printf '%s\n' "$ZIP_MATCHES")
+          echo "=== Release Runtime Package ==="
+          echo "Artifact: $(basename "$ZIP_PATH")"
+          echo "SHA: $(sha256sum "$ZIP_PATH" | cut -d' ' -f1)"
+          echo "Files: $(unzip -l "$ZIP_PATH" | grep -c 'Length:')"
+          unzip -l "$ZIP_PATH" | head -20
+
+      - name: Verify manifest
+        run: |
+          set -euo pipefail
+          ZIP_PATH=$(find .tmp/runtime-packages -maxdepth 1 -type f -name 'fortweb-runtime-*.zip' | sort | tail -1)
+          test -n "$ZIP_PATH"
+          unzip -q "$ZIP_PATH" -d /tmp/fortweb-runtime-release
+          python3 -m json.tool /tmp/fortweb-runtime-release/fortweb-runtime/manifest.json >/dev/null
+
+      - name: Verify checksums
+        run: |
+          set -euo pipefail
+          ZIP_PATH=$(find .tmp/runtime-packages -maxdepth 1 -type f -name 'fortweb-runtime-*.zip' | sort | tail -1)
+          test -n "$ZIP_PATH"
+          rm -rf /tmp/fortweb-runtime-release
+          unzip -q "$ZIP_PATH" -d /tmp/fortweb-runtime-release
+          (cd /tmp/fortweb-runtime-release/fortweb-runtime && sha256sum -c checksums.sha256)
