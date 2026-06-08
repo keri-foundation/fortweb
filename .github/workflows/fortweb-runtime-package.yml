@@ -64,6 +64,7 @@ jobs:
           ZIP_PATH=$(printf '%s\n' "$ZIP_MATCHES")
           ZIP_NAME=$(basename "$ZIP_PATH")
           npm run verify:runtime-package -- "$ZIP_PATH"
+          npm run test:runtime-package-verify
 
           echo "artifact-name=runtime-package" >> "$GITHUB_OUTPUT"
           echo "package-sha=$(sha256sum "$ZIP_PATH" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
@@ -107,14 +108,7 @@ jobs:
           echo "Files: $(unzip -l "$ZIP_PATH" | grep -c 'Length:')"
           unzip -l "$ZIP_PATH" | head -20
 
-      - name: Verify manifest
-        run: |
-          set -euo pipefail
-          ZIP_PATH=$(find .tmp/runtime-packages -maxdepth 1 -type f -name 'fortweb-runtime-*.zip' | sort | tail -1)
-          test -n "$ZIP_PATH"
-          npm run verify:runtime-package -- "$ZIP_PATH"
-
-      - name: Verify checksums
+      - name: Verify package
         run: |
           set -euo pipefail
           ZIP_PATH=$(find .tmp/runtime-packages -maxdepth 1 -type f -name 'fortweb-runtime-*.zip' | sort | tail -1)
@@ -150,14 +144,7 @@ jobs:
           echo "Files: $(unzip -l "$ZIP_PATH" | grep -c 'Length:')"
           unzip -l "$ZIP_PATH" | head -20
 
-      - name: Verify manifest
-        run: |
-          set -euo pipefail
-          ZIP_PATH=$(find .tmp/runtime-packages -maxdepth 1 -type f -name 'fortweb-runtime-*.zip' | sort | tail -1)
-          test -n "$ZIP_PATH"
-          npm run verify:runtime-package -- "$ZIP_PATH"
-
-      - name: Verify checksums
+      - name: Verify package
         run: |
           set -euo pipefail
           ZIP_PATH=$(find .tmp/runtime-packages -maxdepth 1 -type f -name 'fortweb-runtime-*.zip' | sort | tail -1)
