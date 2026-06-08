@@ -24,6 +24,7 @@ import { METHODS } from "../runtime/method-catalog.js";
 import { postLog } from "../runtime/logger.js";
 import {
     describeRuntimeOriginContract,
+    isRuntimeOriginContractRequired,
     readWindowRuntimeOriginContract,
     RuntimeOriginContractError,
 } from "../runtime/origin-contract.js";
@@ -115,6 +116,15 @@ const runtimeOriginContract = readRuntimeOriginContractOrRenderStartupError();
 if (runtimeOriginContract) {
     postLog("runtime_origin_contract_present", describeRuntimeOriginContract(runtimeOriginContract));
 } else {
+    if (isRuntimeOriginContractRequired(window.location)) {
+        const message = "Runtime origin contract is required outside local browser development.";
+        postLog("runtime_origin_contract_missing_blocked", {
+            level: "error",
+            message,
+        });
+        renderErrorPage({ message }).render?.(root);
+        throw new Error(message);
+    }
     postLog("runtime_origin_contract_missing", {
         level: "info",
         fallback: "browser_defaults",

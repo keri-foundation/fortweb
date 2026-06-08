@@ -389,3 +389,21 @@ export function describeRuntimeOriginContract(
         storage_namespace: contract.storage.storageNamespace,
     };
 }
+
+export interface RuntimeOriginLocationLike {
+    protocol: string;
+    hostname: string;
+}
+
+export function isPlainLocalBrowserDevLocation(location: RuntimeOriginLocationLike): boolean {
+    const protocol = location.protocol;
+    const hostname = location.hostname;
+    return (
+        (protocol === "http:" || protocol === "https:") &&
+        (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "[::1]")
+    );
+}
+
+export function isRuntimeOriginContractRequired(location: RuntimeOriginLocationLike): boolean {
+    return !isPlainLocalBrowserDevLocation(location);
+}
