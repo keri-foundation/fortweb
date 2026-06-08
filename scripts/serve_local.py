@@ -53,6 +53,41 @@ class FortWebRequestHandler(http.server.SimpleHTTPRequestHandler):
         ".json": "application/json",
     }
 
+    def translate_path(self, path: str) -> str:
+        # Handle vendor requests
+        if path.startswith('/fortweb/vendor/'):
+            vendor_relative = path[len('/fortweb/vendor/'):]
+            dist_vendor_path = os.path.join(self.directory, 'fortweb', 'dist', 'runtime', 'vendor', vendor_relative)
+            if os.path.exists(dist_vendor_path):
+                return dist_vendor_path
+            return os.path.join(self.directory, 'fortweb', 'vendor', vendor_relative)
+
+        # Handle app requests
+        if path.startswith('/fortweb/app/'):
+            relative_path = path[len('/fortweb/app/'):]
+
+            # Serve index.html from source
+            if not relative_path or relative_path == 'index.html':
+                return os.path.join(self.directory, 'fortweb', 'app', relative_path or 'index.html')
+
+            # Check if the requested file exists in the compiled runtime output
+            dist_app_path = os.path.join(self.directory, 'fortweb', 'dist', 'runtime', 'app', relative_path)
+            if os.path.exists(dist_app_path):
+                return dist_app_path
+
+            dist_root_path = os.path.join(self.directory, 'fortweb', 'dist', 'runtime', relative_path)
+            if os.path.exists(dist_root_path):
+                return dist_root_path
+
+            # Fallback to source app directory, then source root
+            source_app_path = os.path.join(self.directory, 'fortweb', 'app', relative_path)
+            if os.path.exists(source_app_path):
+                return source_app_path
+
+            return os.path.join(self.directory, 'fortweb', relative_path)
+
+        return super().translate_path(path)
+
     def _redirect_root_to_app(self) -> bool:
         if self.path.split("?", 1)[0] in ("/", "/index.html"):
             self.send_response(302)
