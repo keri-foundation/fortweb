@@ -85,6 +85,14 @@ jobs:
     needs: package-runtime
     if: github.event_name == 'pull_request'
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
       - name: Download runtime package artifact
         uses: actions/download-artifact@v4
         with:
@@ -121,6 +129,14 @@ jobs:
     needs: package-runtime
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
       - name: Download runtime package artifact
         uses: actions/download-artifact@v4
         with:
