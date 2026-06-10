@@ -3,6 +3,8 @@
 ## 1. Purpose
 This document defines the formal producer/consumer contract for FortWeb runtime packages consumed by mobile applications (Android and iOS). It establishes the required artifact structure, metadata, integrity checks, and authenticity guarantees to ensure secure, deterministic, and verifiable runtime deployments.
 
+*See [ADR-064](../../../../docs/adr/ADR-064-fortweb-runtime-deployment-pipeline.md) for the deployment architecture decision and producer/mobile build boundaries.*
+
 ## 2. Scope
 This contract covers:
 - The runtime ZIP package structure and contents.
