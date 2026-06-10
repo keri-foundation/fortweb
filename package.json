@@ -6,6 +6,7 @@
     "build:runtime": "node tools/build-runtime.mjs",
     "check:runtime-js": "node tools/check-runtime-js.mjs",
     "verify:runtime-package": "node tools/verify-runtime-package.mjs",
+    "verify:runtime-release": "bash tools/verify-fortweb-release.sh",
     "test:runtime-package-verify": "node --test tools/verify-runtime-package.test.mjs",
     "test:runtime-js-check": "node --test tools/check-runtime-js.test.mjs",
     "typecheck": "tsc --project tsconfig.json",

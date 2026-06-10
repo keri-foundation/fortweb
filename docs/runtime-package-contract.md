@@ -99,7 +99,18 @@ Mobile consumers and CI verifiers **must** enforce the following rules:
 9. **Reject** any path containing `..` or starting with `/` (path traversal/absolute paths).
 10. **Reject** duplicate ZIP entries or symlinks (unless explicitly supported and hardened).
 
-## 7. Authenticity and Provenance
+## 7. Verification Tooling
+The canonical release verifier lives in `tools/verify-fortweb-release.sh` within this repository.
+
+Mobile CI workflows should:
+1. Check out FortWeb at a pinned, trusted tag or commit.
+2. Run this verifier to validate the release metadata, ZIP digest, GitHub Artifact Attestation, and internal package integrity.
+3. Unpack the verified payload into the platform's build directory (e.g., `app/build/generated/fortwebRelease/assets/fortweb`).
+4. Bundle the already-verified files via Gradle/Xcode.
+
+The verifier strictly rejects the `latest` tag and requires explicit pinning. It complements GitHub Artifact Attestation and internal package verification to ensure a closed, secure verification loop before any mobile packaging occurs.
+
+## 8. Authenticity and Provenance
 **Integrity** ensures bytes match expected hashes. **Authenticity** proves the bytes came from the trusted FortWeb release process.
 
 **Current State:** PR27 implements integrity checks (checksums, SHA-256, byte-size, unexpected-file rejection) but **does not yet implement authenticity**.
@@ -111,7 +122,7 @@ Before mobile apps consume production artifacts, the workflow must attach an aut
 
 *Production mobile import must not be considered complete until authenticity verification is implemented and enforced in the mobile CI pipelines (e.g., via `gh attestation verify`).*
 
-## 8. GitHub Actions Publishing Requirements
+## 9. GitHub Actions Publishing Requirements
 The release workflow must guarantee:
 
 - **Trigger**: Publish only from protected `main` branch pushes or signed/versioned Git tags. **Never** publish release artifacts from `pull_request` contexts.
@@ -122,7 +133,7 @@ The release workflow must guarantee:
 - **Concurrency**: Use concurrency controls to prevent overlapping release jobs.
 - **Secrets**: No secrets exposed to PR workflows or untrusted contexts.
 
-## 9. Android Consumer Requirements
+## 10. Android Consumer Requirements
 Android production import must eventually:
 
 - Download artifacts only from the trusted GitHub Releases API or pinned CDN.
@@ -136,7 +147,7 @@ Android production import must eventually:
 
 *Current Android Status:* Debug fixture path exists and is gated to debug builds. Production import is not yet implemented.
 
-## 10. iOS Consumer Requirements
+## 11. iOS Consumer Requirements
 iOS production import must mirror the Android requirements:
 
 - Download from trusted sources.
@@ -146,7 +157,7 @@ iOS production import must mirror the Android requirements:
 
 *Current iOS Status:* Local ZIP consumer lane exists (PR30), but production artifact alignment and verification are pending.
 
-## 11. Release Metadata Artifact
+## 12. Release Metadata Artifact
 To enable deterministic mobile CI consumption, FortWeb publishes a `fortweb-release.json` file alongside the runtime ZIP.
 
 **Required Fields:**
@@ -164,7 +175,7 @@ To enable deterministic mobile CI consumption, FortWeb publishes a `fortweb-rele
 **Usage:**
 Mobile CI should fetch this metadata file first to determine the exact artifact to download and the expected verification parameters. **Note:** This metadata complements but does not replace attestation verification or ZIP-internal manifest/checksum verification. Mobile builds must still fail closed if any verification step fails.
 
-## 12. Open Decisions
+## 13. Open Decisions
 The following items require explicit resolution before production implementation:
 
 1. **Signature Mechanism**: GitHub Artifact Attestations vs. `minisign`/`cosign` detached signatures.
@@ -175,7 +186,7 @@ The following items require explicit resolution before production implementation
 6. **SBOM**: Whether a Software Bill of Materials is required for compliance.
 7. **Duplicate ZIP Entry Enforcement**: Whether the current verifier explicitly rejects duplicate entries (requires hardening if not).
 
-## 13. Next Implementation Slices
+## 14. Next Implementation Slices
 To progress toward production readiness, the following slices are recommended:
 
 - `FORTWEB-RELEASE-ASSET-SIGNATURE-PLAN-001`: Design and implement the authenticity/provenance mechanism.
