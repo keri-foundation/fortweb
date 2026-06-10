@@ -1,122 +1,162 @@
 # FortWeb Runtime Package Contract
 
-## Status
-**Proposed / Draft** — This document is intended for team review to establish a stable contract for FortWeb runtime package consumption by mobile wrappers.
+## 1. Purpose
+This document defines the formal producer/consumer contract for FortWeb runtime packages consumed by mobile applications (Android and iOS). It establishes the required artifact structure, metadata, integrity checks, and authenticity guarantees to ensure secure, deterministic, and verifiable runtime deployments.
 
-## Goals
-Define a concrete, versioned, and manifest-verified runtime package artifact for FortWeb releases. This contract ensures that iOS (`Fort-ios`) and Android (`fortoid-scaffold`) wrappers can consume FortWeb releases cleanly, repeatably, and without relying on ad-hoc Git checkout directory copies.
+## 2. Scope
+This contract covers:
+- The runtime ZIP package structure and contents.
+- The `manifest.json` schema and `checksums.sha256` format.
+- Release asset naming conventions.
+- Authenticity, signature, and provenance requirements.
+- Android and iOS consumer verification expectations.
+- GitHub Actions publishing guarantees.
 
-## Non-goals
-- This document does not implement packaging scripts or GitHub Actions workflows.
-- This document does not modify mobile wrapper source code or sync mechanisms.
-- This document does not alter FortWeb runtime behavior, build output structure, or Playwright test suites.
+This contract **does not yet implement**:
+- Production artifact download logic in mobile apps.
+- Cryptographic signing workflows in GitHub Actions.
+- Mobile production import mechanisms.
 
-## Current State
-- **FortWeb Build Output**: `npm run build:runtime` compiles TypeScript sources and copies static assets (`pyscript-ci.toml`, `app/runtime/*.py`, `vendor/pyscript/2025.11.2`) into `dist/runtime/`.
-- **iOS Consumption**: `Fort-ios` uses `sync-payload.sh` to copy `app/`, `vendor/`, `wheels/`, and `pyscript-ci.toml` from a local or fetched FortWeb Git checkout into `WebPayload/`, followed by validation via `validate-mobile-payload.mjs`.
-- **Android Consumption**: `fortoid-scaffold` uses `sync-payload.sh` to copy the same assets into `app/src/main/assets/payload/fortweb/`, generating a `build-manifest.json` via `gen-fortweb-bundle-manifest.mjs`.
-- **Gap**: Current flows depend on live Git checkouts or shallow fetches, lacking a stable, versioned, and integrity-verified package artifact.
+## 3. Artifact Set
+A complete FortWeb runtime release must consist of the following assets, published together:
 
-## Artifact Name
 ```text
-fortweb-runtime-${version}-${shortSha}.zip
+fortweb-runtime-<version>-<commit-sha>.zip
+fortweb-runtime-<version>-<commit-sha>.zip.sha256
+fortweb-runtime-<version>-<commit-sha>.zip.sig (or .attestation)
 ```
-- **PR Preview Builds**: May use a placeholder version such as `0.0.0-pr+<pr-number>`.
-- **Release Builds**: Should use semantic versions aligned with tags, e.g., `v1.2.3`.
 
-## Package Root Layout
-The ZIP archive must contain a single top-level directory named `fortweb-runtime/` with the following structure:
-```text
-fortweb-runtime/
-  manifest.json
-  checksums.sha256
-  app/
-  vendor/
-  wheels/
-  pyscript-ci.toml
-```
-*Note: The `dist/runtime/` prefix is flattened to the root of the package for cleaner mobile extraction paths.*
+- **`.zip`**: The deterministic runtime payload.
+- **`.zip.sha256`**: The checksum file for ZIP-level integrity verification.
+- **`.zip.sig` / `.attestation`**: Cryptographic signature or SLSA provenance proving the artifact originated from the trusted FortWeb release process.
+- **Internal files**: The ZIP must contain `manifest.json` and `checksums.sha256` at its root to verify unpacked contents.
 
-## Manifest Schema
+## 4. Runtime ZIP Contents
+The ZIP archive must contain a flat or predictably structured directory (e.g., `fortweb-runtime/`) including:
+
+**Required:**
+- `manifest.json`
+- `checksums.sha256`
+- `index.html` (or defined entrypoint)
+- Runtime asset files (e.g., `app/`, `vendor/`, `wheels/`, `pyscript-ci.toml`)
+
+**Forbidden:**
+- Path traversal entries (e.g., `../`).
+- Absolute paths.
+- Symlinks (unless explicitly supported and verified by consumers).
+- Duplicate ZIP entries.
+- Files not explicitly listed in `manifest.json`.
+- Secrets, environment-specific credentials, or private keys.
+
+## 5. Manifest Schema
 The `manifest.json` file must adhere to the following schema:
+
 ```json
 {
-  "schemaVersion": 1,
-  "packageName": "fortweb-runtime",
-  "version": "0.0.0-pr+24",
-  "gitSha": "0be8e7e734b524b9e1bb10b172eff82e87cfc498",
-  "gitRef": "refs/pull/24/head",
-  "createdAt": "2026-06-04T12:00:00Z",
-  "basePath": "/fortweb/app/",
-  "entrypoint": "app/index.html",
-  "runtimeRoot": ".",
-  "vendorRoot": "vendor",
-  "wheelsRoot": "wheels",
-  "originContract": {
-    "schema": "fortweb.runtime-origin.v1",
-    "version": 1
-  },
+  "schema_version": "1.0.0",
+  "package_version": "0.1.0",
+  "fortweb_commit_sha": "1e3870ad7632654dfbdebad0a0d03d120225a96c",
+  "runtime_origin": "https://appassets.androidplatform.net",
+  "entrypoint": "index.html",
   "files": [
     {
-      "path": "app/index.html",
-      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "bytes": 1024
+      "path": "index.html",
+      "sha256": "125c6f6c4ea343964f789ecb20ae9f7021e042e7db27e1257a6e0f7c395cfa59",
+      "bytes": 126
     }
   ]
 }
 ```
-- **`files` array**: Must include every file in the package, sorted deterministically by `path`.
-- **`sha256`**: Lowercase hexadecimal SHA-256 hash of the file contents.
-- **`bytes`**: Exact file size in bytes.
 
-## Integrity Strategy
-- **Per-File Hashing**: Every file in the package must have a SHA-256 hash recorded in `manifest.json`.
-- **Deterministic Ordering**: The `files` array must be sorted lexicographically by `path` to ensure reproducible manifest generation.
-- **Package Checksum**: A `checksums.sha256` file must be included at the root, containing the SHA-256 hash of the `manifest.json` file itself.
-- **No Secrets**: The package must not contain any environment-specific secrets, credentials, or private keys.
-- **Fail-Closed**: Mobile consumers must treat any checksum mismatch or missing file as a fatal error and refuse to load the payload.
+**Required Fields:**
+- `schema_version`: Contract version (e.g., `"1.0.0"`).
+- `package_version`: Semantic version of the package.
+- `fortweb_commit_sha`: Exact Git commit hash of the producer.
+- `runtime_origin`: Trusted origin string for the runtime environment.
+- `entrypoint`: Expected entrypoint file (e.g., `"index.html"`).
+- `files`: Array of objects, each containing `path`, `sha256` (lowercase hex), and `bytes`.
 
-## iOS Consumer Contract
-`Fort-ios` should adopt the following consumption model:
-1. **Acquisition**: Fetch the artifact by version/SHA (e.g., via GitHub Release asset or manifest-driven download).
-2. **Verification**: Validate the `checksums.sha256` against the extracted `manifest.json`, then verify every file's SHA-256 hash.
-3. **Extraction**: Extract the contents into the designated `WebPayload/` directory (or an agreed-upon payload directory).
-4. **Validation**: Run the existing `validate-mobile-payload.mjs` script against the extracted payload.
-5. **Loading**: Load the payload via the existing WKWebView strategy (custom scheme `app://local` or hardened loopback `http://127.0.0.1:<port>/_fortios/<nonce>`).
-6. **Decoupling**: Once package support lands, iOS should not assume or rely on the source Git checkout structure.
+**Planned/Future Fields:**
+- `build_timestamp`: ISO 8601 timestamp of generation.
+- `workflow_run_id`: GitHub Actions run ID for traceability.
+- `minimum_consumer_contract_version`: Minimum mobile app version required to consume this package.
 
-## Android Consumer Contract
-`fortoid-scaffold` should adopt the following consumption model:
-1. **Acquisition**: Fetch the artifact by version/SHA.
-2. **Verification**: Validate the `checksums.sha256` against the extracted `manifest.json`, then verify every file's SHA-256 hash.
-3. **Extraction**: Extract the contents into the Android assets directory (e.g., `app/src/main/assets/payload/`).
-4. **Validation**: Run the existing manifest validation logic.
-5. **Loading**: Load the payload via the agreed-upon strategy (e.g., `file:///android_asset/payload/fortweb/app/index.html` or `WebViewAssetLoader`).
-6. **Decoupling**: Once package support lands, Android should not assume or rely on the source Git checkout structure.
+## 6. Integrity Rules
+Mobile consumers and CI verifiers **must** enforce the following rules:
 
-## Workflow Model Options
-| Option | Pros | Cons | Risks | Best Use Case |
-| :--- | :--- | :--- | :--- | :--- |
-| **PR Preview Artifact** | Fast feedback, no tag required, easy to validate packaging logic. | Artifacts expire (90 days), not suitable for permanent mobile builds. | Mobile builds may fail if artifact expires. | Short-term validation, PR review. |
-| **GitHub Release Asset** | Permanent, versioned, immutable, supports checksums natively. | Requires tag creation, slightly more complex workflow. | None significant if tagging is disciplined. | Long-term production releases. |
-| **Pull-by-Manifest** | Mobile repos declare dependency version, automated fetch at build time. | Requires mobile repo script changes, network dependency at build time. | Build failures if FortWeb release is deleted/unavailable. | Long-term, automated mobile CI/CD. |
-| **Manual Vendoring** | Simple, no network dependency at build time. | High friction, easy to forget updates, no automated verification. | Drift between FortWeb and mobile payloads. | Legacy fallback, not recommended. |
+1. Verify `manifest.json` exists in the ZIP.
+2. Verify `checksums.sha256` exists in the ZIP.
+3. Verify the SHA-256 hash of `manifest.json` matches the single line in `checksums.sha256`.
+4. Verify every file listed in `manifest.json` exists in the ZIP.
+5. Verify the SHA-256 hash of each file matches the manifest.
+6. Verify the byte size of each file matches the manifest.
+7. **Reject** if any manifest-listed file is missing.
+8. **Reject** if any file exists in the ZIP that is not listed in the manifest (unexpected files).
+9. **Reject** any path containing `..` or starting with `/` (path traversal/absolute paths).
+10. **Reject** duplicate ZIP entries or symlinks (unless explicitly supported and hardened).
 
-## Recommended Approach
-- **Short-term**: Implement a package script and a PR preview GitHub Actions artifact workflow to validate the packaging logic and manifest generation without committing to a release strategy.
-- **Long-term**: Transition to tag-based GitHub Release assets combined with a pull-by-manifest strategy for mobile repos, ensuring immutable, versioned dependencies with automated verification.
+## 7. Authenticity and Provenance
+**Integrity** ensures bytes match expected hashes. **Authenticity** proves the bytes came from the trusted FortWeb release process.
 
-## Open Questions
-1. Should mobile apps vendor the extracted payload (commit to their repos) or fetch it dynamically during their build process?
-2. Should FortWeb publish package artifacts on every PR, every main push, tags, or workflow dispatch only?
-3. Should mobile wrappers verify checksums at build time, startup, or both?
-4. Should package versioning be independent from mobile app versions, or tightly coupled?
-5. Does the origin contract require specific hostnames or loopback ports that must be explicitly documented in the manifest?
-6. Should the package include PyScript/vendor files, or should wrappers manage those dependencies separately?
-7. What rollback strategy should mobile apps support if a newly fetched payload fails validation?
+**Current State:** PR27 implements integrity checks (checksums, SHA-256, byte-size, unexpected-file rejection) but **does not yet implement authenticity**.
 
-## Implementation Slices
-- `FORTWEB-RUNTIME-PACKAGE-SCRIPT-PROTOTYPE-001`
-- `FORTWEB-RUNTIME-PACKAGE-WORKFLOW-PROTOTYPE-001`
-- `FORTWEB-MOBILE-PAYLOAD-CONSUMPTION-AUDIT-001`
-- `FORTWEB-MOBILE-PAYLOAD-PULL-BY-MANIFEST-PLAN-001`
+**Required for Production:**
+Before mobile apps consume production artifacts, the workflow must attach one of the following:
+- **GitHub Artifact Attestations**: Using `actions/attest-build-provenance` to generate an OIDC-backed provenance statement.
+- **Detached Signature**: Using `minisign` or `cosign` to sign the `.zip` file, with the public key pinned in mobile consumers.
+
+*Production mobile import must not be considered complete until authenticity verification is implemented and enforced.*
+
+## 8. GitHub Actions Publishing Requirements
+The release workflow must guarantee:
+
+- **Trigger**: Publish only from protected `main` branch pushes or signed/versioned Git tags. **Never** publish release artifacts from `pull_request` contexts.
+- **Permissions**: Use least-privilege permissions. `contents: write` only for the release publishing job. `id-token: write` only if using OIDC/attestation.
+- **Verification**: Run `verify:runtime-package` immediately after generation and again after any upload/download step.
+- **Fail Closed**: The workflow must fail if the manifest, checksum, signature, or provenance generation fails.
+- **Deterministic Naming**: Use GitHub context variables (`${{ github.sha }}`, `${{ github.ref_name }}`) to name artifacts predictably.
+- **Concurrency**: Use concurrency controls to prevent overlapping release jobs.
+- **Secrets**: No secrets exposed to PR workflows or untrusted contexts.
+
+## 9. Android Consumer Requirements
+Android production import must eventually:
+
+- Download artifacts only from the trusted GitHub Releases API or pinned CDN.
+- Verify the external ZIP checksum (`.zip.sha256`) before unpacking.
+- Verify the signature/provenance (`.zip.sig` or attestation) before unpacking.
+- Enforce all internal integrity rules (manifest, checksums, file hashes, path traversal rejection).
+- Cache only fully verified packages.
+- Fail closed to a safe state (e.g., "Update Required" screen) if verification fails.
+- **Never** execute or load unverified package contents.
+- Keep the current debug fixture behavior strictly separate from production import logic.
+
+*Current Android Status:* Debug fixture path exists and is gated to debug builds. Production import is not yet implemented.
+
+## 10. iOS Consumer Requirements
+iOS production import must mirror the Android requirements:
+
+- Download from trusted sources.
+- Verify external checksum and signature/provenance.
+- Enforce internal integrity rules.
+- Fail closed on verification failure.
+
+*Current iOS Status:* Local ZIP consumer lane exists (PR30), but production artifact alignment and verification are pending.
+
+## 11. Open Decisions
+The following items require explicit resolution before production implementation:
+
+1. **Signature Mechanism**: GitHub Artifact Attestations vs. `minisign`/`cosign` detached signatures.
+2. **Provenance Format**: Whether mobile consumers will verify GitHub attestations directly or use a pinned public key.
+3. **Release Trigger Policy**: Whether to publish on every `main` push or only on explicit Git tags.
+4. **Artifact Retention**: How long PR preview artifacts are retained vs. permanent release assets.
+5. **Rollback/Version Policy**: How mobile apps handle downgrades or rollback to a previously verified package.
+6. **SBOM**: Whether a Software Bill of Materials is required for compliance.
+7. **Duplicate ZIP Entry Enforcement**: Whether the current verifier explicitly rejects duplicate entries (requires hardening if not).
+
+## 12. Next Implementation Slices
+To progress toward production readiness, the following slices are recommended:
+
+- `FORTWEB-RELEASE-ASSET-SIGNATURE-PLAN-001`: Design and implement the authenticity/provenance mechanism.
+- `FORTWEB-RELEASE-ASSET-WORKFLOW-HARDENING-001`: Harden the GitHub Actions workflow to enforce publishing constraints and fail-closed verification.
+- `ANDROID-PRODUCTION-RUNTIME-ARTIFACT-IMPORT-PLAN-001`: Design the Android production download and verification pipeline.
+- `IOS-RUNTIME-PACKAGE-CONTRACT-ALIGNMENT-001`: Align the iOS consumer (PR30) with this formalized contract.
