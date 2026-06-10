@@ -73,11 +73,18 @@ jobs:
           echo "zip-path=${ZIP_PATH}" >> "$GITHUB_OUTPUT"
           echo "zip-name=${ZIP_NAME}" >> "$GITHUB_OUTPUT"
 
+      - name: Generate release metadata
+        run: |
+          set -euo pipefail
+          node tools/generate-release-metadata.mjs "${{ steps.package.outputs.zip-path }}"
+
       - name: Upload runtime package artifact
         uses: actions/upload-artifact@v4
         with:
           name: runtime-package
-          path: ${{ steps.package.outputs.zip-path }}
+          path: |
+            ${{ steps.package.outputs.zip-path }}
+            ${{ github.workspace }}/.tmp/runtime-packages/fortweb-release.json
           retention-days: 7
           if-no-files-found: error
 
@@ -148,6 +155,17 @@ jobs:
         with:
           name: runtime-package
           path: .tmp/runtime-packages/
+
+      - name: Verify metadata exists
+        run: |
+          set -euo pipefail
+          METADATA_PATH=".tmp/runtime-packages/fortweb-release.json"
+          if [ ! -f "$METADATA_PATH" ]; then
+            echo "Release metadata file not found at $METADATA_PATH"
+            exit 1
+          fi
+          echo "Metadata verified: $METADATA_PATH"
+          cat "$METADATA_PATH"
 
       - name: Display package info
         run: |

@@ -22,11 +22,13 @@ A complete FortWeb runtime release must consist of the following assets, publish
 
 ```text
 fortweb-runtime-<version>-<commit-sha>.zip
+fortweb-release.json
 fortweb-runtime-<version>-<commit-sha>.zip.sha256
 fortweb-runtime-<version>-<commit-sha>.zip.sig (or .attestation)
 ```
 
 - **`.zip`**: The deterministic runtime payload.
+- **`fortweb-release.json`**: Machine-readable metadata describing the artifact, its provenance, and verification instructions.
 - **`.zip.sha256`**: The checksum file for ZIP-level integrity verification.
 - **`.zip.sig` / `.attestation`**: Cryptographic signature or SLSA provenance proving the artifact originated from the trusted FortWeb release process.
 - **Internal files**: The ZIP must contain `manifest.json` and `checksums.sha256` at its root to verify unpacked contents.
@@ -142,7 +144,25 @@ iOS production import must mirror the Android requirements:
 
 *Current iOS Status:* Local ZIP consumer lane exists (PR30), but production artifact alignment and verification are pending.
 
-## 11. Open Decisions
+## 11. Release Metadata Artifact
+To enable deterministic mobile CI consumption, FortWeb publishes a `fortweb-release.json` file alongside the runtime ZIP.
+
+**Required Fields:**
+- `schema_version`: Contract version (e.g., `"1.0.0"`).
+- `package_version`: Semantic version of the package.
+- `repository`: GitHub repository name (e.g., `"keri-foundation/fortweb"`).
+- `commit_sha`: Exact Git commit hash of the producer.
+- `ref` / `ref_name`: Git ref and ref name (e.g., `"refs/tags/v1.0.0"`, `"v1.0.0"`).
+- `workflow` / `workflow_identity`: Workflow filename and full OIDC identity string.
+- `artifact_name`: Exact filename of the runtime ZIP.
+- `artifact_sha256` / `artifact_bytes`: SHA-256 digest and byte size of the ZIP.
+- `runtime_origin` / `entrypoint`: Trusted origin string and expected entrypoint file.
+- `attestation`: Object containing `type`, `required` (boolean), and `verify_command` template.
+
+**Usage:**
+Mobile CI should fetch this metadata file first to determine the exact artifact to download and the expected verification parameters. **Note:** This metadata complements but does not replace attestation verification or ZIP-internal manifest/checksum verification. Mobile builds must still fail closed if any verification step fails.
+
+## 12. Open Decisions
 The following items require explicit resolution before production implementation:
 
 1. **Signature Mechanism**: GitHub Artifact Attestations vs. `minisign`/`cosign` detached signatures.
@@ -153,10 +173,10 @@ The following items require explicit resolution before production implementation
 6. **SBOM**: Whether a Software Bill of Materials is required for compliance.
 7. **Duplicate ZIP Entry Enforcement**: Whether the current verifier explicitly rejects duplicate entries (requires hardening if not).
 
-## 12. Next Implementation Slices
+## 13. Next Implementation Slices
 To progress toward production readiness, the following slices are recommended:
 
 - `FORTWEB-RELEASE-ASSET-SIGNATURE-PLAN-001`: Design and implement the authenticity/provenance mechanism.
 - `FORTWEB-RELEASE-ASSET-WORKFLOW-HARDENING-001`: Harden the GitHub Actions workflow to enforce publishing constraints and fail-closed verification.
-- `ANDROID-PRODUCTION-RUNTIME-ARTIFACT-IMPORT-PLAN-001`: Design the Android production download and verification pipeline.
+- `MOBILE-CI-VERIFIED-FORTWEB-PAYLOAD-PLAN-001`: Design the shared CI verification script for Android/iOS to consume the release metadata and verify artifacts.
 - `IOS-RUNTIME-PACKAGE-CONTRACT-ALIGNMENT-001`: Align the iOS consumer (PR30) with this formalized contract.
