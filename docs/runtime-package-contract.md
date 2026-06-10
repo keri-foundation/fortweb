@@ -101,11 +101,11 @@ Mobile consumers and CI verifiers **must** enforce the following rules:
 **Current State:** PR27 implements integrity checks (checksums, SHA-256, byte-size, unexpected-file rejection) but **does not yet implement authenticity**.
 
 **Required for Production:**
-Before mobile apps consume production artifacts, the workflow must attach one of the following:
-- **GitHub Artifact Attestations**: Using `actions/attest-build-provenance` to generate an OIDC-backed provenance statement.
-- **Detached Signature**: Using `minisign` or `cosign` to sign the `.zip` file, with the public key pinned in mobile consumers.
+Before mobile apps consume production artifacts, the workflow must attach an authenticity proof.
+- **Selected Mechanism**: **GitHub Artifact Attestations**. The workflow uses `actions/attest@v4` to generate an OIDC-backed provenance statement, requiring `id-token: write` and `attestations: write` permissions.
+- **Deferred**: Detached signatures (e.g., `minisign`/`cosign`) remain deferred in favor of the built-in GitHub provenance model.
 
-*Production mobile import must not be considered complete until authenticity verification is implemented and enforced.*
+*Production mobile import must not be considered complete until authenticity verification is implemented and enforced in the mobile CI pipelines (e.g., via `gh attestation verify`).*
 
 ## 8. GitHub Actions Publishing Requirements
 The release workflow must guarantee:
