@@ -7,16 +7,20 @@
 html {
     min-height: 100%;
     scroll-behavior: smooth;
+    overflow-x: hidden;
+    -webkit-text-size-adjust: 100%;
 }
 
 body {
     min-height: 100vh;
     margin: 0;
+    overflow-x: hidden;
+    touch-action: manipulation;
     font-family: var(--font-sans);
+    font-size: 15px;
+    line-height: 1.47;
     background: var(--color-window);
     color: var(--color-text);
-    line-height: 1.4;
-    letter-spacing: 0.8px;
 }
 
 body,
@@ -80,12 +84,12 @@ code,
 }
 
 :focus-visible {
-    outline: 2px solid var(--color-border-focus);
+    outline: 2px solid var(--sys-primary);
     outline-offset: 2px;
 }
 
 ::selection {
-    background: var(--color-selection);
+    background: var(--sys-selection);
 }
 
 ::-webkit-scrollbar {
@@ -98,12 +102,12 @@ code,
 }
 
 ::-webkit-scrollbar-thumb {
-    background: var(--color-neutral-hover);
+    background: var(--sys-outline);
     border-radius: var(--radius-pill);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-    background: var(--color-border-focus);
+    background: var(--sys-outline-strong);
 }
 
 .visually-hidden {

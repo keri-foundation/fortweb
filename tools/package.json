@@ -1,0 +1,15 @@
+{
+  "private": true,
+  "type": "module",
+  "description": "Visual regression tooling for fortweb fixture screenshots",
+  "scripts": {
+    "capture": "node capture-screenshots.mjs",
+    "diff": "node diff-screenshots.mjs",
+    "update-baselines": "node capture-screenshots.mjs --update-baselines"
+  },
+  "dependencies": {
+    "pixelmatch": "^6.0.0",
+    "pngjs": "^7.0.0",
+    "playwright": "^1.52.0"
+  }
+}
