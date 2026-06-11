@@ -392,7 +392,14 @@ printf 'Unpacking verified runtime payload\n'
 unzip -q "$ZIP_PATH" -d "$OUT_DIR"
 
 VERIFIED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-RECEIPT_PATH="${OUT_DIR}/fortweb-verification-receipt.json"
+case "$OUT_DIR" in
+  */assets/fortweb)
+    RECEIPT_PATH="${OUT_DIR%/assets/fortweb}/fortweb-verification-receipt.json"
+    ;;
+  *)
+    RECEIPT_PATH="${OUT_DIR}/fortweb-verification-receipt.json"
+    ;;
+esac
 
 write_receipt \
   "$RECEIPT_PATH" \
