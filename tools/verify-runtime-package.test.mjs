@@ -150,3 +150,182 @@ test('unsafe manifest path fails', async () => {
 
     expectVerifierFailure(zipPath);
 });
+
+test('rejects duplicate ZIP entry paths before extraction', async () => {
+    const workDir = await createWorkspace();
+    const zipPath = path.join(workDir, 'duplicate.zip');
+
+    try {
+        const pythonScript = `
+import zipfile, os
+zip_path = os.environ['ZIP_PATH']
+with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_STORED) as zf:
+    zf.writestr("fortweb-runtime/manifest.json", "{}")
+    zf.writestr("fortweb-runtime/manifest.json", "{}")
+`;
+        execFileSync('python3', ['-c', pythonScript], {
+            cwd: PROJECT_DIR,
+            env: { ...process.env, ZIP_PATH: zipPath },
+            stdio: ['ignore', 'pipe', 'pipe'],
+        });
+
+        assert.throws(
+            () => runVerifier(zipPath),
+            (error) => /duplicate/i.test(error.message),
+            'Expected verifier to reject duplicate ZIP entries',
+        );
+    } finally {
+        await rm(workDir, { recursive: true, force: true });
+    }
+});
+
+test('rejects symlink ZIP entries before extraction', async () => {
+    const workDir = await createWorkspace();
+    const contentDir = path.join(workDir, 'fortweb-runtime');
+    const zipPath = path.join(workDir, 'symlink.zip');
+
+    try {
+        await mkdir(contentDir, { recursive: true });
+        await writeFile(path.join(contentDir, 'manifest.json'), '{}');
+        await writeFile(path.join(contentDir, 'real-file.txt'), 'real content');
+        execFileSync('ln', ['-s', 'real-file.txt', path.join(contentDir, 'link.txt')], {
+            cwd: PROJECT_DIR,
+            stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        execFileSync('zip', ['--symlinks', '-X', '-r', zipPath, 'fortweb-runtime'], {
+            cwd: workDir,
+            stdio: ['ignore', 'pipe', 'pipe'],
+        });
+
+        assert.throws(
+            () => runVerifier(zipPath),
+            (error) => /symlink/i.test(error.message),
+            'Expected verifier to reject symlink ZIP entries',
+        );
+    } finally {
+        await rm(workDir, { recursive: true, force: true });
+    }
+});
+
+test('rejects a manifest missing schema_version', async () => {
+    const zipPath = await mutateZip(async (workDir) => {
+        const manifestPath = path.join(workDir, 'fortweb-runtime', 'manifest.json');
+        const manifest = JSON.parse(await readText(manifestPath));
+        delete manifest.schema_version;
+        const updatedText = `${JSON.stringify(manifest, null, 2)}\n`;
+        await writeFile(manifestPath, updatedText);
+        await writeFile(
+            path.join(workDir, 'fortweb-runtime', 'checksums.sha256'),
+            `${sha256(Buffer.from(updatedText, 'utf8'))}  manifest.json\n`,
+        );
+    });
+
+    assert.throws(
+        () => runVerifier(zipPath),
+        (error) => /missing required field.*schema_version/i.test(error.message),
+        'Expected verifier to reject manifest missing schema_version',
+    );
+});
+
+test('rejects a manifest missing fortweb_commit_sha', async () => {
+    const zipPath = await mutateZip(async (workDir) => {
+        const manifestPath = path.join(workDir, 'fortweb-runtime', 'manifest.json');
+        const manifest = JSON.parse(await readText(manifestPath));
+        delete manifest.fortweb_commit_sha;
+        const updatedText = `${JSON.stringify(manifest, null, 2)}\n`;
+        await writeFile(manifestPath, updatedText);
+        await writeFile(
+            path.join(workDir, 'fortweb-runtime', 'checksums.sha256'),
+            `${sha256(Buffer.from(updatedText, 'utf8'))}  manifest.json\n`,
+        );
+    });
+
+    assert.throws(
+        () => runVerifier(zipPath),
+        (error) => /missing required field.*fortweb_commit_sha/i.test(error.message),
+        'Expected verifier to reject manifest missing fortweb_commit_sha',
+    );
+});
+
+test('rejects a manifest with an empty runtime_origin', async () => {
+    const zipPath = await mutateZip(async (workDir) => {
+        const manifestPath = path.join(workDir, 'fortweb-runtime', 'manifest.json');
+        const manifest = JSON.parse(await readText(manifestPath));
+        manifest.runtime_origin = '';
+        const updatedText = `${JSON.stringify(manifest, null, 2)}\n`;
+        await writeFile(manifestPath, updatedText);
+        await writeFile(
+            path.join(workDir, 'fortweb-runtime', 'checksums.sha256'),
+            `${sha256(Buffer.from(updatedText, 'utf8'))}  manifest.json\n`,
+        );
+    });
+
+    assert.throws(
+        () => runVerifier(zipPath),
+        (error) => /non-empty string/i.test(error.message),
+        'Expected verifier to reject empty runtime_origin',
+    );
+});
+
+test('rejects a manifest whose entrypoint is absent from the archive', async () => {
+    const zipPath = await mutateZip(async (workDir) => {
+        const manifestPath = path.join(workDir, 'fortweb-runtime', 'manifest.json');
+        const manifest = JSON.parse(await readText(manifestPath));
+        manifest.entrypoint = 'nonexistent.html';
+        const updatedText = `${JSON.stringify(manifest, null, 2)}\n`;
+        await writeFile(manifestPath, updatedText);
+        await writeFile(
+            path.join(workDir, 'fortweb-runtime', 'checksums.sha256'),
+            `${sha256(Buffer.from(updatedText, 'utf8'))}  manifest.json\n`,
+        );
+    });
+
+    assert.throws(
+        () => runVerifier(zipPath),
+        (error) => /entrypoint.*not present/i.test(error.message),
+        'Expected verifier to reject absent entrypoint',
+    );
+});
+
+test('canonical manifest passes and entrypoint maps to an archive member', async () => {
+    const goodZip = await findNewestZip();
+    const output = runVerifier(goodZip);
+
+    assert.match(output, /Verified FortWeb runtime package:/u);
+    assert.match(output, /Files verified:/u);
+
+    // Confirm the canonical fields are present
+    const manifestText = execFileSync('unzip', ['-p', goodZip, 'fortweb-runtime/manifest.json'], {
+        cwd: PROJECT_DIR,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const manifest = JSON.parse(manifestText);
+
+    assert.strictEqual(typeof manifest.schema_version, 'string', 'schema_version must be a string');
+    assert.strictEqual(typeof manifest.package_version, 'string', 'package_version must be a string');
+    assert.strictEqual(typeof manifest.fortweb_commit_sha, 'string', 'fortweb_commit_sha must be a string');
+    assert.strictEqual(typeof manifest.runtime_origin, 'string', 'runtime_origin must be a string');
+    assert.strictEqual(typeof manifest.entrypoint, 'string', 'entrypoint must be a string');
+    assert.ok(Array.isArray(manifest.files), 'files must be an array');
+
+    // Confirm entrypoint maps to a real archive member
+    const archiveEntries = execFileSync('unzip', ['-Z1', goodZip], {
+        cwd: PROJECT_DIR,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const memberNames = archiveEntries
+        .split(/\r?\n/u)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((entryName) => {
+            const prefix = 'fortweb-runtime/';
+            return entryName.startsWith(prefix) ? entryName.slice(prefix.length) : entryName;
+        });
+
+    assert.ok(
+        memberNames.includes(manifest.entrypoint),
+        `Entrypoint '${manifest.entrypoint}' must be a member of the archive`,
+    );
+});

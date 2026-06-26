@@ -3,6 +3,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { CANONICAL_ENTRYPOINT, validateManifest } from './runtime-package-manifest.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_DIR = path.resolve(__dirname, '..');
@@ -132,14 +133,14 @@ async function getFileSize(filePath) {
  */
 function generateManifest(projectInfo, files) {
     const manifest = {
-        schemaVersion: 1,
+        schema_version: '1.0.0',
+        package_version: projectInfo.version,
+        fortweb_commit_sha: projectInfo.gitSha,
+        runtime_origin: 'https://appassets.androidplatform.net',
+        entrypoint: CANONICAL_ENTRYPOINT,
         packageName: 'fortweb-runtime',
-        version: projectInfo.version,
-        gitSha: projectInfo.gitSha,
         gitRef: projectInfo.gitRef,
-        createdAt: new Date().toISOString(),
         basePath: '/fortweb/app/',
-        entrypoint: 'app/index.html',
         runtimeRoot: '.',
         vendorRoot: 'vendor',
         wheelsRoot: 'wheels',
@@ -149,6 +150,11 @@ function generateManifest(projectInfo, files) {
         },
         files,
     };
+
+    // Validate the generated manifest against the shared contract
+    // before it enters the archive. entrypoint existence is checked
+    // with the archive member list after staging.
+    validateManifest(manifest, null);
 
     return JSON.stringify(manifest, null, 2);
 }
@@ -194,6 +200,9 @@ async function createZip(sourceDir, zipPath) {
  */
 async function main() {
     const args = parseArgs();
+    const outputDir = args.outDir
+        ? path.resolve(process.cwd(), args.outDir)
+        : OUTPUT_DIR;
 
     // Build runtime if not skipped
     if (!args.noBuild) {
@@ -257,7 +266,7 @@ async function main() {
     const checksumsContent = generateChecksums(manifestContent);
 
     // Create output directories
-    await mkdir(OUTPUT_DIR, { recursive: true });
+    await mkdir(outputDir, { recursive: true });
     await mkdir(STAGING_DIR, { recursive: true });
 
     // Clean staging directory
@@ -285,7 +294,7 @@ async function main() {
 
     // Create ZIP archive
     const artifactName = `fortweb-runtime-${projectInfo.version}-${projectInfo.gitShortSha}.zip`;
-    const zipPath = path.join(OUTPUT_DIR, artifactName);
+    const zipPath = path.join(outputDir, artifactName);
 
     console.log('[package-runtime] Creating ZIP archive...');
     await createZip(STAGING_DIR, zipPath);
@@ -299,10 +308,19 @@ async function main() {
     // Clean staging directory
     await rm(STAGING_DIR, { recursive: true, force: true });
 
+    // Compute SHA-256 of the final ZIP and write a canonical sidecar
+    const zipBuffer = await readFile(zipPath);
+    const zipSha256 = createHash('sha256').update(zipBuffer).digest('hex');
+    const zipBasename = path.basename(zipPath);
+    const sidecarPath = `${zipPath}.sha256`;
+    const sidecarContent = `${zipSha256}  ${zipBasename}\n`;
+    await writeFile(sidecarPath, sidecarContent);
+
     // Report results
     const artifactSize = (await getStats(zipPath)).size;
     console.log(`[package-runtime] Created artifact: ${zipPath}`);
     console.log(`[package-runtime] Artifact size: ${artifactSize} bytes`);
+    console.log(`[package-runtime] Checksum sidecar: ${sidecarPath}`);
     console.log(`[package-runtime] Files in package: ${fileEntries.length}`);
     console.log(`[package-runtime] Manifest SHA-256: ${checksumsContent.split(' ')[0]}`);
 }

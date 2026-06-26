@@ -12,6 +12,7 @@ ZIP_PATH=""
 OUT_DIR=""
 REPO_NAME=""
 TAG_NAME=""
+EXPECTED_WORKFLOW=""
 SKIP_ATTESTATION=false
 VERIFY_TEMP_DIR=""
 NORMALIZED_METADATA_PATH=""
@@ -20,7 +21,7 @@ usage() {
   cat <<'EOF'
 Usage:
   verify-fortweb-release.sh --metadata <metadata.json> --zip <runtime.zip> --out <output-dir> [--skip-attestation-for-local-only]
-  verify-fortweb-release.sh --repo <owner/repo> --tag <vX.Y.Z> --out <output-dir>
+  verify-fortweb-release.sh --repo <owner/repo> --tag <vX.Y.Z> --out <output-dir> [--expected-workflow <path>]
 
 Modes:
   Local artifact mode
@@ -255,6 +256,10 @@ while [[ $# -gt 0 ]]; do
       TAG_NAME="${2:-}"
       shift 2
       ;;
+    --expected-workflow)
+      EXPECTED_WORKFLOW="${2:-}"
+      shift 2
+      ;;
     --skip-attestation-for-local-only)
       SKIP_ATTESTATION=true
       shift
@@ -276,10 +281,6 @@ if [[ "$OUT_DIR" == "/" ]]; then
 fi
 
 if [[ -n "$METADATA_PATH" || -n "$ZIP_PATH" || "$SKIP_ATTESTATION" == true ]]; then
-  if [[ -n "$REPO_NAME" || -n "$TAG_NAME" ]]; then
-    fail "Local artifact mode cannot be combined with --repo/--tag"
-  fi
-
   MODE="local-artifact"
   require_file "$METADATA_PATH" "--metadata"
   require_file "$ZIP_PATH" "--zip"
@@ -371,12 +372,54 @@ if [[ "$ARTIFACT_SHA256" != "$(sha256_file "$ZIP_PATH")" ]]; then
   fail "ZIP SHA-256 mismatch for $ZIP_PATH"
 fi
 
+# ── Attestation identity validation ──
+# The expected workflow identity is derived from verifier inputs.
+# Downloaded metadata's workflow_identity is checked for consistency
+# but does not determine the identity passed to gh attestation verify.
+
+if [[ -n "$REPO_NAME" || -n "$TAG_NAME" ]]; then
+  require_nonempty "$REPO_NAME" "--repo (required for attestation identity validation)"
+  require_nonempty "$TAG_NAME" "--tag (required for attestation identity validation)"
+
+  if [[ -z "$EXPECTED_WORKFLOW" ]]; then
+    EXPECTED_WORKFLOW=".github/workflows/fortweb-runtime-package.yml"
+  fi
+
+  case "$EXPECTED_WORKFLOW" in
+    .github/workflows/*.yml|.github/workflows/*.yaml) ;;
+    *)
+      fail "--expected-workflow must be a path under .github/workflows/ ending in .yml or .yaml"
+      ;;
+  esac
+
+  if [[ "$EXPECTED_WORKFLOW" == *'..'* ]]; then
+    fail "--expected-workflow must not contain '..'"
+  fi
+
+  if [[ "$EXPECTED_WORKFLOW" == /* ]]; then
+    fail "--expected-workflow must not be an absolute path"
+  fi
+
+  DERIVED_IDENTITY="https://github.com/${REPO_NAME}/${EXPECTED_WORKFLOW}@refs/tags/${TAG_NAME}"
+
+  if [[ "$WORKFLOW_IDENTITY" != "$DERIVED_IDENTITY" ]]; then
+    fail "Metadata workflow_identity mismatch: expected ${DERIVED_IDENTITY}, found ${WORKFLOW_IDENTITY}"
+  fi
+
+  ATTESTATION_IDENTITY="$DERIVED_IDENTITY"
+else
+  # Local/offline mode: no verifier-controlled repo or tag.
+  # Do not derive attestation trust from downloaded metadata.
+  # Attestation identity is intentionally left empty.
+  ATTESTATION_IDENTITY=""
+fi
+
 if [[ "$MODE" == "release" ]]; then
   printf 'Verifying GitHub Artifact Attestation for %s\n' "$ZIP_PATH"
-  workflow_identity_regex="^$(escape_regex "$WORKFLOW_IDENTITY")$"
+  attestation_identity_regex="^$(escape_regex "$ATTESTATION_IDENTITY")$"
   gh attestation verify "$ZIP_PATH" \
     --repo "$REPO_NAME" \
-    --cert-identity-regexp "$workflow_identity_regex"
+    --cert-identity-regexp "$attestation_identity_regex"
 else
   printf 'Skipping attestation verification for local-only artifact mode\n'
 fi

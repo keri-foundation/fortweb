@@ -10,6 +10,7 @@ import {
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { validateManifest } from './runtime-package-manifest.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_DIR = path.resolve(__dirname, '..');
@@ -136,6 +137,40 @@ async function listArchiveEntries(zipPath) {
         .filter(Boolean);
 }
 
+async function listArchiveEntryTypes(zipPath) {
+    const { stdout } = await execFileAsync('unzip', ['-Z', zipPath], {
+        cwd: PROJECT_DIR,
+        maxBuffer: 10 * 1024 * 1024,
+    });
+
+    const lines = stdout.split(/\r?\n/u);
+    const entries = [];
+    let inEntries = false;
+
+    for (const line of lines) {
+        if (!inEntries) {
+            if (line.startsWith('-') || line.startsWith('d') || line.startsWith('l')) {
+                inEntries = true;
+            } else {
+                continue;
+            }
+        }
+
+        if (line.trim().length === 0) {
+            continue;
+        }
+
+        if (/^\d+ files?/.test(line.trim())) {
+            break;
+        }
+
+        const typeChar = line.trimStart()[0];
+        entries.push(typeChar);
+    }
+
+    return entries;
+}
+
 async function extractZip(zipPath, targetDir) {
     await execFileAsync('unzip', ['-q', zipPath, '-d', targetDir], {
         cwd: PROJECT_DIR,
@@ -212,6 +247,16 @@ async function main() {
             fail(`Runtime package ZIP is missing the expected ${ROOT_PATH} root.`);
         }
 
+        const uniqueEntries = new Set(archiveEntries);
+        if (uniqueEntries.size !== archiveEntries.length) {
+            fail('Duplicate ZIP entry paths are not supported. Rejecting before extraction.');
+        }
+
+        const entryTypes = await listArchiveEntryTypes(zipPath);
+        if (entryTypes.some((typeChar) => typeChar === 'l')) {
+            fail('ZIP symlink entries are not supported. Rejecting before extraction.');
+        }
+
         await extractZip(zipPath, extractDir);
 
         const packageRoot = path.join(extractDir, ROOT_DIR_NAME);
@@ -251,13 +296,7 @@ async function main() {
         }
 
         const manifest = JSON.parse(manifestText);
-        if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
-            fail('manifest.json must contain a JSON object.');
-        }
-
-        if (!Array.isArray(manifest.files)) {
-            fail('manifest.files must be an array.');
-        }
+        validateManifest(manifest, null);
 
         const verifiedEntries = manifest.files.map(validateManifestEntry);
         const manifestEntryPaths = new Set();
@@ -269,6 +308,9 @@ async function main() {
         }
 
         const actualFiles = await collectFilesRecursively(packageRoot);
+
+        // Validate entrypoint existence against actual archive members
+        validateManifest(manifest, actualFiles);
         const allowedFiles = new Set([
             MANIFEST_NAME,
             CHECKSUM_NAME,

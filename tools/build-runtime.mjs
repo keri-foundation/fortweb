@@ -1,4 +1,4 @@
-import { cp, mkdir, readdir, rm } from 'node:fs/promises';
+import { cp, lstat, mkdir, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -32,6 +32,26 @@ const STATIC_RUNTIME_ASSETS = [
         source: 'vendor/pyscript/2025.11.2',
         target: 'vendor/pyscript/2025.11.2',
         recursive: true,
+    },
+    {
+        source: 'app/index.html',
+        target: 'app/index.html',
+    },
+    {
+        source: 'app/styles/tokens.css',
+        target: 'app/styles/tokens.css',
+    },
+    {
+        source: 'app/styles/base.css',
+        target: 'app/styles/base.css',
+    },
+    {
+        source: 'app/styles/layout.css',
+        target: 'app/styles/layout.css',
+    },
+    {
+        source: 'app/styles/components.css',
+        target: 'app/styles/components.css',
     },
 ];
 
@@ -105,6 +125,12 @@ async function main() {
     await rm(OUTPUT_DIR, { recursive: true, force: true });
     await runCommand('tsc', ['--project', 'tsconfig.build.json'], PROJECT_DIR);
     await copyRuntimeAssets();
+
+    const entrypointPath = path.join(OUTPUT_DIR, 'app/index.html');
+    const entrypointStats = await lstat(entrypointPath).catch(() => null);
+    if (!entrypointStats || !entrypointStats.isFile()) {
+        throw new Error(`[build-runtime] Runtime entrypoint not found after build: ${entrypointPath}`);
+    }
 
     process.stdout.write('[build-runtime] emitted runtime JS to dist/runtime.\n');
 }

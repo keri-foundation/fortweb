@@ -31,7 +31,7 @@ fortweb-runtime-<version>-<commit-sha>.zip.sig (or .attestation)
 
 - **`.zip`**: The deterministic runtime payload.
 - **`fortweb-release.json`**: Machine-readable metadata describing the artifact, its provenance, and verification instructions.
-- **`.zip.sha256`**: The checksum file for ZIP-level integrity verification.
+- **`.zip.sha256`**: The checksum file for ZIP-level integrity verification. Format: exactly one UTF-8 line containing the lowercase SHA-256 hex digest of the ZIP, two spaces, and the ZIP basename (e.g., `0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef  fortweb-runtime-0.0.0-abc1234.zip\n`). The hash must describe the final ZIP bytes; the filename must be the ZIP basename only (never an absolute path).
 - **`.zip.sig` / `.attestation`**: Cryptographic signature or SLSA provenance proving the artifact originated from the trusted FortWeb release process.
 - **Internal files**: The ZIP must contain `manifest.json` and `checksums.sha256` at its root to verify unpacked contents.
 
@@ -61,10 +61,10 @@ The `manifest.json` file must adhere to the following schema:
   "package_version": "0.1.0",
   "fortweb_commit_sha": "1e3870ad7632654dfbdebad0a0d03d120225a96c",
   "runtime_origin": "https://appassets.androidplatform.net",
-  "entrypoint": "index.html",
+  "entrypoint": "app/index.html",
   "files": [
     {
-      "path": "index.html",
+      "path": "app/index.html",
       "sha256": "125c6f6c4ea343964f789ecb20ae9f7021e042e7db27e1257a6e0f7c395cfa59",
       "bytes": 126
     }
@@ -73,12 +73,12 @@ The `manifest.json` file must adhere to the following schema:
 ```
 
 **Required Fields:**
-- `schema_version`: Contract version (e.g., `"1.0.0"`).
-- `package_version`: Semantic version of the package.
-- `fortweb_commit_sha`: Exact Git commit hash of the producer.
-- `runtime_origin`: Trusted origin string for the runtime environment.
-- `entrypoint`: Expected entrypoint file (e.g., `"index.html"`).
-- `files`: Array of objects, each containing `path`, `sha256` (lowercase hex), and `bytes`.
+- `schema_version`: Contract version (e.g., `"1.0.0"`). Must be a non-empty string.
+- `package_version`: Semantic version of the package. Must be a non-empty string.
+- `fortweb_commit_sha`: Exact Git commit hash of the producer. Must be a non-empty string.
+- `runtime_origin`: Trusted origin string for the runtime environment. Must be a non-empty string.
+- `entrypoint`: Expected entrypoint file (`"app/index.html"`). The verifier checks that this path exists as an archive member beneath the runtime root (`fortweb-runtime/app/index.html`). This check proves file presence only — it does not verify browser/runtime functionality.
+- `files`: Array of objects, each containing `path`, `sha256` (lowercase hex), and `bytes`. Must be an array.
 
 **Planned/Future Fields:**
 - `build_timestamp`: ISO 8601 timestamp of generation.

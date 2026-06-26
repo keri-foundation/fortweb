@@ -26,8 +26,8 @@ try {
   const commitSha = process.env.GITHUB_SHA || 'unknown';
   const ref = process.env.GITHUB_REF || 'refs/heads/main';
   const refName = process.env.GITHUB_REF_NAME || 'main';
-  const workflow = process.env.GITHUB_WORKFLOW || 'fortweb-runtime-package.yml';
-  const workflowIdentity = `https://github.com/${repo}/.github/workflows/${workflow}@${ref}`;
+  const workflow = process.env.GITHUB_WORKFLOW || '.github/workflows/fortweb-runtime-package.yml';
+  const workflowIdentity = `https://github.com/${repo}/${workflow}@${ref}`;
 
   const metadata = {
     schema_version: "1.0.0",
@@ -46,7 +46,7 @@ try {
     attestation: {
       type: "github-artifact-attestation",
       required: true,
-      verify_command: `gh attestation verify ${zipName} --repo ${repo} --cert-identity-regexp "^https://github.com/${repo}/.github/workflows/${workflow}@refs/(heads/main|tags/v.*)"$`
+      verify_command: `gh attestation verify ${zipName} --repo ${repo} --cert-identity-regexp "^https://github.com/${repo}/${workflow}@refs/(heads/main|tags/v.*)"$`
     }
   };
 
