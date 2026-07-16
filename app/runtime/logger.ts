@@ -49,7 +49,7 @@ function formatDiagnosticValue(value: unknown): string {
     return String(value);
 }
 
-export function formatDiagnosticMessage(
+function formatDiagnosticMessage(
     event: string,
     fields: Record<string, unknown> = {},
 ): string {
@@ -64,7 +64,7 @@ export function formatDiagnosticMessage(
     return `[fortweb.runtime] event=${event} ${parts.join(" ")}`;
 }
 
-export function postToNativeBridge(payload: NativeBridgePayload): void {
+function postToNativeBridge(payload: NativeBridgePayload): void {
     try {
         nativeBridge.postMessage(payload);
     } catch {}

@@ -18,6 +18,3 @@ export const METHODS = Object.freeze({
     kfAccountWatchersList: "kf.account.watchers.list",
     kfAccountWatchersStatus: "kf.account.watchers.status",
 } as const);
-
-export type RuntimeMethodKey = keyof typeof METHODS;
-export type RuntimeMethodName = (typeof METHODS)[RuntimeMethodKey];

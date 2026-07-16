@@ -38,7 +38,7 @@ interface RovingTabindexOptions {
     orientation?: "horizontal" | "vertical" | "both";
 }
 
-export function rovingTabindex(
+function rovingTabindex(
     container: HTMLElement,
     itemSelector: string,
     options: RovingTabindexOptions = {},
