@@ -71,8 +71,16 @@ function resolveReference(ref, baseFile) {
     if (/^[a-z]+:/i.test(ref) && !ref.startsWith('/') && !ref.startsWith('./') && !ref.startsWith('../')) return null;
 
     const cleanRef = ref.split('?')[0].split('#')[0];
-    const baseDir = dirname(baseFile);
-    const resolved = resolve(baseDir, cleanRef);
+
+    // Resolve against runtime root: paths starting with / are app-root-relative
+    let resolved;
+    if (cleanRef.startsWith('/')) {
+        resolved = join(RUNTIME_DIR, cleanRef.replace(/^\//, ''));
+    } else {
+        resolved = resolve(dirname(baseFile), cleanRef);
+    }
+
+    // Reject path traversal outside runtime root
     const relToRoot = relative(RUNTIME_DIR, resolved);
     if (relToRoot.startsWith('..')) return null;
 
