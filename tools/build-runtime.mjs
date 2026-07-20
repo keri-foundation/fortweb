@@ -57,6 +57,21 @@ const STATIC_RUNTIME_ASSETS = [
         target: 'vendor/pyscript/2025.11.2',
         recursive: true,
     },
+    {
+        source: 'vendor/pyodide/0.29.3',
+        target: 'vendor/pyodide/0.29.3',
+        recursive: true,
+    },
+    {
+        source: 'wheels',
+        target: 'wheels',
+        recursive: true,
+    },
+    {
+        source: 'app/assets',
+        target: 'app/assets',
+        recursive: true,
+    },
 ];
 
 function runCommand(command, args, cwd) {
