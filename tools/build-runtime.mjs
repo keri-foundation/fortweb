@@ -13,6 +13,30 @@ const STATIC_RUNTIME_ASSETS = [
         target: 'pyscript-ci.toml',
     },
     {
+        source: 'app/runtime-origin-contract.json',
+        target: 'app/runtime-origin-contract.json',
+    },
+    {
+        source: 'app/index.html',
+        target: 'app/index.html',
+    },
+    {
+        source: 'app/styles/tokens.css',
+        target: 'app/styles/tokens.css',
+    },
+    {
+        source: 'app/styles/base.css',
+        target: 'app/styles/base.css',
+    },
+    {
+        source: 'app/styles/layout.css',
+        target: 'app/styles/layout.css',
+    },
+    {
+        source: 'app/styles/components.css',
+        target: 'app/styles/components.css',
+    },
+    {
         source: 'app/runtime/wallet-worker.py',
         target: 'app/runtime/wallet-worker.py',
     },
