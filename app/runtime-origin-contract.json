@@ -11,7 +11,7 @@
   "storage": {
     "storageNamespace": "keri-wallet-ios",
     "indexedDbRequired": true,
-    "originPartition": "ios-wkwebview"
+    "originPartition": "app://local/"
   },
   "capabilities": {
     "customScheme": true,
