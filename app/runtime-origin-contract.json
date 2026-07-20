@@ -15,8 +15,8 @@
   },
   "capabilities": {
     "customScheme": true,
-    "httpsLikeAssetOrigin": true,
-    "implicitBlobOriginSafe": true,
+    "httpsLikeAssetOrigin": false,
+    "implicitBlobOriginSafe": false,
     "networkAllowed": false,
     "bundledAssetsOnly": true
   }

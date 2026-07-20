@@ -121,3 +121,96 @@ test('validateRuntimeOriginContract rejects entryUrl not under app://local', () 
         /must use app:\/\/local URLs for entryUrl/
     );
 });
+
+// ── Capability tests ──
+
+test('validateRuntimeOriginContract rejects httpsLikeAssetOrigin=true', () => {
+    assert.throws(
+        () => validateRuntimeOriginContract({
+            ...BASE_IOS_CONTRACT,
+            capabilities: { ...BASE_IOS_CONTRACT.capabilities, httpsLikeAssetOrigin: true },
+        }),
+        /must set httpsLikeAssetOrigin=false/
+    );
+});
+
+test('validateRuntimeOriginContract rejects implicitBlobOriginSafe=true', () => {
+    assert.throws(
+        () => validateRuntimeOriginContract({
+            ...BASE_IOS_CONTRACT,
+            capabilities: { ...BASE_IOS_CONTRACT.capabilities, implicitBlobOriginSafe: true },
+        }),
+        /must set implicitBlobOriginSafe=false/
+    );
+});
+
+test('validateRuntimeOriginContract rejects customScheme=false for app-local', () => {
+    assert.throws(
+        () => validateRuntimeOriginContract({
+            ...BASE_IOS_CONTRACT,
+            capabilities: { ...BASE_IOS_CONTRACT.capabilities, customScheme: false },
+        }),
+        /must set customScheme=true/
+    );
+});
+
+test('validateRuntimeOriginContract rejects networkAllowed=true', () => {
+    assert.throws(
+        () => validateRuntimeOriginContract({
+            ...BASE_IOS_CONTRACT,
+            capabilities: { ...BASE_IOS_CONTRACT.capabilities, networkAllowed: true },
+        }),
+        /must be false/
+    );
+});
+
+test('validateRuntimeOriginContract rejects bundledAssetsOnly=false', () => {
+    assert.throws(
+        () => validateRuntimeOriginContract({
+            ...BASE_IOS_CONTRACT,
+            capabilities: { ...BASE_IOS_CONTRACT.capabilities, bundledAssetsOnly: false },
+        }),
+        /must be true/
+    );
+});
+
+test('validateRuntimeOriginContract validates complete ios capability vector', () => {
+    const contract = validateRuntimeOriginContract(BASE_IOS_CONTRACT);
+    assert.strictEqual(contract.capabilities.customScheme, true);
+    assert.strictEqual(contract.capabilities.httpsLikeAssetOrigin, false);
+    assert.strictEqual(contract.capabilities.implicitBlobOriginSafe, false);
+    assert.strictEqual(contract.capabilities.networkAllowed, false);
+    assert.strictEqual(contract.capabilities.bundledAssetsOnly, true);
+});
+
+// ── Short-circuit behavior ──
+
+test('validateRuntimeOriginContract short-circuits on httpsLikeAssetOrigin before implicitBlobOriginSafe', () => {
+    // Both wrong — only the first error (httpsLikeAssetOrigin) surfaces
+    assert.throws(
+        () => validateRuntimeOriginContract({
+            ...BASE_IOS_CONTRACT,
+            capabilities: {
+                ...BASE_IOS_CONTRACT.capabilities,
+                httpsLikeAssetOrigin: true,
+                implicitBlobOriginSafe: true,
+            },
+        }),
+        /must set httpsLikeAssetOrigin=false/
+    );
+});
+
+test('validateRuntimeOriginContract catches implicitBlobOriginSafe after httpsLikeAssetOrigin is fixed', () => {
+    // Fix first, second surfaces
+    assert.throws(
+        () => validateRuntimeOriginContract({
+            ...BASE_IOS_CONTRACT,
+            capabilities: {
+                ...BASE_IOS_CONTRACT.capabilities,
+                httpsLikeAssetOrigin: false,
+                implicitBlobOriginSafe: true,
+            },
+        }),
+        /must set implicitBlobOriginSafe=false/
+    );
+});

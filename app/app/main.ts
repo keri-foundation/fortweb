@@ -28,6 +28,7 @@ import {
     readWindowRuntimeOriginContract,
     RuntimeOriginContractError,
 } from "../runtime/origin-contract.js";
+import { probeWkWebViewCapabilities } from "../runtime/capability-probe.js";
 
 type ShellProps = Parameters<typeof renderShell>[1];
 type ShellVault = ShellProps["vault"];
@@ -130,6 +131,16 @@ if (runtimeOriginContract) {
         fallback: "browser_defaults",
     });
 }
+
+// ── Diagnostic: measure actual WKWebView capabilities ──
+probeWkWebViewCapabilities().then((results) => {
+    postLog("wkwebview_capability_probe", results);
+}).catch((error) => {
+    postLog("wkwebview_capability_probe_failed", {
+        level: "error",
+        message: errorMessage(error),
+    });
+});
 
 const bridge = createRuntimeBridge({
     workerUrl: runtimeOriginContract?.workerUrl ?? new URL("../runtime/wallet-worker.py", import.meta.url),
