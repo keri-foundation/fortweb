@@ -4,7 +4,7 @@
   "platform": "ios-wkwebview",
   "mode": "bundled-offline",
   "documentOrigin": "app://local",
-  "appBaseUrl": "app://local/fortweb/app/",
+  "appBaseUrl": "app://local",
   "entryUrl": "app://local/fortweb/app/index.html",
   "workerUrl": "app://local/fortweb/app/runtime/wallet-worker.py",
   "configUrl": "app://local/fortweb/pyscript-ci.toml",
