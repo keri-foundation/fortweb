@@ -46,6 +46,18 @@ jobs:
       - name: Test runtime JS check
         run: npm run test:runtime-js-check
 
+      - name: Test runtime contract validation
+        run: npm run test:contract
+
+      - name: Test runtime closure
+        run: npm run test:closure
+
+      - name: Test Python dependency closure
+        run: npm run test:python-deps
+
+      - name: Test build idempotency
+        run: npm run test:build-idempotency
+
       - name: Run Playwright tests
         run: npm run test:e2e
 
