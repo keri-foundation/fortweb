@@ -431,8 +431,8 @@ actions = {
         if (document.body.contains(drawer.el)) {
             drawer.close();
         } else {
-            await actions.refreshVaults(currentState().unlockedVaultId, currentState().vaultSummary);
             drawer.open();
+            actions.refreshVaults(currentState().unlockedVaultId, currentState().vaultSummary).catch(() => {});
         }
     },
 };
