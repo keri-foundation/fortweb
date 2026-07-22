@@ -576,11 +576,11 @@ window.addEventListener("beforeunload", () => {
 
 async function bootstrap(): Promise<void> {
     installGlobalHandlers();
+    initDrawer([]);
     await render();
 
     try {
         await actions.refreshVaults();
-        initDrawer(currentState().vaults);
         await render();
     } catch (error) {
         postLog("initial_vault_refresh_failed", {
