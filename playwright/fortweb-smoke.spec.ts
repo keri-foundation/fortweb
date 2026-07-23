@@ -1,48 +1,5 @@
-import { expect, test, type Page } from '@playwright/test';
-
-function isKnownRuntimeNoise(text: string): boolean {
-    return (
-        text.includes('SyntaxWarning: invalid escape sequence') ||
-        text.includes('/lib/python3.13/site-packages/') ||
-        text.includes("b'(?P<kind2>") ||
-        text.includes('MapDom is a subclass of IceMapDom') ||
-        text.includes('RawDom is subclass of MapDom')
-    );
-}
-
-function collectUnexpectedPageErrors(page: Page): string[] {
-    const pageErrors: string[] = [];
-    page.on('pageerror', (error) => {
-        pageErrors.push(error.message);
-    });
-    return pageErrors;
-}
-
-function collectUnexpectedConsoleErrors(page: Page): string[] {
-    const consoleErrors: string[] = [];
-    page.on('console', (message) => {
-        if (message.type() !== 'error') {
-            return;
-        }
-
-        const text = message.text();
-        if (text.includes('favicon.ico')) {
-            return;
-        }
-        if (isKnownRuntimeNoise(text)) {
-            return;
-        }
-
-        consoleErrors.push(text);
-    });
-    return consoleErrors;
-}
-
-async function expectNoUnexpectedErrors(page: Page, pageErrors: string[], consoleErrors: string[]): Promise<void> {
-    await page.waitForTimeout(250);
-    expect(pageErrors).toEqual([]);
-    expect(consoleErrors).toEqual([]);
-}
+import { expect, test } from '@playwright/test';
+import { collectUnexpectedPageErrors, collectUnexpectedConsoleErrors, expectNoUnexpectedErrors } from './utils/error-collector.js';
 
 test.describe('FortWeb smoke', () => {
     test('app boot renders the vault landing page', async ({ page }) => {
