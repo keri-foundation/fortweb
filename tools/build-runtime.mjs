@@ -29,6 +29,20 @@ const STATIC_RUNTIME_ASSETS = [
         target: 'app/runtime/onboarding.py',
     },
     {
+        source: 'app/index.html',
+        target: 'app/index.html',
+    },
+    {
+        source: 'app/styles',
+        target: 'app/styles',
+        recursive: true,
+    },
+    {
+        source: 'app/assets',
+        target: 'app/assets',
+        recursive: true,
+    },
+    {
         source: 'vendor/pyscript/2025.11.2',
         target: 'vendor/pyscript/2025.11.2',
         recursive: true,
