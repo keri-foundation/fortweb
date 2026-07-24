@@ -4,7 +4,7 @@ import { collectUnexpectedPageErrors, collectUnexpectedConsoleErrors } from './u
 test.describe('FortWeb runtime origin contract missing behavior', () => {
     test('allows startup in local browser dev when contract is missing', async ({ page }) => {
         const pageErrors = collectUnexpectedPageErrors(page);
-        const consoleErrors = collectUnexpectedConsoleErrors(page);
+        const consoleErrors = collectUnexpectedConsoleErrors(page, { ignoreKnownRuntimeNoise: false });
 
         // Explicitly ensure the contract is missing (it should be by default in local dev)
         await page.addInitScript(() => {
