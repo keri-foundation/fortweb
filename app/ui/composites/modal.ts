@@ -1,7 +1,7 @@
 import { escapeHtml } from "../../shared/dom.js";
 import { captureFocusReturn } from "../core/a11y.js";
 
-export interface ModalAction {
+interface ModalAction {
     label: string;
     tone?: string;
     dataAction?: string;
