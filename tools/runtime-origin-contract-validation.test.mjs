@@ -110,37 +110,55 @@ test('accepts entryUrl below /fortweb/app/', () => {
 test('rejects appBaseUrl with application directory path', () => {
     const contract = cloneSourceContract();
     contract.appBaseUrl = 'app://local/fortweb/app/';
-    assert.throws(() => validateViaPublicApi(contract));
+    assert.throws(
+        () => validateViaPublicApi(contract),
+        /must use app base URL app:\/\/local/,
+    );
 });
 
 test('rejects appBaseUrl with wrong host', () => {
     const contract = cloneSourceContract();
     contract.appBaseUrl = 'app://notlocal';
-    assert.throws(() => validateViaPublicApi(contract));
+    assert.throws(
+        () => validateViaPublicApi(contract),
+        /must use app base URL app:\/\/local/,
+    );
 });
 
 test('rejects appBaseUrl with wrong scheme', () => {
     const contract = cloneSourceContract();
     contract.appBaseUrl = 'http://local';
-    assert.throws(() => validateViaPublicApi(contract));
+    assert.throws(
+        () => validateViaPublicApi(contract),
+        /must use app base URL app:\/\/local/,
+    );
 });
 
 test('rejects relative appBaseUrl', () => {
     const contract = cloneSourceContract();
     contract.appBaseUrl = '/fortweb/app/';
-    assert.throws(() => validateViaPublicApi(contract));
+    assert.throws(
+        () => validateViaPublicApi(contract),
+        /must be an absolute URL/,
+    );
 });
 
 test('rejects missing appBaseUrl', () => {
     const contract = cloneSourceContract();
     delete contract.appBaseUrl;
-    assert.throws(() => validateViaPublicApi(contract));
+    assert.throws(
+        () => validateViaPublicApi(contract),
+        /must be a non-empty string/,
+    );
 });
 
 test('rejects entryUrl not under app://local', () => {
     const contract = cloneSourceContract();
     contract.entryUrl = 'app://other/index.html';
-    assert.throws(() => validateViaPublicApi(contract));
+    assert.throws(
+        () => validateViaPublicApi(contract),
+        /must use app:\/\/local URLs for entryUrl/,
+    );
 });
 
 // ── Capability tests ──
@@ -148,31 +166,46 @@ test('rejects entryUrl not under app://local', () => {
 test('rejects httpsLikeAssetOrigin=true', () => {
     const contract = cloneSourceContract();
     contract.capabilities.httpsLikeAssetOrigin = true;
-    assert.throws(() => validateViaPublicApi(contract));
+    assert.throws(
+        () => validateViaPublicApi(contract),
+        /must set httpsLikeAssetOrigin=false/,
+    );
 });
 
 test('rejects implicitBlobOriginSafe=true', () => {
     const contract = cloneSourceContract();
     contract.capabilities.implicitBlobOriginSafe = true;
-    assert.throws(() => validateViaPublicApi(contract));
+    assert.throws(
+        () => validateViaPublicApi(contract),
+        /must set implicitBlobOriginSafe=false/,
+    );
 });
 
 test('rejects customScheme=false', () => {
     const contract = cloneSourceContract();
     contract.capabilities.customScheme = false;
-    assert.throws(() => validateViaPublicApi(contract));
+    assert.throws(
+        () => validateViaPublicApi(contract),
+        /must set customScheme=true/,
+    );
 });
 
 test('rejects networkAllowed=true', () => {
     const contract = cloneSourceContract();
     contract.capabilities.networkAllowed = true;
-    assert.throws(() => validateViaPublicApi(contract));
+    assert.throws(
+        () => validateViaPublicApi(contract),
+        /must be false/,
+    );
 });
 
 test('rejects bundledAssetsOnly=false', () => {
     const contract = cloneSourceContract();
     contract.capabilities.bundledAssetsOnly = false;
-    assert.throws(() => validateViaPublicApi(contract));
+    assert.throws(
+        () => validateViaPublicApi(contract),
+        /must be true/,
+    );
 });
 
 test('validates complete ios capability vector', () => {
@@ -183,4 +216,26 @@ test('validates complete ios capability vector', () => {
     assert.strictEqual(contract.capabilities.implicitBlobOriginSafe, false);
     assert.strictEqual(contract.capabilities.networkAllowed, false);
     assert.strictEqual(contract.capabilities.bundledAssetsOnly, true);
+});
+
+// ── Validation ordering ──
+
+test('httpsLikeAssetOrigin error surfaces before implicitBlobOriginSafe', () => {
+    const contract = cloneSourceContract();
+    contract.capabilities.httpsLikeAssetOrigin = true;
+    contract.capabilities.implicitBlobOriginSafe = true;
+    assert.throws(
+        () => validateViaPublicApi(contract),
+        /must set httpsLikeAssetOrigin=false/,
+    );
+});
+
+test('implicitBlobOriginSafe error surfaces after httpsLikeAssetOrigin is valid', () => {
+    const contract = cloneSourceContract();
+    contract.capabilities.httpsLikeAssetOrigin = false;
+    contract.capabilities.implicitBlobOriginSafe = true;
+    assert.throws(
+        () => validateViaPublicApi(contract),
+        /must set implicitBlobOriginSafe=false/,
+    );
 });
