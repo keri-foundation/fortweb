@@ -5,7 +5,78 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_DIR = path.resolve(__dirname, '..');
-const OUTPUT_DIR = path.join(PROJECT_DIR, 'dist/runtime');
+
+// -- CLI argument parsing -----------------------------------------------------
+
+function parseArgs(argv) {
+    const args = argv.slice(2);
+    let outDir = '';
+
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+
+        if (arg === '--out-dir') {
+            if (i + 1 >= args.length || args[i + 1].startsWith('-')) {
+                throw new Error('--out-dir requires a non-empty path argument');
+            }
+            outDir = args[i + 1];
+            i++;
+        } else {
+            throw new Error(`unknown argument: ${arg}`);
+        }
+    }
+
+    return { outDir };
+}
+
+function resolveOutputDir(rawOutDir) {
+    if (!rawOutDir) {
+        return path.join(PROJECT_DIR, 'dist/runtime');
+    }
+
+    const resolved = path.isAbsolute(rawOutDir)
+        ? rawOutDir
+        : path.resolve(PROJECT_DIR, rawOutDir);
+
+    const canonical = path.join(PROJECT_DIR, 'dist/runtime');
+
+    // Canonical output is always safe.
+    if (resolved === canonical) {
+        return resolved;
+    }
+
+    // Reject filesystem root and ancestors of the repository.
+    const rel = path.relative(PROJECT_DIR, resolved);
+    if (rel === '' || rel.startsWith('..')) {
+        throw new Error(
+            `--out-dir must not be the repository root or an ancestor: ${rawOutDir}`,
+        );
+    }
+
+    // Reject known source directories (relative paths from repo root).
+    const blocked = new Set([
+        'app', 'tools', 'vendor', 'wheels', 'node_modules',
+        '.git', 'playwright',
+    ]);
+    const firstSegment = rel.split(path.sep)[0];
+    if (blocked.has(firstSegment)) {
+        throw new Error(
+            `--out-dir must not be a source directory: ${rawOutDir} (resolves inside ${firstSegment}/)`,
+        );
+    }
+
+    // Reject filesystem root explicitly.
+    if (path.resolve(resolved, '..') === resolved || resolved === '/') {
+        throw new Error(
+            `--out-dir must not be the filesystem root: ${rawOutDir}`,
+        );
+    }
+
+    return resolved;
+}
+
+const { outDir: rawOutputDir } = parseArgs(process.argv);
+const OUTPUT_DIR = resolveOutputDir(rawOutputDir);
 
 const STATIC_RUNTIME_ASSETS = [
     {
@@ -142,10 +213,10 @@ async function collectJsOnlyRuntimeFiles(relativeDir = 'app') {
 
 async function main() {
     await rm(OUTPUT_DIR, { recursive: true, force: true });
-    await runCommand('tsc', ['--project', 'tsconfig.build.json'], PROJECT_DIR);
+    await runCommand('tsc', ['--project', 'tsconfig.build.json', '--outDir', OUTPUT_DIR], PROJECT_DIR);
     await copyRuntimeAssets();
 
-    process.stdout.write('[build-runtime] emitted runtime JS to dist/runtime.\n');
+    process.stdout.write(`[build-runtime] emitted runtime JS to ${path.relative(PROJECT_DIR, OUTPUT_DIR) || OUTPUT_DIR}.\n`);
 }
 
 main().catch((error) => {
