@@ -1,5 +1,5 @@
-export const REQUEST_KIND = "fortweb.runtime.request";
-export const RESPONSE_KIND = "fortweb.runtime.response";
+const REQUEST_KIND = "fortweb.runtime.request";
+const RESPONSE_KIND = "fortweb.runtime.response";
 
 export interface RuntimeRequest {
     id: string;
@@ -8,19 +8,19 @@ export interface RuntimeRequest {
     params: Record<string, unknown>;
 }
 
-export interface RuntimeErrorPayload {
+interface RuntimeErrorPayload {
     code: string;
     message: string;
 }
 
-export interface RuntimeSuccessResponse {
+interface RuntimeSuccessResponse {
     id: string;
     kind: typeof RESPONSE_KIND;
     ok: true;
     result: Record<string, unknown>;
 }
 
-export interface RuntimeErrorResponse {
+interface RuntimeErrorResponse {
     id: string;
     kind: typeof RESPONSE_KIND;
     ok: false;

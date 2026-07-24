@@ -1,6 +1,6 @@
-export type FortRuntimeOriginPlatform = "ios-wkwebview" | "android-webview" | "browser-dev";
-export type FortRuntimeOriginMode = "bundled-offline" | "browser-dev";
-export type FortRuntimeOriginBoolean = boolean | "unknown";
+type FortRuntimeOriginPlatform = "ios-wkwebview" | "android-webview" | "browser-dev";
+type FortRuntimeOriginMode = "bundled-offline" | "browser-dev";
+type FortRuntimeOriginBoolean = boolean | "unknown";
 
 export type FortRuntimeOriginContractV1 = {
     schema: "fortweb.runtime-origin.v1";
@@ -298,7 +298,7 @@ function validateIosBundledOfflineContract(contract: FortRuntimeOriginContractV1
     validateIosLoopbackContract(contract);
 }
 
-export function validateRuntimeOriginContract(rawValue: unknown): FortRuntimeOriginContractV1 {
+function validateRuntimeOriginContract(rawValue: unknown): FortRuntimeOriginContractV1 {
     const root = requireObject(rawValue, "Runtime origin contract");
     rejectSecretBearingFields(root);
 
@@ -395,7 +395,7 @@ export interface RuntimeOriginLocationLike {
     hostname: string;
 }
 
-export function isPlainLocalBrowserDevLocation(location: RuntimeOriginLocationLike): boolean {
+function isPlainLocalBrowserDevLocation(location: RuntimeOriginLocationLike): boolean {
     const protocol = location.protocol;
     const hostname = location.hostname;
     return (

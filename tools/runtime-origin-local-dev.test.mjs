@@ -1,7 +1,6 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import {
-    isPlainLocalBrowserDevLocation,
     isRuntimeOriginContractRequired,
 } from '../dist/runtime/app/runtime/origin-contract.js';
 
@@ -15,11 +14,6 @@ test('isPlainLocalBrowserDevLocation allows local browser dev origins', () => {
     ];
 
     for (const origin of allowedOrigins) {
-        assert.strictEqual(
-            isPlainLocalBrowserDevLocation(origin),
-            true,
-            `Expected ${origin.protocol}//${origin.hostname} to be allowed`
-        );
         assert.strictEqual(
             isRuntimeOriginContractRequired(origin),
             false,
@@ -39,11 +33,6 @@ test('isPlainLocalBrowserDevLocation blocks non-local/bundled/native origins', (
     ];
 
     for (const origin of blockedOrigins) {
-        assert.strictEqual(
-            isPlainLocalBrowserDevLocation(origin),
-            false,
-            `Expected ${origin.protocol}//${origin.hostname} to be blocked`
-        );
         assert.strictEqual(
             isRuntimeOriginContractRequired(origin),
             true,
