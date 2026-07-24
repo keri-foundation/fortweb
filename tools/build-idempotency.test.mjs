@@ -6,28 +6,63 @@
  */
 import { strict as assert } from 'node:assert';
 import { test, describe, after } from 'node:test';
-import { existsSync, readdirSync, rmSync, readFileSync, mkdtempSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { existsSync, readdirSync, rmSync, readFileSync, mkdtempSync, mkdirSync } from 'node:fs';
+import { join, resolve, relative, sep, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { tmpdir } from 'node:os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_DIR = resolve(__dirname, '..');
 const CANONICAL_RUNTIME_DIR = join(PROJECT_DIR, 'dist/runtime');
+const TEMP_BUILD_ROOT = join(PROJECT_DIR, 'dist/.tmp');
+
+function isStrictDescendant(parent, candidate) {
+    const parentPath = resolve(parent);
+    const candidatePath = resolve(candidate);
+    const relativePath = relative(parentPath, candidatePath);
+
+    return (
+        relativePath !== '' &&
+        relativePath !== '..' &&
+        !relativePath.startsWith(`..${sep}`) &&
+        !isAbsolute(relativePath)
+    );
+}
 
 describe('runtime build idempotency and correctness (isolated)', { concurrency: 1 }, () => {
+    // Create the shared temp root so mkdtempSync has a parent.
+    mkdirSync(TEMP_BUILD_ROOT, { recursive: true });
+
+    const DIST_DIR = join(PROJECT_DIR, 'dist');
     const TEMP_RUNTIME_DIR = mkdtempSync(
-        join(tmpdir(), 'fortweb-runtime-idempotency-'),
+        join(TEMP_BUILD_ROOT, 'fortweb-runtime-idempotency-'),
     );
 
-    // Guard: the temp directory must not be the canonical output.
+    // Guard: TEMP_BUILD_ROOT is a strict descendant of dist.
+    assert.ok(
+        isStrictDescendant(DIST_DIR, TEMP_BUILD_ROOT),
+        'dist/.tmp must be a strict descendant of dist',
+    );
+
+    // Guard: the unique runtime dir is a strict descendant of dist/.tmp.
+    assert.ok(
+        isStrictDescendant(TEMP_BUILD_ROOT, TEMP_RUNTIME_DIR),
+        'idempotency temp dir must be a strict descendant of dist/.tmp',
+    );
+
+    // Guard: the unique runtime dir is not the canonical output.
     assert.notStrictEqual(
         resolve(TEMP_RUNTIME_DIR),
         resolve(CANONICAL_RUNTIME_DIR),
         'idempotency temp dir must not be the canonical dist/runtime',
+    );
+
+    // Guard: canonical output is not inside the temp dir.
+    assert.ok(
+        !isStrictDescendant(TEMP_RUNTIME_DIR, CANONICAL_RUNTIME_DIR),
+        'canonical dist/runtime must not be inside the temp dir',
     );
 
     after(() => {
@@ -48,8 +83,9 @@ describe('runtime build idempotency and correctness (isolated)', { concurrency: 
     }
 
     function buildRuntime() {
-        execSync(
-            `node tools/build-runtime.mjs --out-dir "${TEMP_RUNTIME_DIR}"`,
+        execFileSync(
+            process.execPath,
+            ['tools/build-runtime.mjs', '--out-dir', TEMP_RUNTIME_DIR],
             { cwd: PROJECT_DIR, stdio: 'pipe' },
         );
     }
