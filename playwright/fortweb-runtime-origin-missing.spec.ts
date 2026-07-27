@@ -1,32 +1,10 @@
-import { expect, test, type Page } from '@playwright/test';
-
-function collectUnexpectedPageErrors(page: Page): string[] {
-    const pageErrors: string[] = [];
-    page.on('pageerror', (error) => {
-        pageErrors.push(error.message);
-    });
-    return pageErrors;
-}
-
-function collectUnexpectedConsoleErrors(page: Page): string[] {
-    const consoleErrors: string[] = [];
-    page.on('console', (message) => {
-        if (message.type() !== 'error') {
-            return;
-        }
-        const text = message.text();
-        if (text.includes('favicon.ico')) {
-            return;
-        }
-        consoleErrors.push(text);
-    });
-    return consoleErrors;
-}
+import { expect, test } from '@playwright/test';
+import { collectUnexpectedPageErrors, collectUnexpectedConsoleErrors } from './utils/error-collector.js';
 
 test.describe('FortWeb runtime origin contract missing behavior', () => {
     test('allows startup in local browser dev when contract is missing', async ({ page }) => {
         const pageErrors = collectUnexpectedPageErrors(page);
-        const consoleErrors = collectUnexpectedConsoleErrors(page);
+        const consoleErrors = collectUnexpectedConsoleErrors(page, { ignoreKnownRuntimeNoise: false });
 
         // Explicitly ensure the contract is missing (it should be by default in local dev)
         await page.addInitScript(() => {
