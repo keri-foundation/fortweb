@@ -304,6 +304,12 @@ test('canonical manifest passes and entrypoint maps to an archive member', async
 
     assert.strictEqual(typeof manifest.schema_version, 'string', 'schema_version must be a string');
     assert.strictEqual(typeof manifest.package_version, 'string', 'package_version must be a string');
+    assert.strictEqual(typeof manifest.package_name, 'string', 'package_name must be a string');
+    assert.strictEqual(manifest.package_name, 'fortweb-runtime', 'package_name must be fortweb-runtime');
+    assert.strictEqual(typeof manifest.producer, 'string', 'producer must be a string');
+    assert.strictEqual(manifest.producer, 'fortweb', 'producer must be fortweb');
+    assert.strictEqual(typeof manifest.payload_profile, 'string', 'payload_profile must be a string');
+    assert.strictEqual(manifest.payload_profile, 'offline-runtime', 'payload_profile must be offline-runtime');
     assert.strictEqual(typeof manifest.fortweb_commit_sha, 'string', 'fortweb_commit_sha must be a string');
     assert.strictEqual(typeof manifest.runtime_origin, 'string', 'runtime_origin must be a string');
     assert.strictEqual(typeof manifest.entrypoint, 'string', 'entrypoint must be a string');
@@ -327,5 +333,65 @@ test('canonical manifest passes and entrypoint maps to an archive member', async
     assert.ok(
         memberNames.includes(manifest.entrypoint),
         `Entrypoint '${manifest.entrypoint}' must be a member of the archive`,
+    );
+});
+
+test('rejects a manifest missing package_name', async () => {
+    const zipPath = await mutateZip(async (workDir) => {
+        const manifestPath = path.join(workDir, 'fortweb-runtime', 'manifest.json');
+        const manifest = JSON.parse(await readText(manifestPath));
+        delete manifest.package_name;
+        const updatedText = `${JSON.stringify(manifest, null, 2)}\n`;
+        await writeFile(manifestPath, updatedText);
+        await writeFile(
+            path.join(workDir, 'fortweb-runtime', 'checksums.sha256'),
+            `${sha256(Buffer.from(updatedText, 'utf8'))}  manifest.json\n`,
+        );
+    });
+
+    assert.throws(
+        () => runVerifier(zipPath),
+        (error) => /missing required field.*package_name/i.test(error.message),
+        'Expected verifier to reject manifest missing package_name',
+    );
+});
+
+test('rejects a manifest missing producer', async () => {
+    const zipPath = await mutateZip(async (workDir) => {
+        const manifestPath = path.join(workDir, 'fortweb-runtime', 'manifest.json');
+        const manifest = JSON.parse(await readText(manifestPath));
+        delete manifest.producer;
+        const updatedText = `${JSON.stringify(manifest, null, 2)}\n`;
+        await writeFile(manifestPath, updatedText);
+        await writeFile(
+            path.join(workDir, 'fortweb-runtime', 'checksums.sha256'),
+            `${sha256(Buffer.from(updatedText, 'utf8'))}  manifest.json\n`,
+        );
+    });
+
+    assert.throws(
+        () => runVerifier(zipPath),
+        (error) => /missing required field.*producer/i.test(error.message),
+        'Expected verifier to reject manifest missing producer',
+    );
+});
+
+test('rejects a manifest missing payload_profile', async () => {
+    const zipPath = await mutateZip(async (workDir) => {
+        const manifestPath = path.join(workDir, 'fortweb-runtime', 'manifest.json');
+        const manifest = JSON.parse(await readText(manifestPath));
+        delete manifest.payload_profile;
+        const updatedText = `${JSON.stringify(manifest, null, 2)}\n`;
+        await writeFile(manifestPath, updatedText);
+        await writeFile(
+            path.join(workDir, 'fortweb-runtime', 'checksums.sha256'),
+            `${sha256(Buffer.from(updatedText, 'utf8'))}  manifest.json\n`,
+        );
+    });
+
+    assert.throws(
+        () => runVerifier(zipPath),
+        (error) => /missing required field.*payload_profile/i.test(error.message),
+        'Expected verifier to reject manifest missing payload_profile',
     );
 });

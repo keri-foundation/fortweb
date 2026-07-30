@@ -178,3 +178,53 @@ test('checksum sidecar matches final ZIP bytes', async () => {
         await rm(outDir, { recursive: true, force: true });
     }
 });
+
+test('manifest contains required package identity fields', async () => {
+    const outDir = await createWorkspace();
+
+    try {
+        runPackager(['--no-build', '--out-dir', outDir]);
+
+        const zipPath = findZip(outDir);
+        const manifestText = await readZipText(zipPath, 'fortweb-runtime/manifest.json');
+        assert.ok(manifestText, 'Expected manifest.json');
+        const manifest = JSON.parse(manifestText);
+
+        assert.strictEqual(manifest.package_name, 'fortweb-runtime',
+            'package_name must be fortweb-runtime');
+        assert.strictEqual(manifest.producer, 'fortweb',
+            'producer must be fortweb');
+        assert.strictEqual(manifest.payload_profile, 'offline-runtime',
+            'payload_profile must be offline-runtime');
+        assert.strictEqual(manifest.entrypoint, 'app/index.html',
+            'entrypoint must be app/index.html');
+        assert.strictEqual(manifest.schema_version, '1.0.0',
+            'schema_version must be 1.0.0');
+    } finally {
+        await rm(outDir, { recursive: true, force: true });
+    }
+});
+
+test('manifest files use canonical field names', async () => {
+    const outDir = await createWorkspace();
+
+    try {
+        runPackager(['--no-build', '--out-dir', outDir]);
+
+        const zipPath = findZip(outDir);
+        const manifestText = await readZipText(zipPath, 'fortweb-runtime/manifest.json');
+        const manifest = JSON.parse(manifestText);
+
+        for (const entry of manifest.files) {
+            assert.ok(typeof entry.path === 'string', 'each file entry must have path');
+            assert.ok(typeof entry.sha256 === 'string' && entry.sha256.length === 64,
+                'each file entry must have sha256 as 64-char hex');
+            assert.ok(Number.isInteger(entry.bytes) && entry.bytes >= 0,
+                'each file entry must have bytes as non-negative integer');
+            assert.ok(!('size' in entry),
+                'file entries must use canonical bytes field, not size');
+        }
+    } finally {
+        await rm(outDir, { recursive: true, force: true });
+    }
+});

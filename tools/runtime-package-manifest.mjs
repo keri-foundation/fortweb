@@ -14,6 +14,9 @@
 export const REQUIRED_MANIFEST_STRING_FIELDS = [
     'schema_version',
     'package_version',
+    'package_name',
+    'producer',
+    'payload_profile',
     'fortweb_commit_sha',
     'runtime_origin',
     'entrypoint',
@@ -32,13 +35,12 @@ export const REQUIRED_MANIFEST_NON_STRING_FIELDS = [
  * @type {string[]}
  */
 export const OPTIONAL_MANIFEST_FIELDS = [
-    'packageName',
-    'gitRef',
-    'basePath',
-    'runtimeRoot',
-    'vendorRoot',
-    'wheelsRoot',
-    'originContract',
+    'git_ref',
+    'base_path',
+    'runtime_root',
+    'vendor_root',
+    'wheels_root',
+    'origin_contract',
 ];
 
 /**
