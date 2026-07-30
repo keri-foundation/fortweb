@@ -42,7 +42,7 @@ try {
     artifact_sha256: sha256,
     artifact_bytes: bytes,
     runtime_origin: "https://appassets.androidplatform.net",
-    entrypoint: "index.html",
+    entrypoint: "app/index.html",
     attestation: {
       type: "github-artifact-attestation",
       required: true,

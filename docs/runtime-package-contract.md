@@ -59,6 +59,9 @@ The `manifest.json` file must adhere to the following schema:
 {
   "schema_version": "1.0.0",
   "package_version": "0.1.0",
+  "package_name": "fortweb-runtime",
+  "producer": "fortweb",
+  "payload_profile": "offline-runtime",
   "fortweb_commit_sha": "1e3870ad7632654dfbdebad0a0d03d120225a96c",
   "runtime_origin": "https://appassets.androidplatform.net",
   "entrypoint": "app/index.html",
@@ -72,18 +75,24 @@ The `manifest.json` file must adhere to the following schema:
 }
 ```
 
-**Required Fields:**
-- `schema_version`: Contract version (e.g., `"1.0.0"`). Must be a non-empty string.
-- `package_version`: Semantic version of the package. Must be a non-empty string.
-- `fortweb_commit_sha`: Exact Git commit hash of the producer. Must be a non-empty string.
-- `runtime_origin`: Trusted origin string for the runtime environment. Must be a non-empty string.
-- `entrypoint`: Expected entrypoint file (`"app/index.html"`). The verifier checks that this path exists as an archive member beneath the runtime root (`fortweb-runtime/app/index.html`). This check proves file presence only — it does not verify browser/runtime functionality.
-- `files`: Array of objects, each containing `path`, `sha256` (lowercase hex), and `bytes`. Must be an array.
+**Required Fields (all must be non-empty strings unless noted):**
+- `schema_version`: Contract version (`"1.0.0"`).
+- `package_version`: Semantic version of the package.
+- `package_name`: Canonical package identity (`"fortweb-runtime"`).
+- `producer`: Producer identity (`"fortweb"`).
+- `payload_profile`: Payload profile (`"offline-runtime"`).
+- `fortweb_commit_sha`: Exact Git commit hash of the producer.
+- `runtime_origin`: Trusted origin string for the runtime environment.
+- `entrypoint`: Canonical entrypoint file (`"app/index.html"`). The verifier checks that this path exists as an archive member beneath the runtime root (`fortweb-runtime/app/index.html`).
+- `files`: Array of objects, each containing `path` (relative, POSIX), `sha256` (64-char lowercase hex), and `bytes` (non-negative integer). Must be an array.
 
-**Planned/Future Fields:**
-- `build_timestamp`: ISO 8601 timestamp of generation.
-- `workflow_run_id`: GitHub Actions run ID for traceability.
-- `minimum_consumer_contract_version`: Minimum mobile app version required to consume this package.
+**Optional Fields:**
+- `git_ref`: Git branch or tag name at packaging time.
+- `base_path`: URL path prefix the runtime expects.
+- `runtime_root`: Runtime root relative to package root (default `"."`).
+- `vendor_root`: Vendor directory name (default `"vendor"`).
+- `wheels_root`: Wheels directory name (default `"wheels"`).
+- `origin_contract`: Runtime origin contract metadata (`{ "schema": "fortweb.runtime-origin.v1", "version": 1 }`).
 
 ## 6. Integrity Rules
 Mobile consumers and CI verifiers **must** enforce the following rules:
