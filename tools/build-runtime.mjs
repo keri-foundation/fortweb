@@ -13,6 +13,11 @@ const STATIC_RUNTIME_ASSETS = [
         target: 'pyscript-ci.toml',
     },
     {
+        source: 'app/assets',
+        target: 'app/assets',
+        recursive: true,
+    },
+    {
         source: 'app/runtime/wallet-worker.py',
         target: 'app/runtime/wallet-worker.py',
     },
@@ -31,6 +36,16 @@ const STATIC_RUNTIME_ASSETS = [
     {
         source: 'vendor/pyscript/2025.11.2',
         target: 'vendor/pyscript/2025.11.2',
+        recursive: true,
+    },
+    {
+        source: 'vendor/pyodide/0.29.3',
+        target: 'vendor/pyodide/0.29.3',
+        recursive: true,
+    },
+    {
+        source: 'wheels',
+        target: 'wheels',
         recursive: true,
     },
     {
