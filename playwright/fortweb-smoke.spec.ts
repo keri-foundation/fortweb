@@ -11,8 +11,17 @@ function isKnownRuntimeNoise(text: string): boolean {
         text.includes('<frozen importlib') ||
         text.includes('/lib/python') ||
         text.includes('File "<exec>"') ||
-        text.includes('Traceback (most recent call last)')
+        text.includes('Traceback (most recent call last)') ||
+        text.includes('_gcd_import')
     ) {
+        return true;
+    }
+    // Empty strings and whitespace-only lines come from Python traceback formatting
+    if (text.trim() === '') {
+        return true;
+    }
+    // Python traceback underline markers (~~~)
+    if (/^[~^ ]+$/.test(text)) {
         return true;
     }
     return (
