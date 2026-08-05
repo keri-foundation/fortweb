@@ -432,7 +432,11 @@ actions = {
         if (document.body.contains(drawer.el)) {
             drawer.close();
         } else {
-            await actions.refreshVaults(currentState().unlockedVaultId, currentState().vaultSummary);
+            try {
+                await actions.refreshVaults(currentState().unlockedVaultId, currentState().vaultSummary);
+            } catch {
+                // Bridge unavailable (e.g. no Pyodide worker): open drawer with stale vault list
+            }
             drawer.open();
         }
     },
