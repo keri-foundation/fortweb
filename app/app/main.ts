@@ -582,8 +582,6 @@ async function bootstrap(): Promise<void> {
     try {
         await actions.refreshVaults();
         initDrawer(currentState().vaults);
-        drawerReady = true;
-        await render();
     } catch (error) {
         postLog("initial_vault_refresh_failed", {
             level: "warning",
@@ -591,6 +589,9 @@ async function bootstrap(): Promise<void> {
             message: errorMessage(error),
         });
     }
+
+    drawerReady = true;
+    await render();
 }
 
 void bootstrap();
