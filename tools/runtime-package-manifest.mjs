@@ -6,6 +6,8 @@
  * never drift between them.
  */
 
+import path from 'node:path';
+
 /**
  * Required top-level manifest fields.
  * Each must be a non-empty string unless noted otherwise.
@@ -88,6 +90,69 @@ export function validateManifest(manifest, archiveMembers) {
             throw new Error(
                 `Manifest entrypoint '${entrypoint}' is not present in the archive.`,
             );
+        }
+    }
+
+    // --- contracts validation ---
+    if (manifest.contracts) {
+        if (typeof manifest.contracts !== 'object' || Array.isArray(manifest.contracts)) {
+            throw new Error('Manifest contracts field must be an object.');
+        }
+
+        const rr = manifest.contracts.runtime_requirements;
+        if (rr) {
+            // Typed descriptor must have a path
+            if (typeof rr.path !== 'string' || rr.path.trim().length === 0) {
+                throw new Error(
+                    'contracts.runtime_requirements.path must be a non-empty string.',
+                );
+            }
+
+            // Path must be safe: no absolute, no backslash, no traversal
+            const p = rr.path;
+            if (path.isAbsolute(p)) {
+                throw new Error(
+                    `contracts.runtime_requirements.path must be relative: ${p}`,
+                );
+            }
+            if (p.includes('\\')) {
+                throw new Error(
+                    `contracts.runtime_requirements.path must not contain backslashes: ${p}`,
+                );
+            }
+            const norm = path.posix.normalize(p);
+            if (norm !== p || norm.startsWith('..') || norm.split('/').includes('..')) {
+                throw new Error(
+                    `contracts.runtime_requirements.path must not contain traversal: ${p}`,
+                );
+            }
+
+            // Must appear in the file inventory exactly once
+            if (Array.isArray(manifest.files)) {
+                const matches = manifest.files.filter((f) => f.path === p);
+                if (matches.length === 0) {
+                    throw new Error(
+                        `contracts.runtime_requirements.path '${p}' is not present in the file inventory.`,
+                    );
+                }
+                if (matches.length > 1) {
+                    throw new Error(
+                        `contracts.runtime_requirements.path '${p}' appears ${matches.length} times in the file inventory; must appear exactly once.`,
+                    );
+                }
+                // Validate the inventory entry has sha256 and bytes
+                const entry = matches[0];
+                if (typeof entry.sha256 !== 'string' || entry.sha256.length !== 64) {
+                    throw new Error(
+                        `File inventory entry for '${p}' must have a valid sha256.`,
+                    );
+                }
+                if (!Number.isInteger(entry.bytes) || entry.bytes < 0) {
+                    throw new Error(
+                        `File inventory entry for '${p}' must have a non-negative bytes field.`,
+                    );
+                }
+            }
         }
     }
 }
