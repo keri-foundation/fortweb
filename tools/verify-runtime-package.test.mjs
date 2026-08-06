@@ -442,3 +442,36 @@ test('verifier rejects requirements artifact missing from extracted tree', async
         'Expected verifier to reject when requirements artifact is absent from tree',
     );
 });
+
+// --- Strict UTF-8 decoding (full pipeline) ---
+
+test('verifier rejects requirements artifact with invalid UTF-8 bytes', async () => {
+    const zipPath = await mutateZip(async (workDir) => {
+        const rrPath = path.join(workDir, 'fortweb-runtime', RUNTIME_REQUIREMENTS_PATH);
+        // 0xFF is never valid as a leading UTF-8 byte
+        const badBytes = Buffer.from([0xFF, 0x7B, 0x7D, 0x0A]); // invalid + "{}"
+        await writeFile(rrPath, badBytes);
+
+        // Update manifest inventory so byte-size and SHA match the mutated file
+        const manifestPath = path.join(workDir, 'fortweb-runtime', 'manifest.json');
+        const manifest = JSON.parse(await readText(manifestPath));
+        const entry = manifest.files.find((f) => f.path === RUNTIME_REQUIREMENTS_PATH);
+        entry.bytes = badBytes.length;
+        entry.sha256 = sha256(badBytes);
+
+        const updatedText = `${JSON.stringify(manifest, null, 2)}\n`;
+        await writeFile(manifestPath, updatedText);
+
+        // Regenerate checksums.sha256 so manifest-integrity check passes
+        await writeFile(
+            path.join(workDir, 'fortweb-runtime', 'checksums.sha256'),
+            `${sha256(Buffer.from(updatedText, 'utf8'))}  manifest.json\n`,
+        );
+    });
+
+    assert.throws(
+        () => runVerifier(zipPath),
+        (error) => /not valid UTF-8/i.test(error.message),
+        'Expected verifier to reject requirements artifact with invalid UTF-8 bytes',
+    );
+});

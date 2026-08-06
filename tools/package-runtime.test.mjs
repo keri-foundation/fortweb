@@ -722,3 +722,18 @@ test('verifier rejects actual-byte SHA mismatch', async () => {
         await rm(outDir, { recursive: true, force: true });
     }
 });
+
+// --- Strict UTF-8 defense-in-depth (validateRuntimeRequirements level) ---
+
+test('requirements with replacement character in schema is rejected', () => {
+    // U+FFFD is produced by non-fatal UTF-8 decoders when they encounter
+    // invalid byte sequences. The semantic validator must reject such content
+    // even if the TextDecoder({fatal:true}) path were bypassed.
+    const rrJson = baseRR();
+    const rr = JSON.parse(rrJson);
+    rr.schema = 'fort.runtime-requirements.\ufffd1';
+    assert.throws(
+        () => validateRuntimeRequirements(JSON.stringify(rr), BASE_MANIFEST),
+        /schema must be/,
+    );
+});
