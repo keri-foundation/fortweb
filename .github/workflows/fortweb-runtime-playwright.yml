@@ -3,12 +3,10 @@ name: FortWeb Runtime and Playwright Checks
 on:
   pull_request:
   push:
-    branches:
-      - main
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
 
 permissions:
@@ -88,49 +86,65 @@ jobs:
       - name: Run verifier tests
         run: npm run test:runtime-package-verify
 
+      - name: Run contract-health tests
+        run: npm run test:runtime-contract-health
+
       - name: Generate runtime package
         run: npm run package:runtime
 
-      - name: Verify runtime package
-        run: npm run verify:runtime-package .tmp/runtime-packages/fortweb-runtime-*.zip
-
-      - name: Contract health summary
-        if: always()
+      - name: Run contract health check
+        id: health
         run: |
           ZIP=$(ls .tmp/runtime-packages/fortweb-runtime-*.zip 2>/dev/null | head -1)
           if [ -z "$ZIP" ]; then
-            echo "### Runtime Contract Health :x: PACKAGE NOT FOUND" >> "$GITHUB_STEP_SUMMARY"
-            echo "No runtime package was generated. Check earlier steps for failures." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
+            echo "PACKAGE_FOUND=false" >> "$GITHUB_OUTPUT"
+            echo "### Runtime Contract Health :x: FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo "No runtime package was generated." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
-          RR_PATH="contracts/runtime-requirements.json"
-          RR_TEXT=$(unzip -p "$ZIP" "fortweb-runtime/$RR_PATH" 2>/dev/null)
-          if [ -z "$RR_TEXT" ]; then
-            echo "### Runtime Contract Health :x: CONTRACT NOT FOUND" >> "$GITHUB_STEP_SUMMARY"
-            echo "Contract not found at fortweb-runtime/$RR_PATH" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
+          RESULT=$(node tools/runtime-contract-health.mjs "$ZIP" 2>/tmp/health-err.log)
+          HEALTH_EXIT=$?
+          if [ $HEALTH_EXIT -ne 0 ]; then
+            echo "PACKAGE_FOUND=true" >> "$GITHUB_OUTPUT"
+            echo "### Runtime Contract Health :x: FAILED" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            cat /tmp/health-err.log >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
-          SCHEMA=$(echo "$RR_TEXT" | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).schema")
-          VERSION=$(echo "$RR_TEXT" | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).version")
-          PRODUCER=$(echo "$RR_TEXT" | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).producer")
-          PROFILE=$(echo "$RR_TEXT" | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).payload_profile")
-          CAP_COUNT=$(echo "$RR_TEXT" | node -p "Object.keys(JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).capabilities).length")
-          FB_COUNT=$(echo "$RR_TEXT" | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).forbidden_behaviors.length")
-          RR_BYTES=$(printf '%s' "$RR_TEXT" | wc -c | tr -d ' ')
-          RR_SHA=$(printf '%s' "$RR_TEXT" | shasum -a 256 | awk '{print $1}')
+          echo "PACKAGE_FOUND=true" >> "$GITHUB_OUTPUT"
+          echo "$RESULT" > /tmp/health-result.json
+
+      - name: Contract health summary
+        if: success()
+        run: |
+          RESULT=$(cat /tmp/health-result.json)
+          SCHEMA=$(echo "$RESULT" | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).schema")
+          VERSION=$(echo "$RESULT" | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).version")
+          PRODUCER=$(echo "$RESULT" | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).producer")
+          PROFILE=$(echo "$RESULT" | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).payload_profile")
+          CAP_COUNT=$(echo "$RESULT" | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).capability_count")
+          FB_COUNT=$(echo "$RESULT" | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).forbidden_behavior_count")
+          INV=$(echo "$RESULT" | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).inventory_entries")
+          ACT_BYTES=$(echo "$RESULT" | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).actual_bytes")
+          MAN_BYTES=$(echo "$RESULT" | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).manifest_bytes")
+          ACT_SHA=$(echo "$RESULT" | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).actual_sha256")
+          MAN_SHA=$(echo "$RESULT" | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).manifest_sha256")
           echo "### Runtime Contract Health :white_check_mark: PASS" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Contract path | \`$RR_PATH\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Contract path | \`contracts/runtime-requirements.json\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Schema | \`$SCHEMA\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Version | $VERSION |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Producer | \`$PRODUCER\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Payload profile | \`$PROFILE\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Capability count | $CAP_COUNT |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Forbidden-behavior count | $FB_COUNT |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Inventory entries | 1 |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Byte count | $RR_BYTES |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| SHA-256 | \`$RR_SHA\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Inventory entries | $INV |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Actual byte count | $ACT_BYTES |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Manifest byte count | $MAN_BYTES |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Actual SHA-256 | \`$ACT_SHA\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Manifest SHA-256 | \`$MAN_SHA\` |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Canonical verifier | PASS |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Contract health | PASS |" >> "$GITHUB_STEP_SUMMARY"
