@@ -5,6 +5,7 @@ import { lstat, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { validateManifest } from './runtime-package-manifest.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_DIR = path.resolve(__dirname, '..');
@@ -414,4 +415,122 @@ test('existing package tests still pass after requirements addition', async () =
     } finally {
         await rm(outDir, { recursive: true, force: true });
     }
+});
+
+// --- Negative Tests (via canonical verifier) ---
+
+const VERIFY_SCRIPT = path.join(PROJECT_DIR, 'tools/verify-runtime-package.mjs');
+
+function runVerifier(zipPath) {
+    try {
+        execFileSync('node', [VERIFY_SCRIPT, zipPath], {
+            cwd: PROJECT_DIR,
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        return { passed: true };
+    } catch (err) {
+        return { passed: false, stderr: (err.stderr || '').toString() };
+    }
+}
+
+test('valid package passes canonical verifier', async () => {
+    const outDir = await createWorkspace();
+    try {
+        runPackager(['--no-build', '--out-dir', outDir]);
+        const zipPath = findZip(outDir);
+        const result = runVerifier(zipPath);
+        assert.ok(result.passed, `canonical verifier must pass: ${result.stderr}`);
+    } finally {
+        await rm(outDir, { recursive: true, force: true });
+    }
+});
+
+test('non-conventional descriptor path is rejected', async () => {
+    const outDir = await createWorkspace();
+    try {
+        runPackager(['--no-build', '--out-dir', outDir]);
+        const zipPath = findZip(outDir);
+
+        // Read and mutate the manifest
+        const manifestText = await readZipText(zipPath, 'fortweb-runtime/manifest.json');
+        const manifest = JSON.parse(manifestText);
+        manifest.contracts.runtime_requirements.path = 'some/other/path.json';
+
+        // We can't easily mutate a ZIP in-place for testing, so test the
+        // manifest validator directly
+        assert.throws(() => {
+            validateManifest(manifest, null);
+        }, /must be.*contracts\/runtime-requirements\.json/);
+    } finally {
+        await rm(outDir, { recursive: true, force: true });
+    }
+});
+
+test('missing contracts descriptor is accepted (contracts is optional)', async () => {
+    // contracts is currently optional in the schema — not having one
+    // is valid for backward compatibility with legacy packages
+    const manifest = {
+        schema_version: '1.0.0',
+        package_version: '0.0.0',
+        package_name: 'fortweb-runtime',
+        producer: 'fortweb',
+        payload_profile: 'offline-runtime',
+        fortweb_commit_sha: '0'.repeat(40),
+        runtime_origin: 'https://example.com',
+        entrypoint: 'app/index.html',
+        files: [{ path: 'app/index.html', sha256: '0'.repeat(64), bytes: 0 }],
+    };
+    // Should not throw — contracts is optional
+    validateManifest(manifest, null);
+});
+
+test('descriptor with empty path is rejected', async () => {
+    const manifest = {
+        schema_version: '1.0.0',
+        package_version: '0.0.0',
+        package_name: 'fortweb-runtime',
+        producer: 'fortweb',
+        payload_profile: 'offline-runtime',
+        fortweb_commit_sha: '0'.repeat(40),
+        runtime_origin: 'https://example.com',
+        entrypoint: 'app/index.html',
+        files: [{ path: 'contracts/runtime-requirements.json', sha256: '0'.repeat(64), bytes: 0 }],
+        contracts: { runtime_requirements: { path: '' } },
+    };
+    assert.throws(() => validateManifest(manifest, null), /non-empty/);
+});
+
+test('descriptor with traversal path is rejected', async () => {
+    const manifest = {
+        schema_version: '1.0.0',
+        package_version: '0.0.0',
+        package_name: 'fortweb-runtime',
+        producer: 'fortweb',
+        payload_profile: 'offline-runtime',
+        fortweb_commit_sha: '0'.repeat(40),
+        runtime_origin: 'https://example.com',
+        entrypoint: 'app/index.html',
+        files: [{ path: 'contracts/../secrets.json', sha256: '0'.repeat(64), bytes: 0 }],
+        contracts: { runtime_requirements: { path: '../secrets.json' } },
+    };
+    // The conventional-path check fires first, before traversal;
+    // both are valid rejection reasons
+    assert.throws(() => validateManifest(manifest, null), /must be 'contracts/);
+});
+
+test('inventory entry with invalid SHA is rejected', async () => {
+    const manifest = {
+        schema_version: '1.0.0',
+        package_version: '0.0.0',
+        package_name: 'fortweb-runtime',
+        producer: 'fortweb',
+        payload_profile: 'offline-runtime',
+        fortweb_commit_sha: '0'.repeat(40),
+        runtime_origin: 'https://example.com',
+        entrypoint: 'app/index.html',
+        files: [{ path: 'contracts/runtime-requirements.json', sha256: 'bad', bytes: 0 }],
+        contracts: { runtime_requirements: { path: 'contracts/runtime-requirements.json' } },
+    };
+    assert.throws(() => validateManifest(manifest, null), /valid sha256/);
 });

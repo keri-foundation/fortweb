@@ -54,6 +54,18 @@ export const OPTIONAL_MANIFEST_FIELDS = [
 export const CANONICAL_ENTRYPOINT = 'app/index.html';
 
 /**
+ * The normative conventional path for the runtime-requirements artifact.
+ * @type {string}
+ */
+export const RUNTIME_REQUIREMENTS_PATH = 'contracts/runtime-requirements.json';
+
+/**
+ * Supported runtime-requirements schema identifier.
+ * @type {string}
+ */
+export const SUPPORTED_RUNTIME_REQUIREMENTS_SCHEMA = 'fort.runtime-requirements.v1';
+
+/**
  * Validate that a parsed manifest object satisfies the required schema.
  * Throws on the first violation with a stable, descriptive message.
  *
@@ -108,8 +120,16 @@ export function validateManifest(manifest, archiveMembers) {
                 );
             }
 
-            // Path must be safe: no absolute, no backslash, no traversal
             const p = rr.path;
+
+            // Path must equal the normative conventional path
+            if (p !== RUNTIME_REQUIREMENTS_PATH) {
+                throw new Error(
+                    `contracts.runtime_requirements.path must be '${RUNTIME_REQUIREMENTS_PATH}', got '${p}'.`,
+                );
+            }
+
+            // Path must be safe: no absolute, no backslash, no traversal
             if (path.isAbsolute(p)) {
                 throw new Error(
                     `contracts.runtime_requirements.path must be relative: ${p}`,
