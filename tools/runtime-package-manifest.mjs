@@ -41,6 +41,7 @@ export const OPTIONAL_MANIFEST_FIELDS = [
     'vendor_root',
     'wheels_root',
     'origin_contract',
+    'contracts',
 ];
 
 /**

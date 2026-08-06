@@ -228,3 +228,190 @@ test('manifest files use canonical field names', async () => {
         await rm(outDir, { recursive: true, force: true });
     }
 });
+
+// --- Runtime Requirements Tests ---
+
+test('runtime requirements artifact exists at conventional path', async () => {
+    const outDir = await createWorkspace();
+
+    try {
+        runPackager(['--no-build', '--out-dir', outDir]);
+
+        const zipPath = findZip(outDir);
+        const reqText = await readZipText(zipPath,
+            'fortweb-runtime/contracts/runtime-requirements.json');
+        assert.ok(reqText, 'runtime-requirements.json must exist at contracts/runtime-requirements.json');
+        const req = JSON.parse(reqText);
+
+        assert.strictEqual(req.schema, 'fort.runtime-requirements.v1');
+        assert.strictEqual(req.version, 1);
+        assert.strictEqual(req.producer, 'fortweb');
+        assert.strictEqual(req.payload_profile, 'offline-runtime');
+        assert.ok(typeof req.capabilities === 'object' && req.capabilities !== null,
+            'must have capabilities object');
+        assert.ok(Array.isArray(req.forbidden_behaviors),
+            'must have forbidden_behaviors array');
+    } finally {
+        await rm(outDir, { recursive: true, force: true });
+    }
+});
+
+test('runtime requirements have all required capabilities', async () => {
+    const outDir = await createWorkspace();
+
+    try {
+        runPackager(['--no-build', '--out-dir', outDir]);
+
+        const zipPath = findZip(outDir);
+        const reqText = await readZipText(zipPath,
+            'fortweb-runtime/contracts/runtime-requirements.json');
+        const req = JSON.parse(reqText);
+
+        const requiredCaps = [
+            'stable_origin_across_launches',
+            'persistent_storage_partition',
+            'secure_context',
+            'remote_network_prohibition',
+            'bundled_assets_only',
+            'worker_availability',
+            'main_frame_provenance',
+            'origin_provenance',
+            'deterministic_entrypoint',
+            'no_fallback_shell_substitution',
+        ];
+
+        for (const cap of requiredCaps) {
+            const entry = req.capabilities[cap];
+            assert.ok(entry, `capability ${cap} must be present`);
+            assert.strictEqual(entry.required, true,
+                `capability ${cap} must be required: true`);
+            assert.ok(typeof entry.description === 'string' && entry.description.length > 0,
+                `capability ${cap} must have a non-empty description`);
+        }
+    } finally {
+        await rm(outDir, { recursive: true, force: true });
+    }
+});
+
+test('runtime requirements appear exactly once in file inventory', async () => {
+    const outDir = await createWorkspace();
+
+    try {
+        runPackager(['--no-build', '--out-dir', outDir]);
+
+        const zipPath = findZip(outDir);
+        const manifestText = await readZipText(zipPath, 'fortweb-runtime/manifest.json');
+        const manifest = JSON.parse(manifestText);
+
+        const matches = manifest.files.filter(
+            (f) => f.path === 'contracts/runtime-requirements.json',
+        );
+        assert.strictEqual(matches.length, 1,
+            'runtime-requirements.json must appear exactly once in file inventory');
+    } finally {
+        await rm(outDir, { recursive: true, force: true });
+    }
+});
+
+test('runtime requirements SHA-256 matches exact packaged bytes', async () => {
+    const outDir = await createWorkspace();
+
+    try {
+        runPackager(['--no-build', '--out-dir', outDir]);
+
+        const zipPath = findZip(outDir);
+        const manifestText = await readZipText(zipPath, 'fortweb-runtime/manifest.json');
+        const manifest = JSON.parse(manifestText);
+
+        const entry = manifest.files.find(
+            (f) => f.path === 'contracts/runtime-requirements.json',
+        );
+        assert.ok(entry, 'requirements entry must exist in file inventory');
+
+        const bytes = execFileSync('unzip', ['-p', zipPath,
+            'fortweb-runtime/contracts/runtime-requirements.json'], {
+            cwd: PROJECT_DIR,
+            stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        const actualHash = createHash('sha256').update(bytes).digest('hex');
+
+        assert.strictEqual(entry.sha256, actualHash,
+            'manifest SHA-256 must match independently computed hash of ZIP bytes');
+        assert.strictEqual(entry.bytes, bytes.length,
+            'manifest bytes must match actual file size');
+    } finally {
+        await rm(outDir, { recursive: true, force: true });
+    }
+});
+
+test('manifest contains typed contracts descriptor', async () => {
+    const outDir = await createWorkspace();
+
+    try {
+        runPackager(['--no-build', '--out-dir', outDir]);
+
+        const zipPath = findZip(outDir);
+        const manifestText = await readZipText(zipPath, 'fortweb-runtime/manifest.json');
+        const manifest = JSON.parse(manifestText);
+
+        assert.ok(manifest.contracts, 'manifest must have contracts field');
+        assert.ok(manifest.contracts.runtime_requirements,
+            'contracts must have runtime_requirements descriptor');
+        assert.strictEqual(
+            manifest.contracts.runtime_requirements.path,
+            'contracts/runtime-requirements.json',
+            'typed descriptor path must match conventional path',
+        );
+    } finally {
+        await rm(outDir, { recursive: true, force: true });
+    }
+});
+
+test('runtime requirements are deterministic across equivalent runs', async () => {
+    const dir1 = await createWorkspace();
+    const dir2 = await createWorkspace();
+
+    try {
+        runPackager(['--no-build', '--out-dir', dir1]);
+        runPackager(['--no-build', '--out-dir', dir2]);
+
+        const zip1 = findZip(dir1);
+        const zip2 = findZip(dir2);
+
+        const req1 = await readZipText(zip1,
+            'fortweb-runtime/contracts/runtime-requirements.json');
+        const req2 = await readZipText(zip2,
+            'fortweb-runtime/contracts/runtime-requirements.json');
+
+        assert.strictEqual(req1, req2,
+            'runtime-requirements.json must be byte-identical across runs');
+    } finally {
+        await rm(dir1, { recursive: true, force: true });
+        await rm(dir2, { recursive: true, force: true });
+    }
+});
+
+test('existing package tests still pass after requirements addition', async () => {
+    const outDir = await createWorkspace();
+
+    try {
+        runPackager(['--no-build', '--out-dir', outDir]);
+
+        const zipPath = findZip(outDir);
+        const manifestText = await readZipText(zipPath, 'fortweb-runtime/manifest.json');
+        const manifest = JSON.parse(manifestText);
+
+        assert.strictEqual(manifest.package_name, 'fortweb-runtime');
+        assert.strictEqual(manifest.producer, 'fortweb');
+        assert.strictEqual(manifest.entrypoint, 'app/index.html');
+        assert.ok(Array.isArray(manifest.files));
+
+        const filePaths = manifest.files.map((f) => f.path);
+        assert.ok(filePaths.includes('app/index.html'),
+            'existing entrypoint must still be present');
+        assert.ok(filePaths.includes('contracts/runtime-requirements.json'),
+            'new requirements artifact must be present');
+    } finally {
+        await rm(outDir, { recursive: true, force: true });
+    }
+});

@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { CANONICAL_ENTRYPOINT, validateManifest } from './runtime-package-manifest.mjs';
+import { generateRuntimeRequirements, serializeRuntimeRequirements } from './generate-runtime-requirements.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_DIR = path.resolve(__dirname, '..');
@@ -151,6 +152,11 @@ function generateManifest(projectInfo, files) {
             version: 1,
         },
         files,
+        contracts: {
+            runtime_requirements: {
+                path: 'contracts/runtime-requirements.json',
+            },
+        },
     };
 
     // Validate the generated manifest against the shared contract
@@ -241,6 +247,14 @@ async function main() {
     console.log(`[package-runtime] Git Ref: ${projectInfo.gitRef}`);
 
     // Collect files from dist/runtime
+    console.log('[package-runtime] Generating runtime requirements...');
+    const runtimeRequirements = generateRuntimeRequirements();
+    const requirementsDir = path.join(RUNTIME_DIR, 'contracts');
+    await mkdir(requirementsDir, { recursive: true });
+    const requirementsPath = path.join(requirementsDir, 'runtime-requirements.json');
+    await writeFile(requirementsPath, serializeRuntimeRequirements(runtimeRequirements));
+    console.log(`[package-runtime] Wrote ${requirementsPath}`);
+
     console.log('[package-runtime] Collecting files from dist/runtime...');
     const files = await collectFilesRecursively(RUNTIME_DIR);
     console.log(`[package-runtime] Found ${files.length} files.`);
