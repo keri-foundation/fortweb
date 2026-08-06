@@ -10,7 +10,7 @@ import {
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import { validateManifest } from './runtime-package-manifest.mjs';
+import { validateManifest, validateRuntimeRequirements, RUNTIME_REQUIREMENTS_PATH } from './runtime-package-manifest.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_DIR = path.resolve(__dirname, '..');
@@ -351,6 +351,12 @@ async function main() {
                 fail(`SHA-256 mismatch for ${ROOT_PATH}${entry.path}: expected ${entry.sha256}, found ${fileHash}.`);
             }
         }
+
+        // --- Semantic validation of runtime-requirements artifact ---
+        const rrPath = path.join(packageRoot, RUNTIME_REQUIREMENTS_PATH);
+        const rrBuffer = await readFile(rrPath);
+        const rrText = rrBuffer.toString('utf8');
+        validateRuntimeRequirements(rrText, manifest);
 
         process.stdout.write(`Verified FortWeb runtime package: ${zipPath}\n`);
         process.stdout.write(`Files verified: ${verifiedEntries.length}\n`);
