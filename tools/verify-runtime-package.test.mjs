@@ -5,6 +5,7 @@ import { lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { RUNTIME_REQUIREMENTS_PATH } from './runtime-package-manifest.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_DIR = path.resolve(__dirname, '..');
@@ -393,5 +394,51 @@ test('rejects a manifest missing payload_profile', async () => {
         () => runVerifier(zipPath),
         (error) => /missing required field.*payload_profile/i.test(error.message),
         'Expected verifier to reject manifest missing payload_profile',
+    );
+});
+
+// --- Runtime requirements actual-byte integrity ---
+
+test('verifier rejects requirements artifact with mutated content', async () => {
+    const zipPath = await mutateZip(async (workDir) => {
+        const rrPath = path.join(workDir, 'fortweb-runtime', RUNTIME_REQUIREMENTS_PATH);
+        const rr = JSON.parse(await readText(rrPath));
+        // Mutate a field: changes content but preserves size
+        rr.producer = 'tampered';
+        await writeFile(rrPath, JSON.stringify(rr, null, 2));
+    });
+
+    assert.throws(
+        () => runVerifier(zipPath),
+        (error) => /mismatch/i.test(error.message),
+        'Expected verifier to reject requirements artifact with mutated content',
+    );
+});
+
+test('verifier rejects requirements artifact with changed size', async () => {
+    const zipPath = await mutateZip(async (workDir) => {
+        const rrPath = path.join(workDir, 'fortweb-runtime', RUNTIME_REQUIREMENTS_PATH);
+        const original = await readText(rrPath);
+        // Append content — changes byte size
+        await writeFile(rrPath, `${original}\n// extra bytes\n`);
+    });
+
+    assert.throws(
+        () => runVerifier(zipPath),
+        (error) => /Byte size mismatch/i.test(error.message),
+        'Expected verifier to reject requirements artifact with changed size',
+    );
+});
+
+test('verifier rejects requirements artifact missing from extracted tree', async () => {
+    const zipPath = await mutateZip(async (workDir) => {
+        const rrPath = path.join(workDir, 'fortweb-runtime', RUNTIME_REQUIREMENTS_PATH);
+        await rm(rrPath);
+    });
+
+    assert.throws(
+        () => runVerifier(zipPath),
+        (error) => /missing manifest-listed files/i.test(error.message),
+        'Expected verifier to reject when requirements artifact is absent from tree',
     );
 });

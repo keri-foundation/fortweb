@@ -355,7 +355,13 @@ async function main() {
         // --- Semantic validation of runtime-requirements artifact ---
         const rrPath = path.join(packageRoot, RUNTIME_REQUIREMENTS_PATH);
         const rrBuffer = await readFile(rrPath);
-        const rrText = rrBuffer.toString('utf8');
+        const decoder = new TextDecoder('utf-8', { fatal: true });
+        let rrText;
+        try {
+            rrText = decoder.decode(rrBuffer);
+        } catch (err) {
+            fail(`Runtime requirements artifact is not valid UTF-8: ${err.message}`);
+        }
         validateRuntimeRequirements(rrText, manifest);
 
         process.stdout.write(`Verified FortWeb runtime package: ${zipPath}\n`);
