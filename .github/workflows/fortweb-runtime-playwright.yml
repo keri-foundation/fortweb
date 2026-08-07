@@ -85,14 +85,14 @@ jobs:
       - name: Run runtime-package tests
         run: npm run test:runtime-package
 
+      - name: Generate runtime package
+        run: npm run package:runtime
+
       - name: Run verifier tests
         run: npm run test:runtime-package-verify
 
       - name: Run contract-health tests
         run: npm run test:runtime-contract-health
-
-      - name: Generate runtime package
-        run: npm run package:runtime
 
       - name: Run contract health check
         id: health
