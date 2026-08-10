@@ -2553,4 +2553,5 @@ async def _preload():
 
 asyncio.ensure_future(_preload())
 
+__export__ = ["handle_request"]
 sync.handle_request = handle_request
