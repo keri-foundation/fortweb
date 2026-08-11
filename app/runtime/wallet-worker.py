@@ -2457,12 +2457,6 @@ onboarding.configure_runtime(
 )
 
 
-async def _dispatch(method: str, params: dict):
-    if method.startswith("kf."):
-        return await onboarding.dispatch(method, params)
-    return await vaulting.dispatch(method, params)
-
-
 def _error_payload(message_id: str, code: str, message: str):
     return json.dumps(
         {
