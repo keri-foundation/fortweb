@@ -2205,6 +2205,14 @@ async def _dispatch(method: str, params: dict):
         state = _require_open_state(_require_vault_id(params))
         return _vault_summary(state)
 
+    if method == "settings.get":
+        return {
+            "settings": {
+                **DEFAULT_SETTINGS,
+                "runtimeStatus": "Browser vault worker open over WebBaser and WebKeeper.",
+            }
+        }
+
     state = _require_open_state(_require_vault_id(params))
     modules = state["modules"]
     hby = state["hby"]
@@ -2413,14 +2421,6 @@ async def _dispatch(method: str, params: dict):
         return {
             "account": _kf_state_view(record),
             "watcher": await _refresh_kf_watcher_status(hby, organizer, record, watcher_id),
-        }
-
-    if method == "settings.get":
-        return {
-            "settings": {
-                **DEFAULT_SETTINGS,
-                "runtimeStatus": "Browser vault worker open over WebBaser and WebKeeper.",
-            }
         }
 
     raise RuntimeFault("BAD_REQUEST", f"Runtime method '{method}' is not allowed.")
