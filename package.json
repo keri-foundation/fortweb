@@ -11,6 +11,7 @@
     "test:runtime-release-verify": "node --test tools/verify-fortweb-release.test.mjs",
     "test:runtime-package-verify": "node --test tools/verify-runtime-package.test.mjs",
     "test:runtime-js-check": "node --test tools/check-runtime-js.test.mjs",
+    "test:runtime-python-state": "node --test tools/wallet-worker-python-state.test.mjs",
     "test:runtime-contract-health": "node --test tools/runtime-contract-health.test.mjs",
     "health:runtime-contract": "node tools/runtime-contract-health.mjs",
     "typecheck": "tsc --project tsconfig.json",

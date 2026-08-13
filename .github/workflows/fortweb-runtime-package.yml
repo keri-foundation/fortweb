@@ -50,6 +50,9 @@ jobs:
       - name: Test runtime JS check
         run: npm run test:runtime-js-check
 
+      - name: Test wallet-worker runtime state
+        run: npm run test:runtime-python-state
+
       - name: Package runtime
         id: package
         run: |

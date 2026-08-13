@@ -133,6 +133,8 @@ LOCAL_WHEEL_PATHS = [
 
 
 _MODULES = None
+_REGISTRY = None
+_STATE = None
 _REQUEST_LOCK = asyncio.Lock()
 _RUNTIME_PACKAGES_TASK = None  # Shared task so _preload and _dispatch coalesce package loads
 
