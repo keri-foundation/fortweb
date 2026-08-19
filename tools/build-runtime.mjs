@@ -1,4 +1,4 @@
-import { cp, lstat, mkdir, readdir, rm } from 'node:fs/promises';
+import { cp, lstat, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -136,10 +136,44 @@ async function collectJsOnlyRuntimeFiles(relativeDir = 'app') {
     return jsOnlyFiles;
 }
 
+// Assets whose dev-time `/fortweb/...` URL prefixes are rewritten to
+// root-relative paths when the packaged runtime is emitted. The dev
+// servers serve `libs/` with `/fortweb/app/`, `/fortweb/vendor/`, and
+// `/fortweb/wheels/` prefixes (matching pyscript-ci.toml and
+// wallet-worker.py in source); the packaged runtime is self-contained
+// and served from its own root, so those prefixes must drop to `/`.
+const PACKAGED_URL_REWRITES = [
+    {
+        file: 'pyscript-ci.toml',
+        rewrites: [['/fortweb/vendor/', '/vendor/']],
+    },
+    {
+        file: 'app/runtime/wallet-worker.py',
+        rewrites: [
+            ['/fortweb/vendor/', '/vendor/'],
+            ['/fortweb/wheels/', '/wheels/'],
+        ],
+    },
+];
+
+async function rewritePackagedUrls() {
+    for (const { file, rewrites } of PACKAGED_URL_REWRITES) {
+        const targetPath = path.join(OUTPUT_DIR, file);
+        let content = await readFile(targetPath, 'utf8');
+
+        for (const [from, to] of rewrites) {
+            content = content.replaceAll(from, to);
+        }
+
+        await writeFile(targetPath, content, 'utf8');
+    }
+}
+
 async function main() {
     await rm(OUTPUT_DIR, { recursive: true, force: true });
     await runCommand('tsc', ['--project', 'tsconfig.build.json'], PROJECT_DIR);
     await copyRuntimeAssets();
+    await rewritePackagedUrls();
 
     const entrypointPath = path.join(OUTPUT_DIR, 'app/index.html');
     const entrypointStats = await lstat(entrypointPath).catch(() => null);
