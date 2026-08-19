@@ -15,8 +15,10 @@
     "test:all": "npm run test:fast && npm run test:build-idempotency && npm run test:runtime-js-check && npm run typecheck",
     "typecheck": "tsc --project tsconfig.json",
     "pretest:e2e": "npm run build:runtime",
-    "test:e2e": "playwright test",
-    "test:e2e:headed": "playwright test --headed"
+    "test:e2e": "playwright test --grep-invert \"@slow\"",
+    "test:e2e:headed": "playwright test --headed",
+    "pretest:e2e:slow": "npm run build:runtime",
+    "test:e2e:slow": "playwright test --grep \"@slow\""
   },
   "devDependencies": {
     "@playwright/test": "1.58.2",

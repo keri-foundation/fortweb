@@ -58,8 +58,11 @@ jobs:
       - name: Test build idempotency
         run: npm run test:build-idempotency
 
-      - name: Run Playwright tests
+      - name: Run Playwright fast tests
         run: npm run test:e2e
+
+      - name: Run real Pyodide boot canary
+        run: npm run test:e2e:slow
 
       - name: Upload Playwright artifacts on failure
         if: failure()
