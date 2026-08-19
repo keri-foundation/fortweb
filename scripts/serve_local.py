@@ -70,6 +70,14 @@ class FortWebRequestHandler(http.server.SimpleHTTPRequestHandler):
             if not relative_path or relative_path == 'index.html':
                 return os.path.join(self.directory, 'fortweb', 'app', relative_path or 'index.html')
 
+            # Python runtime modules are not compiled. Serve them from source
+            # so the dev-time /fortweb/ URL prefixes in wallet-worker.py and the
+            # pyscript-ci [files] modules resolve against the libs-root doc root.
+            if relative_path.endswith('.py'):
+                source_app_path = os.path.join(self.directory, 'fortweb', 'app', relative_path)
+                if os.path.exists(source_app_path):
+                    return source_app_path
+
             # Check if the requested file exists in the compiled runtime output
             dist_app_path = os.path.join(self.directory, 'fortweb', 'dist', 'runtime', 'app', relative_path)
             if os.path.exists(dist_app_path):
@@ -95,6 +103,12 @@ class FortWebRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             return True
         return False
+
+    def end_headers(self) -> None:
+        # Dev server must not let the browser cache stale artifacts (e.g. the
+        # wallet worker switching between source and compiled copies).
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
         if self._redirect_root_to_app():
