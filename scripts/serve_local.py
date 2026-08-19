@@ -39,61 +39,21 @@ import sys
 import webbrowser
 from pathlib import Path
 
+from fortweb_static import FORTWEB_EXTENSIONS_MAP, resolve_fortweb_path
+
 
 class FortWebRequestHandler(http.server.SimpleHTTPRequestHandler):
     """Static files with sane MIME types for JS modules and Pyodide wheels."""
 
     extensions_map = {
         **http.server.SimpleHTTPRequestHandler.extensions_map,
-        ".js": "application/javascript",
-        ".mjs": "application/javascript",
-        ".cjs": "application/javascript",
-        ".whl": "application/octet-stream",
-        ".wasm": "application/wasm",
-        ".json": "application/json",
+        **FORTWEB_EXTENSIONS_MAP,
     }
 
     def translate_path(self, path: str) -> str:
-        # Handle vendor requests
-        if path.startswith('/fortweb/vendor/'):
-            vendor_relative = path[len('/fortweb/vendor/'):]
-            dist_vendor_path = os.path.join(self.directory, 'fortweb', 'dist', 'runtime', 'vendor', vendor_relative)
-            if os.path.exists(dist_vendor_path):
-                return dist_vendor_path
-            return os.path.join(self.directory, 'fortweb', 'vendor', vendor_relative)
-
-        # Handle app requests
-        if path.startswith('/fortweb/app/'):
-            relative_path = path[len('/fortweb/app/'):]
-
-            # Serve index.html from source
-            if not relative_path or relative_path == 'index.html':
-                return os.path.join(self.directory, 'fortweb', 'app', relative_path or 'index.html')
-
-            # Python runtime modules are not compiled. Serve them from source
-            # so the dev-time /fortweb/ URL prefixes in wallet-worker.py and the
-            # pyscript-ci [files] modules resolve against the libs-root doc root.
-            if relative_path.endswith('.py'):
-                source_app_path = os.path.join(self.directory, 'fortweb', 'app', relative_path)
-                if os.path.exists(source_app_path):
-                    return source_app_path
-
-            # Check if the requested file exists in the compiled runtime output
-            dist_app_path = os.path.join(self.directory, 'fortweb', 'dist', 'runtime', 'app', relative_path)
-            if os.path.exists(dist_app_path):
-                return dist_app_path
-
-            dist_root_path = os.path.join(self.directory, 'fortweb', 'dist', 'runtime', relative_path)
-            if os.path.exists(dist_root_path):
-                return dist_root_path
-
-            # Fallback to source app directory, then source root
-            source_app_path = os.path.join(self.directory, 'fortweb', 'app', relative_path)
-            if os.path.exists(source_app_path):
-                return source_app_path
-
-            return os.path.join(self.directory, 'fortweb', relative_path)
-
+        resolved = resolve_fortweb_path(self.directory, path)
+        if resolved is not None:
+            return resolved
         return super().translate_path(path)
 
     def _redirect_root_to_app(self) -> bool:
