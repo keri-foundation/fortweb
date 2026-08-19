@@ -1,0 +1,9 @@
+.git
+.github
+node_modules
+dist
+docs
+playwright
+playwright-report
+test-results
+*.log
