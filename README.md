@@ -11,10 +11,20 @@ Do **not** open only `http://127.0.0.1:8765/` against a server rooted at `fortwe
 From the `fortweb` repo:
 
 ```bash
+python3 serve.py
+```
+
+Then use **`http://127.0.0.1:8040/fortweb/app/index.html`** (the script serves the parent of `fortweb` and redirects `/` there). Stop with Ctrl+C.
+
+`serve.py` also implements the `/_fortweb_proxy/<scheme>/<host:port>/<path>` endpoint that the in-browser wallet worker uses to reach local services (kf-boot, witnesses, watchers) from a single origin. Without it, cross-origin fetches from the app are blocked by the browser.
+
+For a minimal server with no proxy (e.g., headless smoke runs), `scripts/serve_local.py` serves the same paths on port `8765`:
+
+```bash
 python3 scripts/serve_local.py
 ```
 
-Then use **`http://127.0.0.1:8765/fortweb/app/`** (the script redirects `/` there). Stop with Ctrl+C.
+Then use **`http://127.0.0.1:8765/fortweb/app/`**.
 
 The **SharedArrayBuffer** / PyScript FAQ warning in the console is expected for a plain `http.server`; the app should still load. If wheel fetches fail, confirm nothing else is bound to the same port and that you are not mixing two different server roots in multiple tabs.
 

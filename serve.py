@@ -18,11 +18,18 @@ from __future__ import annotations
 import http.server
 import os
 import socketserver
+import sys
 from functools import partial
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
+
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent / "scripts")
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+
+from fortweb_static import FORTWEB_EXTENSIONS_MAP, resolve_fortweb_path  # noqa: E402
 
 
 PORT = int(os.environ.get("PORT", "8040"))
@@ -47,6 +54,17 @@ class ReusableTCPServer(socketserver.TCPServer):
 
 
 class DevHandler(http.server.SimpleHTTPRequestHandler):
+    extensions_map = {
+        **http.server.SimpleHTTPRequestHandler.extensions_map,
+        **FORTWEB_EXTENSIONS_MAP,
+    }
+
+    def translate_path(self, path: str) -> str:
+        resolved = resolve_fortweb_path(self.directory, path)
+        if resolved is not None:
+            return resolved
+        return super().translate_path(path)
+
     def do_GET(self):
         if urlsplit(self.path).path.startswith(PROXY_PREFIX.rstrip("/")):
             self._proxy_request()

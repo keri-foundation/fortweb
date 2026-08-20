@@ -1,0 +1,8 @@
+services:
+  fortweb:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: fortweb-dev:local
+    ports:
+      - "8765:8765"

@@ -1,0 +1,269 @@
+name: FortWeb Runtime Package
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag for release (e.g., 0.1.0)"
+        required: false
+        default: ""
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  package-runtime:
+    name: Package Runtime
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-name: ${{ steps.package.outputs.artifact-name }}
+      package-sha: ${{ steps.package.outputs.package-sha }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build runtime
+        run: npm run build:runtime
+
+      - name: Check runtime JS
+        run: npm run check:runtime-js
+
+      - name: Test runtime JS check
+        run: npm run test:runtime-js-check
+
+      - name: Test wallet-worker runtime state
+        run: npm run test:runtime-python-state
+
+      - name: Package runtime
+        id: package
+        run: |
+          set -euo pipefail
+          npm run package:runtime
+          ZIP_MATCHES=$(find .tmp/runtime-packages -maxdepth 1 -type f -name 'fortweb-runtime-*.zip' | sort)
+          ZIP_COUNT=$(printf '%s\n' "$ZIP_MATCHES" | sed '/^$/d' | wc -l | tr -d ' ')
+          if [ "$ZIP_COUNT" -ne 1 ]; then
+            echo "Expected exactly one runtime ZIP, found $ZIP_COUNT"
+            printf '%s\n' "$ZIP_MATCHES"
+            exit 1
+          fi
+
+          ZIP_PATH=$(printf '%s\n' "$ZIP_MATCHES")
+          ZIP_NAME=$(basename "$ZIP_PATH")
+          npm run verify:runtime-package -- "$ZIP_PATH"
+          npm run test:runtime-package-verify
+
+          echo "artifact-name=runtime-package" >> "$GITHUB_OUTPUT"
+          echo "package-sha=$(sha256sum "$ZIP_PATH" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "zip-path=${ZIP_PATH}" >> "$GITHUB_OUTPUT"
+          echo "zip-name=${ZIP_NAME}" >> "$GITHUB_OUTPUT"
+          echo "sidecar-path=${ZIP_PATH}.sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Generate release metadata
+        run: |
+          set -euo pipefail
+          node tools/generate-release-metadata.mjs "${{ steps.package.outputs.zip-path }}"
+
+      - name: Upload runtime package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-package
+          path: |
+            ${{ steps.package.outputs.zip-path }}
+            ${{ steps.package.outputs.sidecar-path }}
+            ${{ github.workspace }}/.tmp/runtime-packages/fortweb-release.json
+          retention-days: 7
+          if-no-files-found: error
+
+  pr-preview:
+    name: PR Preview
+    runs-on: ubuntu-latest
+    needs: package-runtime
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Download runtime package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: runtime-package
+          path: .tmp/runtime-packages/
+
+      - name: Display package info
+        run: |
+          set -euo pipefail
+          ZIP_MATCHES=$(find .tmp/runtime-packages -maxdepth 1 -type f -name 'fortweb-runtime-*.zip' | sort)
+          ZIP_COUNT=$(printf '%s\n' "$ZIP_MATCHES" | sed '/^$/d' | wc -l | tr -d ' ')
+          if [ "$ZIP_COUNT" -ne 1 ]; then
+            echo "Expected exactly one runtime ZIP after download, found $ZIP_COUNT"
+            printf '%s\n' "$ZIP_MATCHES"
+            exit 1
+          fi
+          ZIP_PATH=$(printf '%s\n' "$ZIP_MATCHES")
+          echo "=== PR Preview Runtime Package ==="
+          echo "Artifact: $(basename "$ZIP_PATH")"
+          echo "SHA: $(sha256sum "$ZIP_PATH" | cut -d' ' -f1)"
+          echo "Files: $(unzip -l "$ZIP_PATH" | grep -c 'Length:')"
+          unzip -l "$ZIP_PATH" | head -20
+
+      - name: Verify package
+        run: |
+          set -euo pipefail
+          ZIP_PATH=$(find .tmp/runtime-packages -maxdepth 1 -type f -name 'fortweb-runtime-*.zip' | sort | tail -1)
+          test -n "$ZIP_PATH"
+          npm run verify:runtime-package -- "$ZIP_PATH"
+
+  release-assets:
+    name: Release Assets
+    runs-on: ubuntu-latest
+    needs: package-runtime
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Download runtime package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: runtime-package
+          path: .tmp/runtime-packages/
+
+      - name: Verify metadata exists
+        run: |
+          set -euo pipefail
+          METADATA_PATH=".tmp/runtime-packages/fortweb-release.json"
+          if [ ! -f "$METADATA_PATH" ]; then
+            echo "Release metadata file not found at $METADATA_PATH"
+            exit 1
+          fi
+          echo "Metadata verified: $METADATA_PATH"
+          cat "$METADATA_PATH"
+
+      - name: Display package info
+        run: |
+          set -euo pipefail
+          ZIP_MATCHES=$(find .tmp/runtime-packages -maxdepth 1 -type f -name 'fortweb-runtime-*.zip' | sort)
+          ZIP_COUNT=$(printf '%s\n' "$ZIP_MATCHES" | sed '/^$/d' | wc -l | tr -d ' ')
+          if [ "$ZIP_COUNT" -ne 1 ]; then
+            echo "Expected exactly one runtime ZIP after download, found $ZIP_COUNT"
+            printf '%s\n' "$ZIP_MATCHES"
+            exit 1
+          fi
+          ZIP_PATH=$(printf '%s\n' "$ZIP_MATCHES")
+          echo "=== Release Runtime Package ==="
+          echo "Artifact: $(basename "$ZIP_PATH")"
+          echo "SHA: $(sha256sum "$ZIP_PATH" | cut -d' ' -f1)"
+          echo "Files: $(unzip -l "$ZIP_PATH" | grep -c 'Length:')"
+          unzip -l "$ZIP_PATH" | head -20
+          echo "ZIP_PATH=${ZIP_PATH}" >> "$GITHUB_ENV"
+
+      - name: Verify package
+        run: |
+          set -euo pipefail
+          test -n "${ZIP_PATH}"
+          npm run verify:runtime-package -- "${ZIP_PATH}"
+
+      - name: Attest runtime package
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ env.ZIP_PATH }}
+
+      - name: Publish release assets (tag only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          ZIP_PATH=$(find .tmp/runtime-packages -maxdepth 1 -type f -name 'fortweb-runtime-*.zip' | sort | tail -1)
+          test -n "$ZIP_PATH"
+          SIDECAR_PATH="${ZIP_PATH}.sha256"
+          METADATA_PATH=".tmp/runtime-packages/fortweb-release.json"
+
+          for f in "$ZIP_PATH" "$SIDECAR_PATH" "$METADATA_PATH"; do
+            test -f "$f" || { echo "Missing required asset before publish: $f"; exit 1; }
+          done
+
+          REPO="${{ github.repository }}"
+          TAG="${{ github.ref_name }}"
+
+          echo "Publishing release assets for $REPO tag $TAG"
+          gh release create "$TAG" \
+            "$ZIP_PATH" "$SIDECAR_PATH" "$METADATA_PATH" \
+            --repo "$REPO" \
+            --title "$TAG" \
+            --notes "FortWeb runtime release $TAG" \
+            || gh release upload "$TAG" \
+                 "$ZIP_PATH" "$SIDECAR_PATH" "$METADATA_PATH" \
+                 --repo "$REPO" \
+                 --clobber
+
+          echo "Release assets published."
+
+      - name: Assert release asset inventory (tag only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          REPO="${{ github.repository }}"
+          TAG="${{ github.ref_name }}"
+
+          ZIP_NAME=$(basename "$(find .tmp/runtime-packages -maxdepth 1 -type f -name 'fortweb-runtime-*.zip' | sort | tail -1)")
+          SIDECAR_NAME="${ZIP_NAME}.sha256"
+          METADATA_NAME="fortweb-release.json"
+
+          echo "Querying release assets for $REPO tag $TAG"
+          ASSETS="$(gh release view "$TAG" --repo "$REPO" --json assets --jq '.assets[].name')"
+
+          missing=0
+          for expected in "$ZIP_NAME" "$SIDECAR_NAME" "$METADATA_NAME"; do
+            if ! printf '%s\n' "$ASSETS" | grep -qxF "$expected"; then
+              echo "RELEASE INVENTORY FAILURE: missing required asset '$expected'"
+              missing=1
+            else
+              echo "  OK: $expected"
+            fi
+          done
+
+          if [ "$missing" -ne 0 ]; then
+            echo "Release inventory incomplete. Assets present:"
+            printf '%s\n' "$ASSETS"
+            exit 1
+          fi
+
+          echo "Release inventory complete: all required assets present."
