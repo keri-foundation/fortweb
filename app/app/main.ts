@@ -287,6 +287,7 @@ function initDrawer(vaults: VaultRecord[]): void {
                 navigate(currentState().lastCoreRoutes[vault.id] || identifiersHref(vault.id));
                 return;
             }
+            drawer?.close();
             navigate(unlockHref(vault.id));
         },
         onNewVault() {
@@ -431,8 +432,12 @@ actions = {
         if (document.body.contains(drawer.el)) {
             drawer.close();
         } else {
-            await actions.refreshVaults(currentState().unlockedVaultId, currentState().vaultSummary);
             drawer.open();
+            void actions.refreshVaults(currentState().unlockedVaultId, currentState().vaultSummary).catch(() => {
+                // refreshVaults failure is surfaced through the bridge error
+                // path; this catch prevents an unhandled rejection when the
+                // drawer is opened before the worker is ready.
+            });
         }
     },
 };
@@ -576,11 +581,11 @@ window.addEventListener("beforeunload", () => {
 
 async function bootstrap(): Promise<void> {
     installGlobalHandlers();
+    initDrawer([]);
     await render();
 
     try {
         await actions.refreshVaults();
-        initDrawer(currentState().vaults);
         await render();
     } catch (error) {
         postLog("initial_vault_refresh_failed", {
