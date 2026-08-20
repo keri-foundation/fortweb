@@ -287,6 +287,7 @@ function initDrawer(vaults: VaultRecord[]): void {
                 navigate(currentState().lastCoreRoutes[vault.id] || identifiersHref(vault.id));
                 return;
             }
+            drawer?.close();
             navigate(unlockHref(vault.id));
         },
         onNewVault() {

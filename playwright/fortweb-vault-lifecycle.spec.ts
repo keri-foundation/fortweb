@@ -68,6 +68,11 @@ test.describe('FortWeb persisted vault lifecycle', () => {
             // G. Select the persisted vault; prove hash then unlock UI independently.
             await persistedVaultItem.click();
             await expect(page).toHaveURL(new RegExp(`#/vaults/${escapeRegExp(vaultId)}/unlock`), { timeout: 10_000 });
+            // Selecting a locked vault must close the modal drawer. Playwright can
+            // still reach the unlock form behind the overlay, so assert the modal
+            // state explicitly — the iOS wrapper only exposes the non-modal UI and
+            // would otherwise never see the unlock heading.
+            await expect(page.getByRole('dialog', { name: 'Vault switcher' })).toBeHidden({ timeout: 10_000 });
             await expect(unlockHeading).toBeVisible({ timeout: 10_000 });
 
             // H. Reopen with the same passcode and prove Identifiers renders again.
