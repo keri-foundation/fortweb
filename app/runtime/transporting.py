@@ -12,6 +12,10 @@ import vaulting
 
 _CONFIG: dict = {}
 
+# Only loopback/local dev endpoints are routed through the same-origin dev
+# proxy. External/public http(s) endpoints are fetched directly by the browser.
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
 
 def configure_runtime(
     *,
@@ -147,6 +151,12 @@ def proxy_url(url: str):
 
     same_origin = urlparse(origin)
     if parsed.scheme == same_origin.scheme and parsed.netloc == same_origin.netloc:
+        return url
+
+    host = (parsed.hostname or "").lower()
+    if host not in _LOOPBACK_HOSTS:
+        # External/public endpoint: the browser fetches it directly. Only
+        # loopback/local dev endpoints need the same-origin dev proxy.
         return url
 
     path = parsed.path or "/"

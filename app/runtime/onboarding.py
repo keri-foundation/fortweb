@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -851,6 +852,55 @@ async def _refresh_kf_watcher_status(
     }
 
 
+async def _await_kf_session_provisioned(
+    hby,
+    ephemeral_hab,
+    *,
+    surfaces: transporting.KfSurfaceConfig,
+    destination: str,
+    boot_server_aid: str,
+    session_id: str,
+    expected_witness_count: int,
+    watcher_required: bool,
+):
+    """Poll the Kf Boot onboarding session until its hosted witness pool (and,
+    when required, the hosted watcher) is allocated, or the session reaches a
+    terminal state. Returns the final session/status payload."""
+    if not session_id:
+        return {}
+    last_payload = {}
+    for _ in range(30):
+        reply = await transporting.send_kf_exn(
+            hby,
+            ephemeral_hab,
+            surface_name="onboarding",
+            surface_url=transporting.require_kf_surface_url(surfaces, "onboarding"),
+            route="/onboarding/session/status",
+            payload={"session_id": session_id},
+            destination=destination,
+            expected_sender=destination or boot_server_aid or "",
+            timeout_ms=_CONFIG["cesr_timeout_ms"],
+        )
+        last_payload = reply.get("payload") or {}
+        state = str(last_payload.get("state", "") or "")
+        if state in {"failed", "cancelled", "expired"}:
+            failure_reason = str(last_payload.get("failure_reason", "") or "").strip()
+            raise vaulting.RuntimeFault(
+                "CONFLICT",
+                failure_reason or f"The KF onboarding session is {state}.",
+            )
+        witnesses = last_payload.get("witnesses") or []
+        watcher = last_payload.get("watcher")
+        if len(witnesses) >= expected_witness_count and (not watcher_required or isinstance(watcher, dict)):
+            return last_payload
+        await asyncio.sleep(1.0)
+    state = str(last_payload.get("state", "") or "")
+    raise vaulting.RuntimeFault(
+        "TIMEOUT",
+        f"KF onboarding did not provision its hosted witness pool in time (session state '{state}').",
+    )
+
+
 async def _run_kf_onboarding(
     hby,
     organizer,
@@ -963,6 +1013,25 @@ async def _run_kf_onboarding(
         record.onboarding_session_id = str(start_payload.get("session_id", "") or "")
         record.onboarding_auth_alias = getattr(ephemeral_hab, "name", "")
         _save_kf_state(hby, record)
+
+        # Kf Boot provisions hosted witnesses/watcher asynchronously after
+        # session/start returns, so poll session/status until the witness pool
+        # (and required watcher) is allocated before continuing onboarding.
+        destination = transporting.kf_surface_destination(
+            surfaces,
+            surface_name="onboarding",
+            boot_server_aid=boot_server_aid,
+        )
+        start_payload = await _await_kf_session_provisioned(
+            hby,
+            ephemeral_hab,
+            surfaces=surfaces,
+            destination=destination,
+            boot_server_aid=boot_server_aid,
+            session_id=str(start_payload.get("session_id", "") or ""),
+            expected_witness_count=int(option["witnessCount"]),
+            watcher_required=bool(snapshot["bootstrap"]["watcherRequired"]),
+        )
 
         for entry in start_payload.get("witnesses", []):
             if not isinstance(entry, dict):
@@ -1193,7 +1262,7 @@ async def dispatch(method: str, params: dict):
         raw_surface_config = params.get("surfaceConfig")
         surface_config = transporting.coerce_kf_surface_config(
             raw_surface_config,
-            fallback_boot_url=record.boot_url,
+            fallback_boot_url=params.get("bootUrl") or record.boot_url,
         )
 
         try:
@@ -1223,7 +1292,7 @@ async def dispatch(method: str, params: dict):
         record = _load_kf_state(hby)
         surface_config = transporting.coerce_kf_surface_config(
             params.get("surfaceConfig"),
-            fallback_boot_url=record.boot_url,
+            fallback_boot_url=params.get("bootUrl") or record.boot_url,
         )
         account_aid = str(params.get("accountAid") or "").strip()
         return await _run_kf_onboarding(

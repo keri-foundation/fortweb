@@ -73,6 +73,9 @@ DEFAULT_KF_BOOT_URL = "http://127.0.0.1:9723"
 KF_STATE_KEY = "state"
 KF_STATE_SUBDB = "kfst."
 KF_PROXY_PREFIX = "/_fortweb_proxy"
+# Only loopback/local dev endpoints are routed through the same-origin dev
+# proxy. External/public http(s) endpoints are fetched directly by the browser.
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 KF_ONBOARDING_AUTH_NAMESPACE = "kf_onboarding"
 KF_ONBOARDING_AUTH_ALIAS_PREFIX = "kf-onboarding"
 KF_BOOTSTRAP_TIMEOUT_MS = 15_000
@@ -1046,6 +1049,12 @@ def _proxy_url(url: str):
 
     same_origin = urlparse(origin)
     if parsed.scheme == same_origin.scheme and parsed.netloc == same_origin.netloc:
+        return url
+
+    host = (parsed.hostname or "").lower()
+    if host not in _LOOPBACK_HOSTS:
+        # External/public endpoint: the browser fetches it directly. Only
+        # loopback/local dev endpoints need the same-origin dev proxy.
         return url
 
     path = parsed.path or "/"
