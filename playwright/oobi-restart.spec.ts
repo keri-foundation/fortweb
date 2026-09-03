@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { spawn, execSync, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 // Globals exposed by the in-page driver (app/oobi-drive.js) — the SAME Phase 8
 // Worker A / Worker B entry points are reused here verbatim. Worker A creates a
@@ -16,7 +17,9 @@ declare global {
     }
 }
 
-const ROOT = '/Users/jay-alexanderelliot/Projects/fortweb';
+// Resolve the fortweb repo root from this spec's own location (repo-portable;
+// never a machine-specific absolute path).
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const PORT = 4183;
 const BASE = `http://127.0.0.1:${PORT}`;
 const APP = `${BASE}/fortweb/app/`;

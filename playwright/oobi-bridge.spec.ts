@@ -26,9 +26,9 @@ declare global {
  * Parser, L2 stock Oobiery parser, L3 stock processClients). Enforces an
  * external wall-clock result while allowing all localhost boot/runtime traffic.
  */
-const FIXTURE_PATH = '/Users/jay-alexanderelliot/Projects/fortweb-oobi-fixtures-working/synth-witness-oobi.cesr';
-const WATCHER_FIXTURE_PATH = '/Users/jay-alexanderelliot/Projects/fortweb-oobi-fixtures-working/synth-watcher-oobi.cesr';
-const V1_FIXTURE_PATH = '/Users/jay-alexanderelliot/Projects/fortweb-oobi-fixtures-working/synth-v1json-oobi.cesr';
+const FIXTURE_PATH = new URL('../app/fixtures/synth-witness-oobi.cesr', import.meta.url);
+const WATCHER_FIXTURE_PATH = new URL('../app/fixtures/synth-watcher-oobi.cesr', import.meta.url);
+const V1_FIXTURE_PATH = new URL('../app/fixtures/synth-v1json-oobi.cesr', import.meta.url);
 const EXPECTED_FIXTURE_SHA = '48fcc323fc2f7956ecd81d2ced766dc09caecc25c9d79ebdc96bb17642a95453';
 const EXPECTED_WATCHER_SHA = '6565f493cb65f21abc965dc5b8b5f065de5a1169b2f00453183b7633212f2e1a';
 const OVERALL_TIMEOUT_MS = 300_000;
