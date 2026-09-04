@@ -68,6 +68,8 @@ ALLOWED_METHODS = {
     "kf.account.witnesses.list",
     "kf.account.watchers.list",
     "kf.account.watchers.status",
+    "kf.account.watchers.query",
+    "kf.services.overview",
 }
 
 # --- Test-only OOBI parser gate (never enabled in production config) ---
@@ -1406,13 +1408,16 @@ async def _send_kf_exn(
     expected_sender: str = "",
 ):
     modules = _load_modules()
-    serder, end = modules["exchanging"].exchange(
+    # f4b9 exposing exchangeOld (V2 default); historical module-level `exchange`
+    # was removed. Kept consistent with the live transporting.send_kf_exn path.
+    serder = modules["exchanging"].exchangeOld(
         route=route,
-        payload=payload,
+        attributes=payload,
         sender=hab.pre,
-        recipient=destination or None,
+        receiver=destination or "",
     )
-    ims = hab.endorse(serder=serder, last=False, pipelined=False)
+    end = bytearray()
+    ims = hab.endorse(serder=serder, last=False)
     attachment = bytearray(ims)
     del attachment[:serder.size]
     if end:
@@ -2013,7 +2018,7 @@ async def _run_kf_onboarding(hby, organizer, *, boot_url: str, alias: str, witne
         transferable=False,
     ) as (_temp_hby, ephemeral_hab):
         try:
-            await _send_kf_event(snapshot["surfaces"]["onboardingUrl"], ephemeral_hab.makeOwnInception())
+            await _send_kf_event(snapshot["surfaces"]["onboardingUrl"], ephemeral_hab.msgOwnInception())
             start_reply = await _send_kf_exn(
                 hby,
                 ephemeral_hab,
@@ -2030,6 +2035,14 @@ async def _run_kf_onboarding(hby, organizer, *, boot_url: str, alias: str, witne
             boot_server_aid = start_reply["sender"] or boot_server_aid
 
             start_payload = start_reply["payload"]
+            try:
+                js.console.log(
+                    "[worker] [ob] session/start reply account_aid="
+                    + str(start_payload.get("account_aid", "") or "")
+                    + " toad=" + str(start_payload.get("toad", "") or "")
+                )
+            except Exception:
+                pass
             for entry in start_payload.get("witnesses", []):
                 if not isinstance(entry, dict):
                     continue
@@ -2069,8 +2082,22 @@ async def _run_kf_onboarding(hby, organizer, *, boot_url: str, alias: str, witne
                 witness_eids=[witness["eid"] for witness in witness_rows],
                 toad=int(start_payload.get("toad", 0) or option["toad"]),
             )
+            try:
+                js.console.log(
+                    "[worker] [ob] account_hab.pre=" + str(account_hab.pre or "") + " requested_account_aid=" + str(account_aid or "").strip()
+                )
+            except Exception:
+                pass
 
             for witness in witness_rows:
+                try:
+                    js.console.log(
+                        "[worker] [ob] register-with-witness dest="
+                        + str(witness.get("eid", "") or "")
+                        + " url=" + str(witness.get("witnessUrl", "") or "")
+                    )
+                except Exception:
+                    pass
                 registration = await _register_with_witness(account_hab, witness)
                 witness["oobi"] = registration["oobi"] or witness["oobi"]
                 resolved_remote_ids.append(

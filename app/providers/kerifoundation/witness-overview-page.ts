@@ -64,16 +64,132 @@ interface StartOnboardingRequest {
     witnessProfileCode: string;
 }
 
+/** Normalized hosted-service connection view model from the domain layer.
+ *
+ * The UI renders this and never constructs KERI queries, parses CESR, or reads
+ * protocol/DB structures — all machinery stays below the bridge.
+ */
+export interface ServiceConnectionView {
+    eid?: string;
+    endpoint?: string;
+    oobiVerified?: boolean;
+    registered?: boolean;
+    introduced?: boolean;
+    receiptVerified?: boolean;
+    queryVerified?: boolean;
+    observedSn?: number;
+    directStatus?: string;
+    managementSyncStatus?: string;
+}
+
+export interface ServicesOverview {
+    witness?: ServiceConnectionView;
+    watcher?: ServiceConnectionView;
+}
+
 interface WitnessOverviewProps {
     bootstrapState: BootstrapState;
     witnesses: WitnessRecord[];
     witnessError?: string;
+    services?: ServicesOverview;
     onLoadBootstrap(bootUrl: string): Promise<BootstrapState>;
     onStartOnboarding(request: StartOnboardingRequest): Promise<void>;
 }
 
 function badgeHtml(label: string, tone = "neutral"): string {
     return `<span class="${toneClass(tone)}">${escapeHtml(label)}</span>`;
+}
+
+function verifiedBadge(value: boolean | undefined, verifiedLabel = "Verified"): string {
+    return value ? badgeHtml(verifiedLabel, "success") : badgeHtml("Unverified", "neutral");
+}
+
+function directBadge(status: string | undefined): string {
+    switch (status) {
+        case "connected":
+            return badgeHtml("Connected", "success");
+        case "partial":
+            return badgeHtml("Partial", "warning");
+        default:
+            return badgeHtml(status === "not_connected" ? "Not Connected" : "Pending", "neutral");
+    }
+}
+
+function renderServiceStateCard(services: ServicesOverview | undefined): string {
+    return renderDirectServiceCard(services);
+}
+
+/** Pure shared card renderer — the sibling watcher page reuses it. */
+export function renderDirectServiceCard(services: ServicesOverview | undefined): string {
+    const witness = services?.witness ?? {};
+    const watcher = services?.watcher ?? {};
+    const witnessEid = witness.eid || "\u2014";
+    const watcherEid = watcher.eid || "\u2014";
+    const mgmtTone = witness.managementSyncStatus === "connected" ? "success" : "neutral";
+
+    return `
+        <section class="section-card section-card--summary">
+            <div class="panel__title">
+                <h2>Direct Verified Service</h2>
+                <p class="muted">
+                    Cryptographic proof gathered directly from the hosted witness and watcher during
+                    onboarding — shown independently of Kf Boot account-management synchronization.
+                </p>
+            </div>
+            <dl class="detail-grid">
+                <div class="detail-item">
+                    <dt>Witness Direct Status</dt>
+                    <dd>${directBadge(witness.directStatus)}</dd>
+                </div>
+                <div class="detail-item">
+                    <dt>Witness OOBI</dt>
+                    <dd>${verifiedBadge(witness.oobiVerified)}</dd>
+                </div>
+                <div class="detail-item">
+                    <dt>Witness Registration</dt>
+                    <dd>${verifiedBadge(witness.registered, "Registered")}</dd>
+                </div>
+                <div class="detail-item">
+                    <dt>Witness Receipt</dt>
+                    <dd>${verifiedBadge(witness.receiptVerified)}</dd>
+                </div>
+                <div class="detail-item">
+                    <dt>Watcher Direct Status</dt>
+                    <dd>${directBadge(watcher.directStatus)}</dd>
+                </div>
+                <div class="detail-item">
+                    <dt>Watcher OOBI</dt>
+                    <dd>${verifiedBadge(watcher.oobiVerified)}</dd>
+                </div>
+                <div class="detail-item">
+                    <dt>Watcher Introduction</dt>
+                    <dd>${verifiedBadge(watcher.introduced, "Introduced")}</dd>
+                </div>
+                <div class="detail-item">
+                    <dt>Watcher Query</dt>
+                    <dd>${verifiedBadge(watcher.queryVerified)}</dd>
+                </div>
+                <div class="detail-item">
+                    <dt>Watcher Observed SN</dt>
+                    <dd>${escapeHtml(String(watcher.observedSn ?? "\u2014"))}</dd>
+                </div>
+                <div class="detail-item">
+                    <dt>Kf Boot Management Sync</dt>
+                    <dd>${badgeHtml(witness.managementSyncStatus || "none", mgmtTone)}</dd>
+                </div>
+            </dl>
+            <div class="detail-grid detail-grid--two">
+                <div class="detail-item">
+                    <dt>Witness Endpoint</dt>
+                    <dd class="mono">${escapeHtml(witness.endpoint || witnessEid === "\u2014" ? "\u2014" : witnessEid)}</dd>
+                </div>
+                <div class="detail-item">
+                    <dt>Watcher Endpoint</dt>
+                    <dd class="mono">${escapeHtml(watcher.endpoint || watcherEid === "\u2014" ? "\u2014" : watcherEid)}</dd>
+                </div>
+            </div>
+        </section>
+    `;
 }
 
 function profileLabel(option: WitnessProfileOption): string {
@@ -452,7 +568,8 @@ function renderAccountWitnessesPage({
     bootstrapState,
     witnesses,
     witnessError,
-}: Pick<WitnessOverviewProps, "bootstrapState" | "witnesses" | "witnessError">) {
+    services,
+}: Pick<WitnessOverviewProps, "bootstrapState" | "witnesses" | "witnessError" | "services">) {
     const table = renderWitnessTable(witnesses);
 
     return {
@@ -469,7 +586,8 @@ function renderAccountWitnessesPage({
                 <div>
                     <h1>Witnesses</h1>
                     <p>
-                        Hosted witness rows come from the boot-backed KF account, not from Fortweb's local identifier summaries.
+                        Direct proof is gathered from the hosted witness and watcher during onboarding;
+                        hosted management rows below come from the boot-backed KF account.
                     </p>
                 </div>
             `;
@@ -479,6 +597,18 @@ function renderAccountWitnessesPage({
             summaryCard.append(accountSummary(bootstrapState.account, bootstrapState));
 
             page.append(header, summaryCard);
+
+            // Direct Verified Service state — normalized by the domain layer,
+            // rendered independently of Kf Boot management rows (which may lag
+            // or 409 without affecting the direct proof).
+            if (services) {
+                const servicesCard = document.createElement("div");
+                servicesCard.innerHTML = renderServiceStateCard(services);
+                const first = servicesCard.firstElementChild;
+                if (first instanceof HTMLElement) {
+                    page.append(first);
+                }
+            }
 
             if (witnessError) {
                 const warning = document.createElement("p");
