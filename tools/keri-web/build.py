@@ -45,6 +45,13 @@ import tempfile
 
 UPSTREAM_COMMIT = "f4b9e3e886bc37c1e3b95cdc349cbbf8d4f25048"
 WHEEL_NAME = "keri_web-2.0.0.dev6-py3-none-any.whl"
+# The browser wheel is the `keri-web` distribution: Pyodide derives the package
+# identity from the wheel *filename* (keri_web-*.whl -> canonical `keri-web`)
+# and rejects a wheel whose internal .dist-info/METADATA does not match.
+# Upstream f4b9 setup.py declares `name='keri'`, so we patch the reconstructed
+# setup.py to the browser distribution name before pip builds the wheel.
+DIST_NAME = "keri-web"
+UPSTREAM_SETUP_NAME = "name='keri',"
 # Browser overlay files, relative to overlay root (keri/...). These are the ONLY
 # deltas the build is allowed to introduce over pristine f4b9. A rebuild that
 # differs on any other file is treated as stale-core contamination and fails.
@@ -152,6 +159,23 @@ def build(keripy_dir, keep_work):
     if not os.path.isdir(pristine_keri):
         raise SystemExit("pristine keri tree missing after archive")
 
+    # 1b) rename the reconstructed distribution to keri-web so the built wheel's
+    # internal .dist-info/METADATA matches the keri_web-*.whl filename. Without
+    # this, pip builds a `keri`-named wheel and Pyodide rejects it as an
+    # UnsupportedWheel (.dist-info 'keri-...' does not start with 'keri-web').
+    setup_path = os.path.join(work, "setup.py")
+    with open(setup_path) as fh:
+        setup_src = fh.read()
+    if UPSTREAM_SETUP_NAME not in setup_src:
+        raise SystemExit(
+            "Expected %r in reconstructed setup.py to rename to %r; setup.py "
+            "format changed upstream." % (UPSTREAM_SETUP_NAME, DIST_NAME)
+        )
+    setup_src = setup_src.replace(UPSTREAM_SETUP_NAME, "name=%r," % DIST_NAME, 1)
+    with open(setup_path, "w") as fh:
+        fh.write(setup_src)
+    print("distribution rename OK: keri -> %s (matches keri_web-*.whl filename)" % DIST_NAME)
+
     # 2) snapshot pristine hashes (for delta verification)
     pristine = walk_py(pristine_keri)
     pristine_sha = {rel: sha256_file(p) for rel, p in pristine.items()}
@@ -219,13 +243,23 @@ def build(keripy_dir, keep_work):
     built_whls = [f for f in os.listdir(dist) if f.endswith(".whl")]
     if not built_whls:
         raise SystemExit("expected wheel not produced in %s" % dist)
-    built = os.path.join(dist, built_whls[0])
+    if WHEEL_NAME not in built_whls:
+        raise SystemExit(
+            "Unexpected wheel filename produced: %s (expected %s)\n"
+            "The setup.py distribution rename to %r did not take effect."
+            % (built_whls, WHEEL_NAME, DIST_NAME)
+        )
+    built = os.path.join(dist, WHEEL_NAME)
 
     # setuptools stamps .dist-info/* member times at build time -> byte drift
     # between otherwise identical builds. Rewrite the wheel with every member
     # timestamp pinned to the fixed epoch so output is byte-deterministic.
     # RECORD hashes are over member *content*, which this repack does not change.
     pin_wheel_timestamps(built, FIXED_MTIME)
+
+    # verify internal .dist-info/METADATA name matches the filename-derived
+    # canonical name (Pyodide rejects a mismatch as UnsupportedWheel).
+    verify_wheel_metadata(built, DIST_NAME)
 
     sha = sha256_file(built)
     dest = os.path.join(wheels_dir, WHEEL_NAME)
@@ -237,6 +271,30 @@ def build(keripy_dir, keep_work):
     if not keep_work:
         shutil.rmtree(work, ignore_errors=True)
     return sha
+
+
+def verify_wheel_metadata(whl_path, expected_dist_name):
+    """Assert a wheel's internal .dist-info/METADATA name matches its filename.
+
+    Pyodide's package loader derives the canonical package name from the wheel
+    filename (keri_web-2.0.0.dev6-py3-none-any.whl -> `keri-web`) and rejects a
+    wheel whose .dist-info directory does not start with that canonical name.
+    This guard turns that silent runtime failure into a build-time error.
+    """
+    import zipfile
+
+    canonical = expected_dist_name.replace("-", "_")  # keri-web -> keri_web
+    dist_infos = [n for n in zipfile.ZipFile(whl_path).namelist() if ".dist-info" in n]
+    if not dist_infos:
+        raise SystemExit("wheel has no .dist-info members: %s" % whl_path)
+    dist_info_dir = dist_infos[0].split(".dist-info")[0]
+    if not dist_info_dir.startswith(canonical + "-"):
+        raise SystemExit(
+            "Wheel .dist-info mismatch: %r does not start with %r-\n"
+            "Pyodide would reject this wheel as UnsupportedWheel."
+            % (dist_info_dir, canonical)
+        )
+    print("wheel metadata OK: .dist-info %r matches %r" % (dist_info_dir, canonical))
 
 
 def pin_wheel_timestamps(whl_path, mtime_epoch):

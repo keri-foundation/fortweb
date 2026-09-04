@@ -1,6 +1,7 @@
 import { expect, test, type Request } from '@playwright/test';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { classifyRequestUrl, isAllowedLiveRemote } from './utils/proxy-guard';
 
 // Globals exposed by the in-page driver (app/live-drive.js).
 declare global {
@@ -19,10 +20,12 @@ declare global {
  *   - a FRESH session provisions a fresh hosted V2 witness + watcher
  *   - witness registration + rotation receipt, watcher OOBI + introduction
  *   - account onboarding complete
+ *   - the DIRECT watcher ksn query and services.overview domain model both
+ *     HARD-GATE test success (not just printed)
  *   - account/witness/watcher state survives a fresh worker + vault reopen
  *     with /oobi/ refetch hard-blocked (reconstructed from IndexedDB)
  *   - all remote traffic on HTTPS :5633/:7633 / kopn0; no :5632/:7632, no
- *     /_fortweb_proxy/, no CDN, no V1 downgrade
+ *     /_fortweb_proxy/ (even same-origin), no CDN, no V1 downgrade
  */
 const LIVE_BOOT = 'https://kopn0.keri.foundation';
 const WIT_LOC = 'https://138.68.53.132:5633';
@@ -34,29 +37,8 @@ function allowedHost(hostname: string): boolean {
 }
 
 function isForbiddenRemote(request: Request): { forbidden: boolean; reason?: string } {
-    const url = request.url();
-    const hostname = new URL(url).hostname;
-    // Live allowed remote hosts.
-    if (hostname === 'kopn0.keri.foundation') {
-        return { forbidden: false };
-    }
-    if (hostname === '138.68.53.132') {
-        const port = new URL(url).port;
-        if (port === '5633' || port === '7633') {
-            return { forbidden: false };
-        }
-        return { forbidden: true, reason: `plaintext native port ${port}` };
-    }
-    if (url.includes('/_fortweb_proxy/')) {
-        return { forbidden: true, reason: 'public Fort Web proxy' };
-    }
-    if (hostname === 'cdn.jsdelivr.net' || url.includes('cdn.jsdelivr.net')) {
-        return { forbidden: true, reason: 'CDN' };
-    }
-    if (!allowedHost(hostname)) {
-        return { forbidden: true, reason: `unexpected remote ${hostname}` };
-    }
-    return { forbidden: false };
+    const verdict = isAllowedLiveRemote(request.url());
+    return verdict.allowed ? { forbidden: false } : { forbidden: true, reason: verdict.reason };
 }
 
 test('FortWeb live DigitalOcean V2 hosted onboarding (real BrowserClienter)', async ({ page }) => {
@@ -105,6 +87,16 @@ test('FortWeb live DigitalOcean V2 hosted onboarding (real BrowserClienter)', as
 
     await page.route('**/*', async (route) => {
         const url = route.request().url();
+        // Proxy-path check must precede the localhost allow shortcut: a
+        // same-origin /_fortweb_proxy/ request is a proxy use, not a local asset.
+        const klass = classifyRequestUrl(url);
+        if (klass === 'proxy') {
+            remoteUrls.push(url);
+            forbiddenUrls.push(url);
+            forbiddenReasons['public Fort Web proxy'] = (forbiddenReasons['public Fort Web proxy'] ?? 0) + 1;
+            await route.abort();
+            return;
+        }
         const hostname = new URL(url).hostname;
         if (allowedHost(hostname)) {
             if (reopenMode && url.includes('/oobi/')) {
@@ -151,6 +143,28 @@ test('FortWeb live DigitalOcean V2 hosted onboarding (real BrowserClienter)', as
     expect(live.boot.watcherRequired).toBe(true);
     expect(live.boot.connectionOk).toBe(true);
 
+    // ---- HARD-GATE the DIRECT functional criteria (not just res.ok) ----
+    expect(live.queryOk, `direct watcher query must pass: ${JSON.stringify(live.watcherQuery)}`).toBe(true);
+    const wq = live.watcherQuery ?? {};
+    expect(wq.replySaid, 'watcher query replySaid must be present').toBeTruthy();
+    expect(wq.protocolMajor, 'watcher query must be KERI v2').toBe(2);
+    expect(wq.controller, 'watcher query controller must be the account AID').toBe(live.accountAid);
+    expect(wq.sn, 'watcher query must report controller sn=1').toBe('1');
+
+    expect(live.overviewOk, `services.overview must be connected: ${JSON.stringify(live.services)}`).toBe(true);
+    const svc = live.services ?? {};
+    expect(svc.witness?.directStatus).toBe('connected');
+    expect(svc.witness?.oobiVerified).toBe(true);
+    expect(svc.witness?.registered).toBe(true);
+    expect(svc.witness?.receiptVerified).toBe(true);
+    expect(svc.watcher?.directStatus).toBe('connected');
+    expect(svc.watcher?.oobiVerified).toBe(true);
+    expect(svc.watcher?.introduced).toBe(true);
+    expect(svc.watcher?.queryVerified).toBe(true);
+    expect(Number(svc.watcher?.observedSn ?? 0)).toBeGreaterThanOrEqual(1);
+    expect(svc.witness?.endpoint).toBe(WIT_LOC);
+    expect(svc.watcher?.endpoint).toBe(WAT_LOC);
+
     // ---- Phase 2: fresh worker/relaunch persistence, /oobi/ hard-blocked ----
     reopenMode = true;
     const reopenState = {
@@ -178,6 +192,15 @@ test('FortWeb live DigitalOcean V2 hosted onboarding (real BrowserClienter)', as
     });
     await pageB.route('**/*', async (route) => {
         const url = route.request().url();
+        // Proxy-path check must precede the localhost allow shortcut (see above).
+        const klass = classifyRequestUrl(url);
+        if (klass === 'proxy') {
+            remoteUrls.push(url);
+            forbiddenUrls.push(url);
+            forbiddenReasons['public Fort Web proxy'] = (forbiddenReasons['public Fort Web proxy'] ?? 0) + 1;
+            await route.abort();
+            return;
+        }
         const hostname = new URL(url).hostname;
         if (allowedHost(hostname)) {
             if (url.includes('/oobi/')) {

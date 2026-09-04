@@ -152,13 +152,21 @@ async function __liveRun() {
                 );
                 res.watcherQuery = watQuery.watcher || {};
                 const wq = res.watcherQuery;
-                const queryOk = !!(wq.replySaid && wq.protocolMajor === 2 && wq.controller === res.accountAid && wq.sn === "1");
+                const queryOk = !!(
+                    wq.replySaid &&
+                    wq.protocolMajor === 2 &&
+                    wq.controller === res.accountAid &&
+                    wq.sn === "1"
+                );
+                res.queryOk = queryOk;
                 step("watchers.query DIRECT (HTTP 200, KERI v2, sn=1)", queryOk, wq);
             } catch (queryErr) {
                 res.watcherQueryError = String((queryErr && queryErr.message) || queryErr).slice(0, 1200);
+                res.queryOk = false;
                 step("watchers.query DIRECT (HTTP 200, KERI v2, sn=1)", false, res.watcherQueryError);
             }
         } else {
+            res.queryOk = false;
             step("watchers.query DIRECT (HTTP 200, KERI v2, sn=1)", false, { reason: "no watcher eid/url" });
         }
 
@@ -174,12 +182,17 @@ async function __liveRun() {
         const overviewOk = !!(
             svc.witness &&
             svc.witness.directStatus === "connected" &&
+            svc.witness.oobiVerified === true &&
+            svc.witness.registered === true &&
             svc.witness.receiptVerified === true &&
             svc.watcher &&
             svc.watcher.directStatus === "connected" &&
+            svc.watcher.oobiVerified === true &&
+            svc.watcher.introduced === true &&
             svc.watcher.queryVerified === true &&
             svc.watcher.observedSn === 1
         );
+        res.overviewOk = overviewOk;
         step("services.overview DIRECT (witness+wacher connected)", overviewOk, svc);
 
         // ---- product close before any teardown ----
@@ -194,7 +207,9 @@ async function __liveRun() {
             !!res.witnessEid &&
             !!res.watcherEid &&
             witLocOk &&
-            watLocOk;
+            watLocOk &&
+            res.queryOk === true &&
+            res.overviewOk === true;
         return res;
     } catch (err) {
         res.error = String((err && err.message) || err).slice(0, 1500);

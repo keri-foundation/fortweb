@@ -61,9 +61,9 @@ class KfVaultState:
     witness_auths: list[dict] = field(default_factory=list)
     watcher_eid: str = ""
     watcher_url: str = ""
-    # Verified direct-service milestones (cryptographically proven during the
-    # hosted onboarding run). Persisted so a fresh worker can render truthful
-    # direct state without re-deriving protocol facts from Kf Boot management.
+    # Verified direct-service milestones (proven during the hosted onboarding
+    # run). Persisted so a fresh worker can render truthful direct state
+    # without re-deriving protocol facts from Kf Boot management.
     witness_url: str = ""
     witness_oobi_verified: bool = False
     witness_registered: bool = False
@@ -706,8 +706,10 @@ async def _submit_witness_rotation_receipt(hab, witness: dict, auth_header: str,
         )
 
     receipt = modules["serdering"].SerderKERI(raw=raw_bytes)
+    # Bounded receipt metadata for failure diagnostics — never the signed
+    # attachment or full KED (which can carry controller digests/seals).
     witness["_receipt_meta"] = (
-        f"ked={receipt.ked} body={receipt.size} attachment={len(raw_bytes) - receipt.size}"
+        f"said={receipt.said} body={receipt.size} attachment={len(raw_bytes) - receipt.size}"
     )
     hab.psr.parseOne(ims=bytearray(raw_bytes), version=receipt.pvrsn)
     if getattr(hab.psr, "kvy", None) is not None:
@@ -966,7 +968,16 @@ async def _query_kf_watcher_direct(
     This exercises the actual Fort Web -> watcher query path (watcher USE), not
     the Kf Boot management surface. The watcher validates that the query source
     is this account's controller AID and replies with an endorsed ``/ksn`` reply
-    whose ``a`` payload is the controller's current key state.
+    whose ``a`` payload is the controller's key state as the watcher holds it.
+
+    Verification scope: the reply is parsed (``rpy`` ilk, ``/ksn/`` route) and
+    its reported key state is cross-checked byte-for-byte against this
+    controller's own authoritative local key state (AID, SN, digest, witness
+    set, toad). Because only the controller holds its own keys, an exact match
+    proves the watcher is answering with the controller's true current state.
+    The reply travels over the pinned public HTTPS endpoint; this routine does
+    NOT independently parse/verify the watcher's separate response-signature
+    attachment, so callers must not describe this as watcher-signature proof.
     """
     modules = vaulting.load_modules()
     kering = modules["kering"]
@@ -1020,6 +1031,42 @@ async def _query_kf_watcher_direct(
     if not isinstance(data, dict):
         raise vaulting.RuntimeFault("BAD_RESPONSE", "Watcher query reply did not include a key-state payload.")
 
+    # Cross-check the reply's reported key state against this controller's own
+    # authoritative local key state. The controller holds its own keys, so an
+    # exact match proves the watcher answered with the controller's true state.
+    local_sn = int(getattr(getattr(hab, "kever", None), "sn", 0) or 0)
+    local_digest = str(getattr(getattr(getattr(hab, "kever", None), "serder", None), "said", "") or "")
+    local_wits = list(getattr(getattr(hab, "kever", None), "wits", []) or [])
+    local_toad = int(getattr(getattr(getattr(hab, "kever", None), "toader", None), "num", 0) or 0)
+
+    reply_sn_hex = str(data.get("s", "") or "")
+    reply_digest = str(data.get("d", "") or "")
+    reply_wits = list(data.get("b", []) or [])
+    reply_toad_hex = str(data.get("bt", "") or "")
+    try:
+        reply_sn = int(reply_sn_hex, 16) if reply_sn_hex else -1
+        reply_toad = int(reply_toad_hex, 16) if reply_toad_hex else 0
+    except ValueError:
+        raise vaulting.RuntimeFault("BAD_RESPONSE", "Watcher query reply carried a non-hex SN or toad.")
+    state_match = (
+        str(data.get("i", "") or "") == hab.pre
+        and reply_sn == local_sn
+        and bool(local_digest)
+        and reply_digest == local_digest
+        and reply_wits == local_wits
+        and reply_toad == local_toad
+    )
+    if not state_match:
+        raise vaulting.RuntimeFault(
+            "BAD_RESPONSE",
+            (
+                "Watcher query reply key state does not match this controller's authoritative "
+                f"key state (sn={reply_sn} vs {local_sn}, digest={reply_digest[:12] if reply_digest else ''} "
+                f"vs {local_digest[:12] if local_digest else ''}, wits={reply_wits} vs {local_wits}, "
+                f"toad={reply_toad} vs {local_toad})."
+            ),
+        )
+
     return {
         "eid": watcher_eid,
         "url": watcher_url,
@@ -1028,11 +1075,13 @@ async def _query_kf_watcher_direct(
         "replyRoute": reply_route,
         "protocolMajor": int(reply_serder.pvrsn.major),
         "controller": str(data.get("i", "") or ""),
-        "sn": str(data.get("s", "") or ""),
-        "digest": str(data.get("d", "") or ""),
+        "sn": reply_sn_hex,
+        "digest": reply_digest,
         "kind": str(reply_ked.get("et", "") or ""),
-        "witnesses": list(data.get("b", []) or []),
-        "toad": str(data.get("bt", "") or ""),
+        "witnesses": reply_wits,
+        "toad": reply_toad_hex,
+        "stateMatch": True,
+        "stateMatchDetail": "reply key state equals the controller's authoritative local key state",
     }
 
 
@@ -1040,9 +1089,9 @@ def _kf_services_overview(hby, organizer, record: KfVaultState) -> dict:
     """Return the normalized hosted-service connection view model.
 
     This is the domain-layer boundary the UI consumes. It carries NO protocol
-    machinery: it derives direct service state purely from cryptographically
-    proven milestones persisted during the hosted onboarding run (OOBI
-    resolution, registration, receipt, introduction, direct query), kept
+    machinery: it derives direct service state purely from milestones persisted
+    during the hosted onboarding run (OOBI resolution, registration, receipt,
+    introduction, direct query with controller-state cross-check), kept
     independent from Kf Boot account-management synchronization.
     """
     has_account = _has_kf_account(record)
@@ -1219,14 +1268,9 @@ async def _run_kf_onboarding(
             if start_payload.get("account_aid") and start_payload["account_aid"] != account_hab.pre:
                 raise vaulting.RuntimeFault(
                     "CONFLICT",
-                    "KF onboarding session/start returned a different permanent account AID.",
-                )
-            session_state = str(start_payload.get("state", "") or "")
-            if start_payload.get("account_aid") and start_payload["account_aid"] != account_hab.pre:
-                raise vaulting.RuntimeFault(
-                    "CONFLICT",
                     "The saved KF onboarding session is bound to a different permanent account AID.",
                 )
+            session_state = str(start_payload.get("state", "") or "")
             if session_state in {"failed", "cancelled", "expired"}:
                 failure_reason = str(start_payload.get("failure_reason", "") or "").strip()
                 _clear_kf_onboarding_session(hby, record, delete_auth_hab=True)
@@ -1484,9 +1528,9 @@ async def _run_kf_onboarding(
     ]
     record.watcher_eid = watcher_row["eid"] if watcher_row is not None else ""
     record.watcher_url = watcher_row["watcherUrl"] if watcher_row is not None else ""
-    # Persist the cryptographically proven direct-service milestones from this
-    # run. Reaching this point means: witness OOBI resolved + registered at
-    # POST /aids + real receipt persisted after the witnessed rotation, and the
+    # Persist the direct-service milestones proven during this run. Reaching
+    # this point means: witness OOBI resolved + registered at POST /aids + a
+    # real witness receipt persisted after the witnessed rotation, and the
     # watcher OOBI resolved + the end-role/icp/rot/watcher-add introduction was
     # accepted. The domain view model renders these as direct service state.
     record.witness_url = witness_rows[0]["witnessUrl"] if witness_rows else ""
@@ -1626,16 +1670,25 @@ async def dispatch(method: str, params: dict):
         local_status, local_tone = _local_connection_status(hby, organizer, watcher_id)
         query["localStatus"] = local_status
         query["localStatusTone"] = local_tone
-        # A successful direct query is the strongest persisted proof that the
-        # watcher accepted and can answer the controller over its public path.
+        # A successful direct query whose reply key state matches this
+        # controller's own authoritative local key state is the strongest
+        # persisted proof that the watcher accepted and can answer the
+        # controller over its public path. Persist the durable milestone BEFORE
+        # reporting success; if the durable write fails, the query must fail
+        # closed (never report a verified milestone that was not persisted).
+        record.watcher_query_verified = True
+        observed = str(query.get("sn", "") or "")
         try:
-            record.watcher_query_verified = True
-            observed = str(query.get("sn", "") or "")
-            if observed.isdigit():
-                record.watcher_observed_sn = int(observed)
+            record.watcher_observed_sn = int(observed, 16) if observed else 0
+        except ValueError:
+            record.watcher_observed_sn = 0
+        try:
             _save_kf_state(hby, record)
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - surface as a product fault
+            raise vaulting.RuntimeFault(
+                "RUNTIME_ERROR",
+                f"Watcher query succeeded but its verified milestone could not be persisted: {exc}",
+            ) from exc
         return {
             "account": _kf_state_view(record),
             "watcher": query,

@@ -123,8 +123,6 @@ function renderServiceStateCard(services: ServicesOverview | undefined): string 
 export function renderDirectServiceCard(services: ServicesOverview | undefined): string {
     const witness = services?.witness ?? {};
     const watcher = services?.watcher ?? {};
-    const witnessEid = witness.eid || "\u2014";
-    const watcherEid = watcher.eid || "\u2014";
     const mgmtTone = witness.managementSyncStatus === "connected" ? "success" : "neutral";
 
     return `
@@ -132,7 +130,7 @@ export function renderDirectServiceCard(services: ServicesOverview | undefined):
             <div class="panel__title">
                 <h2>Direct Verified Service</h2>
                 <p class="muted">
-                    Cryptographic proof gathered directly from the hosted witness and watcher during
+                    Service state verified directly against the hosted witness and watcher during
                     onboarding — shown independently of Kf Boot account-management synchronization.
                 </p>
             </div>
@@ -181,15 +179,32 @@ export function renderDirectServiceCard(services: ServicesOverview | undefined):
             <div class="detail-grid detail-grid--two">
                 <div class="detail-item">
                     <dt>Witness Endpoint</dt>
-                    <dd class="mono">${escapeHtml(witness.endpoint || witnessEid === "\u2014" ? "\u2014" : witnessEid)}</dd>
+                    <dd class="mono">${escapeHtml(endpointOrEid(witness.endpoint, witness.eid))}</dd>
                 </div>
                 <div class="detail-item">
                     <dt>Watcher Endpoint</dt>
-                    <dd class="mono">${escapeHtml(watcher.endpoint || watcherEid === "\u2014" ? "\u2014" : watcherEid)}</dd>
+                    <dd class="mono">${escapeHtml(endpointOrEid(watcher.endpoint, watcher.eid))}</dd>
                 </div>
             </div>
         </section>
     `;
+}
+
+/** Render the connection endpoint for a direct service.
+ *
+ * Deliberate UX precedence (explicit, no operator-precedence traps):
+ *   1. endpoint when available (e.g. https://host:5633)
+ *   2. otherwise the service EID
+ *   3. otherwise an em dash.
+ */
+function endpointOrEid(endpoint: string | undefined, eid: string | undefined): string {
+    if (endpoint) {
+        return endpoint;
+    }
+    if (eid) {
+        return eid;
+    }
+    return "\u2014";
 }
 
 function profileLabel(option: WitnessProfileOption): string {

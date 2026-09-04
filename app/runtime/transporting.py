@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import base64
+import hashlib
 import json
 from dataclasses import dataclass
 from inspect import isawaitable
@@ -342,6 +342,11 @@ def _split_cesr_message(ims):
     return body, attachment
 
 
+def sha256_hex(data: bytes) -> str:
+    """Bounded non-sensitive digest for diagnostics (never the raw payload)."""
+    return hashlib.sha256(data).hexdigest()
+
+
 def _split_cesr_stream(ims):
     serders = []
     buf = bytearray(ims)
@@ -606,15 +611,14 @@ def parse_cesr_reply(
             f"n_kevers_total={sum(1 for _ in hby.db.kevers)} "
             f"sender_kel_last={kel_last}"
         )
-        try:
-            js.console.log(
-                "[transport] REPLY_B64="
-                + base64.b64encode(bytes(raw_bytes or b"")).decode("utf-8")
-                + " ATTACH_B64="
-                + base64.b64encode((attachment_header or "").encode("utf-8")).decode("utf-8")
-            )
-        except Exception:
-            pass
+        # Bounded, non-sensitive diagnostics only — never dump the signed CESR
+        # body/attachment (which carries controller/signer payloads).
+        detail += (
+            f" body_len={len(raw_bytes or b'')} "
+            f"attach_len={len((attachment_header or '').encode('utf-8'))} "
+            f"body_sha256={sha256_hex(raw_bytes or b'')} "
+            f"attach_sha256={sha256_hex((attachment_header or '').encode('utf-8'))}"
+        )
         raise vaulting.RuntimeFault(
             "BAD_RESPONSE",
             (
