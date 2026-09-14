@@ -1,0 +1,217 @@
+name: Produce canonical FortWeb runtime package
+description: >-
+  Canonical FortWeb runtime producer. Acquires the reviewed runtime source,
+  builds the runtime tree, verifies it, proves build and package determinism,
+  produces the versioned runtime package, and verifies the produced product
+  against the supplied package version. It never publishes a release, never
+  produces an attestation, and never chooses a trust root: callers own those
+  decisions. Callers also own the Node.js and Python toolchain versions, so this
+  action behaves identically in every consuming workflow.
+
+inputs:
+  runtime_source_url:
+    description: >-
+      Public HTTPS URL of the reviewed runtime source archive. Empty means the
+      reviewed pin declared by this action.
+    required: false
+  runtime_source_archive_sha256:
+    description: >-
+      Lowercase SHA-256 digest of the reviewed runtime source archive. Empty
+      means the reviewed pin declared by this action.
+    required: false
+  runtime_source_manifest_sha256:
+    description: >-
+      Lowercase SHA-256 digest of manifest.json inside the archive. Empty means
+      the reviewed pin declared by this action.
+    required: false
+  runtime_source_manifest:
+    description: Path of manifest.json inside the acquired runtime source.
+    required: false
+    default: build/runtime-source/manifest.json
+  package_version:
+    description: >-
+      Package version for this product. The publisher derives it from the trusted
+      release tag; it is never read back out of an already produced artifact.
+    required: true
+  ref:
+    description: >-
+      Explicit Git ref recorded in the release metadata. Branch refs describe
+      unpublished builds; release-tag refs describe publication candidates.
+    required: true
+  runtime_dir:
+    description: Runtime tree output directory.
+    required: false
+    default: dist/runtime
+  output_dir:
+    description: Product output directory.
+    required: false
+    default: dist/package
+  python:
+    description: Python interpreter used by the producer.
+    required: false
+    default: python3
+
+outputs:
+  artifact_name:
+    description: Versioned ZIP product filename.
+    value: ${{ steps.package.outputs.artifact_name }}
+  artifact_sha256:
+    description: Lowercase SHA-256 digest of the ZIP product.
+    value: ${{ steps.package.outputs.artifact_sha256 }}
+  artifact_bytes:
+    description: Size in bytes of the ZIP product.
+    value: ${{ steps.package.outputs.artifact_bytes }}
+  package_dir:
+    description: Product directory containing the verified product files.
+    value: ${{ steps.package.outputs.package_dir }}
+  package_version:
+    description: Package version that was actually packaged.
+    value: ${{ steps.package.outputs.package_version }}
+
+runs:
+  using: composite
+  steps:
+    # Publish the reviewed source inputs once so every later step inherits exactly
+    # the same values. This mirrors the job-level environment of the original
+    # single-workflow producer without duplicating it per step.
+    - name: Export reviewed runtime source inputs
+      shell: bash
+      env:
+        SOURCE_URL: ${{ inputs.runtime_source_url }}
+        SOURCE_ARCHIVE_SHA256: ${{ inputs.runtime_source_archive_sha256 }}
+        SOURCE_MANIFEST: ${{ inputs.runtime_source_manifest }}
+        SOURCE_MANIFEST_SHA256: ${{ inputs.runtime_source_manifest_sha256 }}
+      run: |
+        set -euo pipefail
+        # The reviewed runtime source pin is declared here and nowhere else, so no
+        # consuming workflow can silently build the package from a different
+        # runtime. A caller may still override it for a deliberate dispatch run.
+        DEFAULT_SOURCE_URL='https://github.com/keri-foundation/fortweb/releases/download/runtime-source-pyodide-314-hio-0.7.20-20260910/runtime-source.tar.gz'
+        DEFAULT_SOURCE_ARCHIVE_SHA256='394db70ecbed6e5718e6ec0afbcb43eaf6384e2ab78218e55067ec9e5d83fb34'
+        DEFAULT_SOURCE_MANIFEST_SHA256='371ef8cb8c6641b68afe6799931678435e2a629dcf4aa7ba2e344efab5a10f32'
+        SOURCE_URL="${SOURCE_URL:-$DEFAULT_SOURCE_URL}"
+        SOURCE_ARCHIVE_SHA256="${SOURCE_ARCHIVE_SHA256:-$DEFAULT_SOURCE_ARCHIVE_SHA256}"
+        SOURCE_MANIFEST_SHA256="${SOURCE_MANIFEST_SHA256:-$DEFAULT_SOURCE_MANIFEST_SHA256}"
+        SOURCE_MANIFEST="${SOURCE_MANIFEST:-build/runtime-source/manifest.json}"
+        for value in "$SOURCE_URL" "$SOURCE_ARCHIVE_SHA256" "$SOURCE_MANIFEST" "$SOURCE_MANIFEST_SHA256"; do
+          case "$value" in
+            *$'\n'*) echo "runtime source inputs must not contain newlines"; exit 1 ;;
+          esac
+        done
+        {
+          printf 'FORTWEB_RUNTIME_SOURCE_URL=%s\n' "$SOURCE_URL"
+          printf 'FORTWEB_RUNTIME_SOURCE_ARCHIVE_SHA256=%s\n' "$SOURCE_ARCHIVE_SHA256"
+          printf 'FORTWEB_RUNTIME_SOURCE_MANIFEST=%s\n' "$SOURCE_MANIFEST"
+          printf 'FORTWEB_RUNTIME_SOURCE_MANIFEST_SHA256=%s\n' "$SOURCE_MANIFEST_SHA256"
+        } >> "$GITHUB_ENV"
+
+    - name: Install dependencies
+      shell: bash
+      run: npm ci
+
+    - name: Acquire reviewed runtime source
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 scripts/acquire_runtime_source.py \
+          --url "$FORTWEB_RUNTIME_SOURCE_URL" \
+          --sha256 "$FORTWEB_RUNTIME_SOURCE_ARCHIVE_SHA256" \
+          --manifest-sha256 "$FORTWEB_RUNTIME_SOURCE_MANIFEST_SHA256" \
+          --output build/runtime-source
+
+    - name: Install verified Python build tools
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 -m pip install --disable-pip-version-check --no-index --no-deps \
+          build/runtime-source/wheelhouse/packaging-26.1-py3-none-any.whl \
+          build/runtime-source/wheelhouse/setuptools-83.0.0-py3-none-any.whl \
+          build/runtime-source/wheelhouse/wheel-0.47.0-py3-none-any.whl
+
+    - name: Typecheck
+      shell: bash
+      run: npm run typecheck
+
+    - name: Build runtime
+      shell: bash
+      run: npm run build:runtime
+
+    - name: Test source contracts
+      shell: bash
+      run: |
+        set -euo pipefail
+        node --test \
+          tools/deterministic-zip.test.mjs \
+          tools/runtime-package-base.test.mjs \
+          tools/runtime-package-manifest.test.mjs \
+          tools/runtime-package-release.test.mjs \
+          tools/runtime-origin-local-dev.test.mjs \
+          tools/verify-fortweb-release.test.mjs \
+          tools/verify-runtime-package.test.mjs
+        python3 -m unittest \
+          python/test_acquire_runtime_source.py \
+          python/test_build_runtime_source.py \
+          python/test_serve_local.py \
+          python/test_serve_runtime_browser.py \
+          python/test_transporting.py \
+          python/test_onboarding.py \
+          python/test_vaulting.py
+
+    - name: Check runtime JS
+      shell: bash
+      run: npm run check:runtime-js
+
+    - name: Verify runtime tree
+      shell: bash
+      env:
+        RUNTIME_DIR: ${{ inputs.runtime_dir }}
+      run: |
+        set -euo pipefail
+        mkdir -p test-results
+        git rev-parse HEAD > test-results/source-identity.txt
+        python3 scripts/verify_runtime_tree.py \
+          --runtime-dir "$RUNTIME_DIR" \
+          --source-manifest "$FORTWEB_RUNTIME_SOURCE_MANIFEST" \
+          --inventory-output test-results/runtime-inventory.json \
+          --digest-output test-results/runtime-tree.sha256 \
+          --report-output test-results/runtime-verification.json \
+          --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+    - name: Test runtime JS check
+      shell: bash
+      run: npm run test:runtime-js-check
+
+    - name: Prove determinism and package the tested runtime
+      id: package
+      shell: bash
+      env:
+        PACKAGE_VERSION: ${{ inputs.package_version }}
+        PACKAGE_REF: ${{ inputs.ref }}
+        RUNTIME_DIR: ${{ inputs.runtime_dir }}
+        OUTPUT_DIR: ${{ inputs.output_dir }}
+        PRODUCER_PYTHON: ${{ inputs.python }}
+      run: |
+        set -euo pipefail
+        test -n "$PACKAGE_VERSION" || { echo "package_version is required"; exit 1; }
+        test -n "$PACKAGE_REF" || { echo "ref is required"; exit 1; }
+        npm run test:build-idempotency
+        mkdir -p test-results
+        # package-runtime verifies the produced product against the pinned version
+        # and prints the verification report, which is kept as evidence.
+        npm run --silent package:runtime -- \
+          --runtime-dir "$RUNTIME_DIR" \
+          --python "$PRODUCER_PYTHON" \
+          --ref "$PACKAGE_REF" \
+          --package-version "$PACKAGE_VERSION" \
+          --output-dir "$OUTPUT_DIR" | tee test-results/product-verification.json
+        artifact_name="$(node --input-type=module -e 'const m = await import("./tools/runtime-package-manifest.mjs"); process.stdout.write(m.zipBasenameForVersion(process.env.PACKAGE_VERSION));')"
+        test -f "$OUTPUT_DIR/$artifact_name" || { echo "produced product is missing: $OUTPUT_DIR/$artifact_name"; exit 1; }
+        artifact_sha256="$(node -e 'const c = require("node:crypto"); const f = require("node:fs"); process.stdout.write(c.createHash("sha256").update(f.readFileSync(process.argv[1])).digest("hex"));' "$OUTPUT_DIR/$artifact_name")"
+        artifact_bytes="$(wc -c < "$OUTPUT_DIR/$artifact_name" | tr -d '[:space:]')"
+        {
+          printf 'artifact_name=%s\n' "$artifact_name"
+          printf 'artifact_sha256=%s\n' "$artifact_sha256"
+          printf 'artifact_bytes=%s\n' "$artifact_bytes"
+          printf 'package_dir=%s\n' "$OUTPUT_DIR"
+          printf 'package_version=%s\n' "$PACKAGE_VERSION"
+        } >> "$GITHUB_OUTPUT"
