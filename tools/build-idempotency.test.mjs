@@ -5,7 +5,9 @@ import { existsSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, w
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { ZIP_BASENAME } from './runtime-package-manifest.mjs';
+import { DEFAULT_PACKAGE_VERSION, zipBasenameForVersion } from './runtime-package-manifest.mjs';
+
+const ZIP_BASENAME = zipBasenameForVersion(DEFAULT_PACKAGE_VERSION);
 
 const PROJECT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BUILDER = path.join(PROJECT_DIR, 'tools/build-runtime.mjs');

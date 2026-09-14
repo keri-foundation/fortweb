@@ -13,13 +13,18 @@ import {
     sha256,
     validateManifest,
     validatePackagePath,
-    ZIP_BASENAME,
+    validatePackageVersion,
+    zipBasenameForVersion,
 } from './runtime-package-manifest.mjs';
 
 const PROJECT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PREFIX = 'fortweb-runtime/';
-const EXPECTED_EXTERNAL = [ZIP_BASENAME, `${ZIP_BASENAME}.sha256`, 'fortweb-release.json']
-    .sort(comparePathBytes);
+const RELEASE_METADATA_FILENAME = 'fortweb-release.json';
+
+function expectedExternalFiles(packageVersion) {
+    const zipBasename = zipBasenameForVersion(packageVersion);
+    return [zipBasename, `${zipBasename}.sha256`, RELEASE_METADATA_FILENAME].sort(comparePathBytes);
+}
 
 function sameState(left, right) {
     return left.dev === right.dev
@@ -172,9 +177,28 @@ export function parseDeterministicZip(bytes) {
     return members;
 }
 
-export async function verifyProduct(productDir) {
+export async function verifyProduct(productDir, { packageVersion = null } = {}) {
     const root = path.resolve(productDir);
     await assertRealRoot(root);
+    // The release metadata filename is version independent, so it is read first to
+    // learn the package version when the caller did not supply an expected one. A
+    // caller that DOES supply an expected version (the release verifier, from the
+    // trusted tag) additionally pins every version-bearing product name and field.
+    const releaseBytes = await stableRead(root, RELEASE_METADATA_FILENAME);
+    let releaseValue;
+    try {
+        releaseValue = JSON.parse(releaseBytes.toString('utf8'));
+    } catch (error) {
+        throw new Error('Release metadata is not valid JSON.', { cause: error });
+    }
+    const expectedVersion = packageVersion === null
+        ? validatePackageVersion(releaseValue.package_version)
+        : validatePackageVersion(packageVersion);
+    if (releaseValue.package_version !== expectedVersion) {
+        throw new Error('Release metadata package version does not match the expected version.');
+    }
+    const expectedExternal = expectedExternalFiles(expectedVersion);
+    const zipBasename = zipBasenameForVersion(expectedVersion);
     const entries = (await readdir(root, { withFileTypes: true }))
         .map((entry) => {
             if (!entry.isFile() || entry.isSymbolicLink()) {
@@ -183,27 +207,22 @@ export async function verifyProduct(productDir) {
             return entry.name;
         })
         .sort(comparePathBytes);
-    if (JSON.stringify(entries) !== JSON.stringify(EXPECTED_EXTERNAL)) {
+    if (JSON.stringify(entries) !== JSON.stringify(expectedExternal)) {
         throw new Error('External product file set is not exact.');
     }
-    const zip = await stableRead(root, ZIP_BASENAME);
-    const sidecar = await stableRead(root, `${ZIP_BASENAME}.sha256`);
-    const release = await stableRead(root, 'fortweb-release.json');
+    const zip = await stableRead(root, zipBasename);
+    const sidecar = await stableRead(root, `${zipBasename}.sha256`);
+    const release = releaseBytes;
     const zipDigest = sha256(zip);
-    if (!sidecar.equals(Buffer.from(`${zipDigest}  ${ZIP_BASENAME}\n`))) {
+    if (!sidecar.equals(Buffer.from(`${zipDigest}  ${zipBasename}\n`))) {
         throw new Error('External ZIP sidecar mismatch.');
-    }
-    let releaseValue;
-    try {
-        releaseValue = JSON.parse(release.toString('utf8'));
-    } catch (error) {
-        throw new Error('Release metadata is not valid JSON.', { cause: error });
     }
     if (!release.equals(Buffer.from(serializeReleaseMetadata({
         artifactSha256: zipDigest,
         artifactBytes: zip.length,
         fortwebCommitSha: releaseValue.commit_sha,
         ref: releaseValue.ref,
+        packageVersion: expectedVersion,
     })))) {
         throw new Error('Release metadata mismatch.');
     }
@@ -212,7 +231,7 @@ export async function verifyProduct(productDir) {
     const checksumBytes = members.get('checksums.sha256');
     if (!manifestBytes || !checksumBytes) throw new Error('ZIP metadata is missing.');
     const manifest = JSON.parse(manifestBytes.toString('utf8'));
-    validateManifest(manifest);
+    validateManifest(manifest, expectedVersion);
     if (releaseValue.commit_sha !== manifest.fortweb_commit_sha) {
         throw new Error('Release metadata commit does not match the package manifest.');
     }
@@ -237,13 +256,14 @@ export async function verifyProduct(productDir) {
         throw new Error('Manifest and ZIP content closure differ.');
     }
     const productFiles = [];
-    for (const filename of EXPECTED_EXTERNAL) {
+    for (const filename of expectedExternal) {
         const payload = await stableRead(root, filename);
         productFiles.push({ bytes: payload.length, path: filename, sha256: sha256(payload) });
     }
     return {
         manifest_rows: manifest.files.length,
         ok: true,
+        package_version: expectedVersion,
         product_files: productFiles,
         zip_bytes: zip.length,
         zip_entries: members.size,
@@ -252,16 +272,30 @@ export async function verifyProduct(productDir) {
 }
 
 function parseArgs(arguments_) {
-    const index = arguments_.indexOf('--product-dir');
-    if (index === -1 || !arguments_[index + 1] || arguments_.length !== 2) {
-        throw new Error('Usage: node tools/verify-runtime-package.mjs --product-dir <directory>');
+    const values = { '--product-dir': '', '--package-version': '' };
+    const seen = new Set();
+    for (let index = 0; index < arguments_.length; index += 2) {
+        const key = arguments_[index];
+        const value = arguments_[index + 1];
+        if (!(key in values) || seen.has(key) || !value || value.startsWith('--')) {
+            throw new Error(`invalid verify argument: ${key}`);
+        }
+        values[key] = value;
+        seen.add(key);
     }
-    return path.resolve(process.cwd(), arguments_[index + 1]);
+    if (!values['--product-dir']) {
+        throw new Error('Usage: node tools/verify-runtime-package.mjs --product-dir <directory> [--package-version <version>]');
+    }
+    return {
+        productDir: path.resolve(process.cwd(), values['--product-dir']),
+        packageVersion: values['--package-version'] || null,
+    };
 }
 
 if (path.resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
     try {
-        const report = await verifyProduct(parseArgs(process.argv.slice(2)));
+        const options = parseArgs(process.argv.slice(2));
+        const report = await verifyProduct(options.productDir, { packageVersion: options.packageVersion });
         process.stdout.write(`${JSON.stringify(report)}\n`);
     } catch (error) {
         process.stderr.write(`verify-runtime-package: ${error.message}\n`);
