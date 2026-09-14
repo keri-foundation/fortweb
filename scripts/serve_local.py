@@ -39,53 +39,21 @@ import sys
 import webbrowser
 from pathlib import Path
 
+from fortweb_static import FORTWEB_EXTENSIONS_MAP, resolve_fortweb_path
+
 
 class FortWebRequestHandler(http.server.SimpleHTTPRequestHandler):
     """Static files with sane MIME types for JS modules and Pyodide wheels."""
 
     extensions_map = {
         **http.server.SimpleHTTPRequestHandler.extensions_map,
-        ".js": "application/javascript",
-        ".mjs": "application/javascript",
-        ".cjs": "application/javascript",
-        ".whl": "application/octet-stream",
-        ".wasm": "application/wasm",
-        ".json": "application/json",
+        **FORTWEB_EXTENSIONS_MAP,
     }
 
     def translate_path(self, path: str) -> str:
-        # Handle vendor requests
-        if path.startswith('/fortweb/vendor/'):
-            vendor_relative = path[len('/fortweb/vendor/'):]
-            dist_vendor_path = os.path.join(self.directory, 'fortweb', 'dist', 'runtime', 'vendor', vendor_relative)
-            if os.path.exists(dist_vendor_path):
-                return dist_vendor_path
-            return os.path.join(self.directory, 'fortweb', 'vendor', vendor_relative)
-
-        # Handle app requests
-        if path.startswith('/fortweb/app/'):
-            relative_path = path[len('/fortweb/app/'):]
-
-            # Serve index.html from source
-            if not relative_path or relative_path == 'index.html':
-                return os.path.join(self.directory, 'fortweb', 'app', relative_path or 'index.html')
-
-            # Check if the requested file exists in the compiled runtime output
-            dist_app_path = os.path.join(self.directory, 'fortweb', 'dist', 'runtime', 'app', relative_path)
-            if os.path.exists(dist_app_path):
-                return dist_app_path
-
-            dist_root_path = os.path.join(self.directory, 'fortweb', 'dist', 'runtime', relative_path)
-            if os.path.exists(dist_root_path):
-                return dist_root_path
-
-            # Fallback to source app directory, then source root
-            source_app_path = os.path.join(self.directory, 'fortweb', 'app', relative_path)
-            if os.path.exists(source_app_path):
-                return source_app_path
-
-            return os.path.join(self.directory, 'fortweb', relative_path)
-
+        resolved = resolve_fortweb_path(self.directory, path)
+        if resolved is not None:
+            return resolved
         return super().translate_path(path)
 
     def _redirect_root_to_app(self) -> bool:
@@ -95,6 +63,12 @@ class FortWebRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             return True
         return False
+
+    def end_headers(self) -> None:
+        # Dev server must not let the browser cache stale artifacts (e.g. the
+        # wallet worker switching between source and compiled copies).
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
         if self._redirect_root_to_app():

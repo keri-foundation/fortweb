@@ -143,6 +143,7 @@ const session = createSessionStore({
 });
 
 let drawer: ReturnType<typeof createVaultDrawer> | null = null;
+let drawerReady = false;
 let actions: AppActions;
 
 function currentState(): AppSessionState {
@@ -431,7 +432,11 @@ actions = {
         if (document.body.contains(drawer.el)) {
             drawer.close();
         } else {
-            await actions.refreshVaults(currentState().unlockedVaultId, currentState().vaultSummary);
+            try {
+                await actions.refreshVaults(currentState().unlockedVaultId, currentState().vaultSummary);
+            } catch {
+                // Bridge unavailable (e.g. no Pyodide worker): open drawer with stale vault list
+            }
             drawer.open();
         }
     },
@@ -449,7 +454,7 @@ async function render(): Promise<void> {
         renderShell(root, {
             route: indexRoute,
             page: renderFixtureIndexPage(),
-            state: currentState(),
+            state: { ...currentState(), drawerReady },
             vault: null,
             actions,
         });
@@ -462,13 +467,13 @@ async function render(): Promise<void> {
             renderShell(root, {
                 route: fixture.route,
                 page: fixture.page,
-                state: currentState(),
+                state: { ...currentState(), drawerReady },
                 vault: assumeType<ShellVault>(fixture.vault),
                 actions,
             });
         } else {
             const fallbackRoute = { name: "not-found", shellMode: "home", navMode: "none", path, params: {} };
-            renderNotFoundRoute({ root, route: fallbackRoute, state: currentState(), vault: null, actions });
+            renderNotFoundRoute({ root, route: fallbackRoute, state: { ...currentState(), drawerReady }, vault: null, actions });
         }
         return;
     }
@@ -520,7 +525,7 @@ async function render(): Promise<void> {
         renderShell(root, {
             route,
             page: result.page!,
-            state: currentState(),
+            state: { ...currentState(), drawerReady },
             vault: assumeType<ShellVault>(result.vault),
             actions,
         });
@@ -537,7 +542,7 @@ async function render(): Promise<void> {
         });
         const code = errorCode(error);
         if (code === "NOT_FOUND") {
-            renderNotFoundRoute({ root, route, state: currentState(), vault: assumeType<ShellVault>(vault), actions });
+            renderNotFoundRoute({ root, route, state: { ...currentState(), drawerReady }, vault: assumeType<ShellVault>(vault), actions });
             return;
         }
         if ((code === "LOCKED" || code === "TIMEOUT") && route.params.vaultId) {
@@ -557,7 +562,7 @@ async function render(): Promise<void> {
         renderShell(root, {
             route: route.shellMode ? route : { ...route, shellMode: "home" },
             page: renderErrorPage(assumeType<RuntimeError>(error)),
-            state: currentState(),
+            state: { ...currentState(), drawerReady },
             vault: assumeType<ShellVault>(vault),
             actions,
         });
@@ -580,8 +585,6 @@ async function bootstrap(): Promise<void> {
 
     try {
         await actions.refreshVaults();
-        initDrawer(currentState().vaults);
-        await render();
     } catch (error) {
         postLog("initial_vault_refresh_failed", {
             level: "warning",
@@ -589,6 +592,10 @@ async function bootstrap(): Promise<void> {
             message: errorMessage(error),
         });
     }
+
+    initDrawer(currentState().vaults);
+    drawerReady = true;
+    await render();
 }
 
 void bootstrap();

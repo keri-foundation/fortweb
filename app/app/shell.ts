@@ -38,6 +38,7 @@ interface ShellActions {
 interface ShellState {
     mobileNavOpen?: boolean;
     lastCoreRoutes?: Record<string, string>;
+    drawerReady?: boolean;
 }
 
 interface ShellProps {
@@ -211,7 +212,7 @@ export function renderShell(root: HTMLElement, { route, page, state, vault, acti
                             </button>
                         `
                         : `
-                            <button class="icon-button" data-action="toggle-drawer" aria-label="Vaults">
+                            <button class="icon-button" data-action="toggle-drawer" aria-label="Vaults"${state.drawerReady ? "" : " disabled"}>
                                 <img src="./assets/icons/vault-drawer.svg" data-hover-src="./assets/icons/vault-drawer-hover.svg" alt="">
                             </button>
                         `}

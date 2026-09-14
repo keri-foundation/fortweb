@@ -133,6 +133,8 @@ LOCAL_WHEEL_PATHS = [
 
 
 _MODULES = None
+_REGISTRY = None
+_STATE = None
 _REQUEST_LOCK = asyncio.Lock()
 _RUNTIME_PACKAGES_TASK = None  # Shared task so _preload and _dispatch coalesce package loads
 
@@ -2205,6 +2207,14 @@ async def _dispatch(method: str, params: dict):
         state = _require_open_state(_require_vault_id(params))
         return _vault_summary(state)
 
+    if method == "settings.get":
+        return {
+            "settings": {
+                **DEFAULT_SETTINGS,
+                "runtimeStatus": "Browser vault worker open over WebBaser and WebKeeper.",
+            }
+        }
+
     state = _require_open_state(_require_vault_id(params))
     modules = state["modules"]
     hby = state["hby"]
@@ -2415,14 +2425,6 @@ async def _dispatch(method: str, params: dict):
             "watcher": await _refresh_kf_watcher_status(hby, organizer, record, watcher_id),
         }
 
-    if method == "settings.get":
-        return {
-            "settings": {
-                **DEFAULT_SETTINGS,
-                "runtimeStatus": "Browser vault worker open over WebBaser and WebKeeper.",
-            }
-        }
-
     raise RuntimeFault("BAD_REQUEST", f"Runtime method '{method}' is not allowed.")
 
 
@@ -2455,12 +2457,6 @@ onboarding.configure_runtime(
     witness_registration_timeout_ms=KF_WITNESS_REGISTRATION_TIMEOUT_MS,
     cesr_timeout_ms=KF_CESR_TIMEOUT_MS,
 )
-
-
-async def _dispatch(method: str, params: dict):
-    if method.startswith("kf."):
-        return await onboarding.dispatch(method, params)
-    return await vaulting.dispatch(method, params)
 
 
 def _error_payload(message_id: str, code: str, message: str):
@@ -2553,4 +2549,5 @@ async def _preload():
 
 asyncio.ensure_future(_preload())
 
+__export__ = ["handle_request"]
 sync.handle_request = handle_request
