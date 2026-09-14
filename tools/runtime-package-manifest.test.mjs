@@ -3,9 +3,13 @@ import test from 'node:test';
 
 import {
     canonicalJson,
+    DEFAULT_PACKAGE_VERSION,
     generateManifest,
+    packageVersionFromTag,
     validateFileRows,
     validatePackagePath,
+    validatePackageVersion,
+    zipBasenameForVersion,
 } from './runtime-package-manifest.mjs';
 import { serializeRuntimeRequirements } from './generate-runtime-requirements.mjs';
 
@@ -69,7 +73,20 @@ test('manifest source commit must match provenance', () => {
     files.sort((left, right) => Buffer.compare(Buffer.from(left.path), Buffer.from(right.path)));
     const provenance = { source: { fortweb_commit_sha: '1'.repeat(40) } };
     assert.throws(
-        () => generateManifest({ files, provenance, fortwebCommitSha: '2'.repeat(40) }),
+        () => generateManifest({ files, provenance, fortwebCommitSha: '2'.repeat(40), packageVersion: DEFAULT_PACKAGE_VERSION }),
         /does not match provenance/,
     );
+});
+
+test('package version is a validated producer input rather than a fixed constant', () => {
+    assert.equal(validatePackageVersion('1.2.3'), '1.2.3');
+    assert.equal(validatePackageVersion('1.2.3-rc.1'), '1.2.3-rc.1');
+    assert.equal(packageVersionFromTag('v1.2.3'), '1.2.3');
+    assert.equal(zipBasenameForVersion('1.2.3'), 'fortweb-runtime-1.2.3.zip');
+    assert.notEqual(zipBasenameForVersion('1.2.3'), zipBasenameForVersion('1.2.4'));
+    for (const value of ['', 'v1.2.3', '1.2', '1.2.3.4', '1.2.3 ', ' 1.2.3', '1.2.3/../x', '1.2.3;x', 'latest', 'a'.repeat(80)]) {
+        assert.throws(() => validatePackageVersion(value), /version/i, value);
+    }
+    assert.throws(() => packageVersionFromTag('1.2.3'), /start with/);
+    assert.throws(() => packageVersionFromTag('vlatest'), /version/i);
 });

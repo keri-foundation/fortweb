@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, open, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, open, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -9,14 +9,17 @@ import { generateReleaseMetadata } from './generate-release-metadata.mjs';
 import { serializeRuntimeRequirements } from './generate-runtime-requirements.mjs';
 import {
     canonicalJson,
+    DEFAULT_PACKAGE_VERSION,
     generateManifest,
     REQUIREMENTS_PATH,
     sha256,
     validateProvenance,
-    ZIP_BASENAME,
+    zipBasenameForVersion,
 } from './runtime-package-manifest.mjs';
 import { verifyProduct } from './verify-runtime-package.mjs';
 import { readRuntimePayloads } from './package-runtime.mjs';
+
+const DEFAULT_ZIP_BASENAME = zipBasenameForVersion(DEFAULT_PACKAGE_VERSION);
 
 const digest = '1'.repeat(64);
 
@@ -103,7 +106,7 @@ async function writeNew(filename, data) {
     try { await handle.writeFile(data); } finally { await handle.close(); }
 }
 
-async function fixture(root, { requirements = serializeRuntimeRequirements(), manifestOverrides = {}, releaseOverrides = {} } = {}) {
+async function fixture(root, { requirements = serializeRuntimeRequirements(), manifestOverrides = {}, releaseOverrides = {}, packageVersion = DEFAULT_PACKAGE_VERSION } = {}) {
     const content = new Map([['app/index.html', Buffer.from('app')]]);
     for (let index = 0; index < 3; index += 1) {
         content.set(`payload/${String(index).padStart(3, '0')}.bin`, Buffer.from([index]));
@@ -118,6 +121,7 @@ async function fixture(root, { requirements = serializeRuntimeRequirements(), ma
         files: rows,
         provenance: packageProvenance,
         fortwebCommitSha,
+        packageVersion,
     });
     assert.equal(manifestValue.schema_version, '2.0.0');
     assert.equal(Object.hasOwn(manifestValue, 'runtime_origin'), false);
@@ -129,13 +133,15 @@ async function fixture(root, { requirements = serializeRuntimeRequirements(), ma
         { name: 'fortweb-runtime/checksums.sha256', data: checksum },
     ]);
     const zipDigest = sha256(zip);
-    await writeNew(path.join(root, ZIP_BASENAME), zip);
-    await writeNew(path.join(root, `${ZIP_BASENAME}.sha256`), Buffer.from(`${zipDigest}  ${ZIP_BASENAME}\n`));
+    const zipBasename = zipBasenameForVersion(packageVersion);
+    await writeNew(path.join(root, zipBasename), zip);
+    await writeNew(path.join(root, `${zipBasename}.sha256`), Buffer.from(`${zipDigest}  ${zipBasename}\n`));
     await writeNew(path.join(root, 'fortweb-release.json'), Buffer.from(canonicalJson({ ...generateReleaseMetadata({
         artifactSha256: zipDigest,
         artifactBytes: zip.length,
         fortwebCommitSha,
         ref: 'refs/heads/pyodide-314-runtime',
+        packageVersion,
     }), ...releaseOverrides })));
 }
 
@@ -145,9 +151,45 @@ test('portable verifier accepts the canonical generic product and rejects a bad 
         await fixture(root);
         const report = await verifyProduct(root);
         assert.equal(report.zip_entries, 7);
-        await rm(path.join(root, `${ZIP_BASENAME}.sha256`));
-        await writeNew(path.join(root, `${ZIP_BASENAME}.sha256`), Buffer.from('bad\n'));
+        assert.equal(report.package_version, DEFAULT_PACKAGE_VERSION);
+        await rm(path.join(root, `${DEFAULT_ZIP_BASENAME}.sha256`));
+        await writeNew(path.join(root, `${DEFAULT_ZIP_BASENAME}.sha256`), Buffer.from('bad\n'));
         await assert.rejects(verifyProduct(root), /sidecar/);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('portable verifier pins every version-bearing product name and field', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'fortweb-runtime-package-version.'));
+    try {
+        await fixture(root, { packageVersion: '1.2.3' });
+        const report = await verifyProduct(root, { packageVersion: '1.2.3' });
+        assert.equal(report.package_version, '1.2.3');
+        assert.deepEqual(
+            report.product_files.map((row) => row.path).sort(),
+            ['fortweb-release.json', 'fortweb-runtime-1.2.3.zip', 'fortweb-runtime-1.2.3.zip.sha256'],
+        );
+        // Deriving the version from the metadata keeps local/dev verification working.
+        assert.equal((await verifyProduct(root)).package_version, '1.2.3');
+        // An expected version from the trusted tag must reject a differently versioned product.
+        await assert.rejects(verifyProduct(root, { packageVersion: '1.2.4' }), /package version/);
+        // Product filenames must agree with the expected version, not just the metadata.
+        await rename(
+            path.join(root, 'fortweb-runtime-1.2.3.zip'),
+            path.join(root, 'fortweb-runtime-1.2.4.zip'),
+        );
+        await assert.rejects(verifyProduct(root, { packageVersion: '1.2.3' }), /file set is not exact/);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('portable verifier rejects a manifest that disagrees with the expected version', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'fortweb-runtime-package-manifest-version.'));
+    try {
+        await fixture(root, { packageVersion: '1.2.3', manifestOverrides: { package_version: '1.2.4' } });
+        await assert.rejects(verifyProduct(root, { packageVersion: '1.2.3' }), /Manifest package_version/);
     } finally {
         await rm(root, { recursive: true, force: true });
     }
