@@ -122,7 +122,10 @@ jobs:
   release:
     name: Attest and publish the verified package
     needs: package
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Production authority is the GitHub push event plus a v-prefixed tag ref. A
+    # workflow_dispatch run aimed at a release tag is a dry run: it produces and
+    # verifies a package, but it must never attest or publish.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       # contents: write is needed only to create the release. The attestation
@@ -141,11 +144,9 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Setup Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
-        with:
-          python-version: '3.12'
-
+      # No Python in this job. The release job only re-verifies, attests, and
+      # publishes already-produced bytes, and the verifier runs on Node alone with
+      # no node_modules and no Python on PATH.
       - name: Download the produced product artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
