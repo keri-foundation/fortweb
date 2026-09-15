@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -197,9 +198,30 @@ export async function main(projectDir = DEFAULT_PROJECT_DIR) {
     process.stdout.write('[check-runtime-js] generated runtime JavaScript output exists and is deterministic.\n');
 }
 
-const entrypointPath = process.argv[1] ? path.resolve(process.argv[1]) : null;
+// Direct-CLI detection has to survive a symlinked entry point. A lexical comparison
+// makes `node <symlink-to-this-file>` skip the CLI entirely, exiting 0 without
+// checking anything, which is indistinguishable from a passing check. Both sides are
+// canonicalized instead, so every invocation path actually runs the check.
+function isDirectCliInvocation() {
+    const invokedPath = process.argv[1];
+    if (!invokedPath) {
+        return false;
+    }
+    const modulePath = fileURLToPath(import.meta.url);
+    if (path.resolve(invokedPath) === modulePath) {
+        return true;
+    }
+    try {
+        return realpathSync(invokedPath) === realpathSync(modulePath);
+    } catch {
+        // A path that cannot be canonicalized is not this module's own entry point.
+        // A real direct invocation always resolves, so this only ever declines to run
+        // the CLI, and never turns an error into a reported success.
+        return false;
+    }
+}
 
-if (entrypointPath === fileURLToPath(import.meta.url)) {
+if (isDirectCliInvocation()) {
     main().catch((error) => {
         process.stderr.write(`${error.message}\n`);
         process.exitCode = 1;
