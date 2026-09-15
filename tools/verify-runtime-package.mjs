@@ -1,4 +1,4 @@
-import { constants } from 'node:fs';
+import { constants, realpathSync } from 'node:fs';
 import { lstat, open, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -292,7 +292,30 @@ function parseArgs(arguments_) {
     };
 }
 
-if (path.resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
+// Main-module detection has to survive a symlinked entry point. Comparing lexical
+// paths makes `node <symlink-to-this-file>` skip the CLI entirely, exiting 0 with
+// no output, which is indistinguishable from a verification that succeeded. Both
+// sides are canonicalized instead, so every invocation path actually verifies.
+function isDirectCliInvocation() {
+    const invokedPath = process.argv[1];
+    if (!invokedPath) {
+        return false;
+    }
+    const modulePath = fileURLToPath(import.meta.url);
+    if (path.resolve(invokedPath) === modulePath) {
+        return true;
+    }
+    try {
+        return realpathSync(invokedPath) === realpathSync(modulePath);
+    } catch {
+        // A path that cannot be canonicalized is not this module's own entry point.
+        // A real direct invocation always resolves, so this only ever declines to run
+        // the CLI, and never turns an error into a reported success.
+        return false;
+    }
+}
+
+if (isDirectCliInvocation()) {
     try {
         const options = parseArgs(process.argv.slice(2));
         const report = await verifyProduct(options.productDir, { packageVersion: options.packageVersion });

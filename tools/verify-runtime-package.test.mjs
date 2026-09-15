@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, open, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { createDeterministicZip } from './deterministic-zip.mjs';
 import { generateReleaseMetadata } from './generate-release-metadata.mjs';
@@ -16,7 +18,7 @@ import {
     validateProvenance,
     zipBasenameForVersion,
 } from './runtime-package-manifest.mjs';
-import { verifyProduct } from './verify-runtime-package.mjs';
+import { verifyProduct, PROJECT_DIR } from './verify-runtime-package.mjs';
 import { readRuntimePayloads } from './package-runtime.mjs';
 
 const DEFAULT_ZIP_BASENAME = zipBasenameForVersion(DEFAULT_PACKAGE_VERSION);
@@ -237,6 +239,36 @@ test('producer reads only the complete verified runtime and rejects unsafe paths
         await rm(path.join(root, 'app/index.html'));
         await symlink('../outside', path.join(root, 'app/index.html'));
         await assert.rejects(readRuntimePayloads(runtime, rows), /symlink/);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('CLI entry point verifies through a symlinked path instead of silently exiting 0', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'fortweb-runtime-package-symlink.'));
+    const product = path.join(root, 'product');
+    const linkDir = path.join(root, 'linkdir');
+    try {
+        await mkdir(product);
+        await fixture(product);
+        await mkdir(linkDir);
+        // A symlink to the file and a symlink to its directory both have to work,
+        // because both make a lexical main-module comparison fail.
+        const linkedFile = path.join(linkDir, 'verify-runtime-package.mjs');
+        await symlink(fileURLToPath(new URL('./verify-runtime-package.mjs', import.meta.url)), linkedFile);
+        await symlink(path.join(PROJECT_DIR, 'tools'), path.join(linkDir, 'tools'));
+        const linkedDirPath = path.join(linkDir, 'tools', 'verify-runtime-package.mjs');
+
+        for (const entry of [linkedFile, linkedDirPath]) {
+            const valid = spawnSync(process.execPath, [entry, '--product-dir', product], { encoding: 'utf8' });
+            assert.equal(valid.status, 0, valid.stderr);
+            assert.notEqual(valid.stdout.trim(), '', `symlinked CLI produced no output: ${entry}`);
+            assert.equal(JSON.parse(valid.stdout).ok, true);
+
+            const missing = spawnSync(process.execPath, [entry], { encoding: 'utf8' });
+            assert.notEqual(missing.status, 0, `symlinked CLI without arguments must fail closed: ${entry}`);
+            assert.match(missing.stderr, /Usage/);
+        }
     } finally {
         await rm(root, { recursive: true, force: true });
     }
