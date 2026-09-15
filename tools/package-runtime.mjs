@@ -1,4 +1,4 @@
-import { constants } from 'node:fs';
+import { constants, realpathSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { lstat, mkdir, mkdtemp, open, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -201,7 +201,30 @@ async function main() {
     }
 }
 
-if (path.resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
+// Direct-CLI detection has to survive a symlinked entry point. A lexical comparison
+// makes `node <symlink-to-this-file>` skip the CLI entirely, exiting 0 without
+// packaging anything, which is indistinguishable from a successful run. Both sides
+// are canonicalized instead, so every invocation path actually packages.
+function isDirectCliInvocation() {
+    const invokedPath = process.argv[1];
+    if (!invokedPath) {
+        return false;
+    }
+    const modulePath = fileURLToPath(import.meta.url);
+    if (path.resolve(invokedPath) === modulePath) {
+        return true;
+    }
+    try {
+        return realpathSync(invokedPath) === realpathSync(modulePath);
+    } catch {
+        // A path that cannot be canonicalized is not this module's own entry point.
+        // A real direct invocation always resolves, so this only ever declines to run
+        // the CLI, and never turns an error into a reported success.
+        return false;
+    }
+}
+
+if (isDirectCliInvocation()) {
     main().catch((error) => {
         process.stderr.write(`package-runtime: ${error.message}\n`);
         process.exitCode = 1;
