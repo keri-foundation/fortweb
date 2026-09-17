@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import {
     isRuntimeOriginContractRequired,
+    isLocalWalletServiceHttpAllowed,
 } from '../dist/runtime/app/runtime/origin-contract.js';
 
 test('isPlainLocalBrowserDevLocation allows local browser dev origins', () => {
@@ -20,6 +21,21 @@ test('isPlainLocalBrowserDevLocation allows local browser dev origins', () => {
             `Expected ${origin.protocol}//${origin.hostname} to not require contract`
         );
     }
+});
+
+test('local wallet HTTP requires browser development mode, including on native loopback origins', () => {
+    const location = { protocol: 'http:', hostname: '127.0.0.1' };
+    assert.equal(isLocalWalletServiceHttpAllowed(location, null), true);
+    assert.equal(isLocalWalletServiceHttpAllowed(location, { platform: 'browser-dev', mode: 'browser-dev' }), true);
+    for (const platform of ['ios-wkwebview', 'android-webview', 'browser-dev']) {
+        assert.equal(isLocalWalletServiceHttpAllowed(location, { platform, mode: 'bundled-offline' }), false);
+    }
+    assert.equal(isLocalWalletServiceHttpAllowed(
+        { protocol: 'https:', hostname: 'wallet.example' }, null,
+    ), false);
+    assert.equal(isLocalWalletServiceHttpAllowed(
+        { protocol: 'app:', hostname: 'local' }, null,
+    ), false);
 });
 
 test('isPlainLocalBrowserDevLocation blocks non-local/bundled/native origins', () => {

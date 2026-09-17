@@ -30,6 +30,7 @@ export type FortRuntimeOriginContractV1 = {
         customScheme: boolean;
         httpsLikeAssetOrigin: boolean;
         implicitBlobOriginSafe: FortRuntimeOriginBoolean;
+        // Controls remote runtime bootstrap. Wallet-service data has a separate policy.
         networkAllowed: false;
         bundledAssetsOnly: true;
     };
@@ -406,4 +407,13 @@ function isPlainLocalBrowserDevLocation(location: RuntimeOriginLocationLike): bo
 
 export function isRuntimeOriginContractRequired(location: RuntimeOriginLocationLike): boolean {
     return !isPlainLocalBrowserDevLocation(location);
+}
+
+export function isLocalWalletServiceHttpAllowed(
+    location: RuntimeOriginLocationLike,
+    contract: FortRuntimeOriginContractV1 | null,
+): boolean {
+    return isPlainLocalBrowserDevLocation(location) && (
+        contract === null || (contract.platform === "browser-dev" && contract.mode === "browser-dev")
+    );
 }

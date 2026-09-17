@@ -36,6 +36,8 @@ def configure_runtime(
     *,
     ensure_runtime_packages,
     load_modules,
+    clienter_factory,
+    storage_opener,
     wallet_storage_prefix: str,
     registry_name: str,
     registry_store: str,
@@ -48,6 +50,8 @@ def configure_runtime(
     _CONFIG.update(
         ensure_runtime_packages=ensure_runtime_packages,
         load_modules=load_modules,
+        clienter_factory=clienter_factory,
+        storage_opener=storage_opener,
         wallet_storage_prefix=wallet_storage_prefix,
         registry_name=registry_name,
         registry_store=registry_store,
@@ -260,6 +264,7 @@ async def ensure_registry():
     db = await modules["webdbing"].WebDBer.open(
         name=_CONFIG["registry_name"],
         stores=[_CONFIG["registry_store"]],
+        storageOpener=_CONFIG["storage_opener"],
     )
     store = db.env.open_db(_CONFIG["registry_store"])
     _REGISTRY = {"db": db, "store": store}
@@ -310,22 +315,26 @@ async def _build_vault_state(record, *, bran: str = ""):
     kf_state_subdb = _CONFIG["kf_state_subdb"]
     if kf_state_subdb not in baser.SubDbNames:
         baser.SubDbNames = [*baser.SubDbNames, kf_state_subdb]
-    await keeper.reopen()
-    await baser.reopen()
-
+    cf = NullConfiger()
     try:
+        await keeper.reopen(storageOpener=_CONFIG["storage_opener"])
+        await baser.reopen(storageOpener=_CONFIG["storage_opener"])
         hby = modules["habbing"].Habery(
             name=record["storageName"],
             ks=keeper,
             db=baser,
-            cf=NullConfiger(),
+            cf=cf,
             temp=False,
             salt=record["rootSalt"],
             bran=bran or None,
         )
-    except Exception:
-        await baser.aclose(clear=False)
-        await keeper.aclose(clear=False)
+    except BaseException as error:
+        for store in (baser, keeper):
+            try:
+                await store.aclose(clear=False)
+            except BaseException as close_error:
+                error.add_note(f"{type(store).__name__} cleanup failed: {close_error!r}")
+        cf.close()
         raise
 
     return {
@@ -335,6 +344,31 @@ async def _build_vault_state(record, *, bran: str = ""):
         "bran": bran,
         "kfSurfaceKeyState": {},
     }
+
+
+async def close_habery(hby, *, clear: bool = False):
+    """Close FortWeb browser stores and wait for persistence."""
+    first_error = None
+    if hby.ks:
+        try:
+            await hby.ks.aclose(clear=hby.ks.temp or clear)
+        except Exception as error:
+            first_error = error
+    if hby.db:
+        try:
+            await hby.db.aclose(clear=hby.db.temp or clear)
+        except Exception as error:
+            if first_error is None:
+                first_error = error
+    if hby.cf:
+        try:
+            hby.cf.close(clear=hby.cf.temp)
+        except Exception as error:
+            if first_error is None:
+                first_error = error
+
+    if first_error is not None:
+        raise first_error
 
 
 async def open_vault_state(record, *, passcode=None, bran: str | None = None):
@@ -376,9 +410,9 @@ async def close_state(*, clear: bool = False):
     if _STATE is None:
         return
 
-    try:
-        await _STATE["hby"].aclose(clear=clear)
-    finally:
+    state = _STATE
+    await close_habery(state["hby"], clear=clear)
+    if _STATE is state:
         _STATE = None
 
 
@@ -397,27 +431,27 @@ def require_text(value, *, field: str):
     return text
 
 
-def require_blind_oobi_url(value):
+def require_oobi_url(value):
     url = require_text(value, field="OOBI URL")
     parsed = urlparse(url)
 
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise RuntimeFault(
             "VALIDATION",
-            "Blind OOBI URL must be an absolute http(s) URL.",
-        )
-
-    if parsed.path != "/oobi":
-        raise RuntimeFault(
-            "VALIDATION",
-            "Blind OOBI URL must use the blind /oobi route in this slice.",
+            "OOBI URL must be an absolute http(s) URL.",
         )
 
     if parsed.fragment:
         raise RuntimeFault(
             "VALIDATION",
-            "Blind OOBI URL must not include a fragment.",
+            "OOBI URL must not include a fragment.",
         )
+
+    oobiing = load_modules()["oobiing"]
+    if (parsed.path != "/oobi"
+            and oobiing.OOBI_RE.fullmatch(parsed.path) is None
+            and oobiing.WOOBI_RE.fullmatch(parsed.path) is None):
+        raise RuntimeFault("VALIDATION", "URL must use a supported identifier OOBI route.")
 
     return url
 
@@ -461,7 +495,7 @@ def _list_identifier_records(hby):
     records = []
     for pre in hby.prefixes:
         hab = hby.habByPre(pre)
-        if hab is None:
+        if hab is None or hby.habByName(hab.name) is not hab:
             continue
         records.append(_identifier_record(hab))
 
@@ -471,7 +505,7 @@ def _list_identifier_records(hby):
 
 def _get_identifier_record(hby, aid: str):
     hab = hby.habByPre(aid)
-    if hab is None:
+    if hab is None or hby.habByName(hab.name) is not hab:
         raise RuntimeFault("NOT_FOUND", f"Identifier '{aid}' was not found.")
     return _identifier_record(hab)
 
@@ -553,7 +587,7 @@ def _remote_keystate_updated_at(hby, oobi: str):
 
 def _remote_record(hby, contact):
     aid = contact["id"]
-    kever = hby.kevers.get(aid)
+    kever = hby.kevers[aid] if aid in hby.kevers else None
     alias = contact.get("alias") or aid[:12]
     oobi = contact.get("oobi", "")
     roles = _remote_roles(hby, aid, oobi)
@@ -654,7 +688,7 @@ def _require_remote_contact(
         if missing_oobi_code == "CONFLICT":
             raise RuntimeFault(
                 "CONFLICT",
-                "Remote identifier metadata can only be edited after blind OOBI connect in this slice.",
+                "Connect the remote identifier by OOBI before editing its metadata.",
             )
         raise RuntimeFault(
             "NOT_FOUND",
@@ -667,7 +701,7 @@ def _require_remote_contact(
 def _remote_detail_record(hby, organizer, aid: str):
     contact = _require_remote_contact(hby, organizer, aid, require_oobi=True)
     record = _remote_record(hby, contact)
-    kever = hby.kevers.get(aid)
+    kever = hby.kevers[aid] if aid in hby.kevers else None
     record.update(
         {
             "lastEventDigest": kever.serder.said if kever is not None else "",
@@ -783,7 +817,7 @@ async def dispatch(method: str, params: dict):
         bran = _prepare_bran(passcode, record["passcodeKdf"]) if encrypted else ""
 
         temp_state = await _build_vault_state(record, bran=bran)
-        await temp_state["hby"].aclose(clear=False)
+        await close_habery(temp_state["hby"], clear=False)
 
         _set_registry_record(registry, record)
         await registry["db"].flush()
@@ -808,7 +842,25 @@ async def dispatch(method: str, params: dict):
         state = require_open_state(_require_vault_id(params))
         return _vault_summary(state)
 
+    if method == "settings.get":
+        vault_id = params.get("vaultId")
+        if vault_id is None or not str(vault_id).strip():
+            return {
+                "settings": {
+                    **default_settings(),
+                    "runtimeStatus": "Browser vault worker open over WebBaser and WebKeeper.",
+                }
+            }
+
     state = require_open_state(_require_vault_id(params))
+    if method == "settings.get":
+        return {
+            "settings": {
+                **default_settings(),
+                "runtimeStatus": "Browser vault worker open over WebBaser and WebKeeper.",
+            }
+        }
+
     modules = state["modules"]
     hby = state["hby"]
     organizer = modules["organizing"].Organizer(hby=hby)
@@ -887,13 +939,13 @@ async def dispatch(method: str, params: dict):
         return {"remote": remote}
 
     if method == "remotes.resolveOobi":
-        url = require_blind_oobi_url(params.get("url"))
+        url = require_oobi_url(params.get("url"))
         alias = str(params.get("alias") or "").strip()
         existing_remote = find_remote_contact_by_oobi(hby, organizer, url)
         if existing_remote is not None:
             raise RuntimeFault(
                 "CONFLICT",
-                "Blind OOBI is already connected. Use remote edit for metadata changes.",
+                "OOBI is already connected. Use remote edit for metadata changes.",
             )
 
         remote_contacts_before = remote_contacts_by_aid(hby, organizer)
@@ -906,17 +958,24 @@ async def dispatch(method: str, params: dict):
         resolved_aid = None
         hby.db.oobis.pin(keys=(url,), val=oobi_record)
         try:
-            roobi = await await_resolution(hby, modules["oobiing"].Oobiery(hby=hby), url)
+            roobi = await await_resolution(
+                hby,
+                modules["oobiing"].Oobiery(
+                    hby=hby,
+                    clienter=_CONFIG["clienter_factory"](),
+                ),
+                url,
+            )
             resolved_aid = roobi.cid
             if _is_local_identifier(hby, resolved_aid):
                 raise RuntimeFault(
                     "CONFLICT",
-                    "Blind OOBI connect cannot add a local identifier to remotes.",
+                    "OOBI connect cannot add a local identifier to remotes.",
                 )
             if resolved_aid in remote_contacts_before:
                 raise RuntimeFault(
                     "CONFLICT",
-                    "Blind OOBI is already connected to a stored remote identifier.",
+                    "OOBI is already connected to a stored remote identifier.",
                 )
 
             update = {"oobi": url}
@@ -934,13 +993,5 @@ async def dispatch(method: str, params: dict):
                 restore_contact(organizer, resolved_aid, remote_contacts_before.get(resolved_aid))
             clear_oobi_tracking(hby, url)
             raise
-
-    if method == "settings.get":
-        return {
-            "settings": {
-                **default_settings(),
-                "runtimeStatus": "Browser vault worker open over WebBaser and WebKeeper.",
-            }
-        }
 
     raise RuntimeFault("BAD_REQUEST", f"Runtime method '{method}' is not allowed.")
