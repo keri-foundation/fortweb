@@ -273,3 +273,40 @@ test('CLI entry point verifies through a symlinked path instead of silently exit
         await rm(root, { recursive: true, force: true });
     }
 });
+
+test('portable verifier rejects a writerless FIFO product entry without blocking', async (t) => {
+    // The metadata filename is version independent, so an implementation may be
+    // tempted to resolve it before inventorying directory entry types. Opening it is
+    // what blocks: a FIFO with no writer hangs forever. This regression pins the fix
+    // at the sharpest possible name.
+    const probe = spawnSync('mkfifo', [], { encoding: 'utf8' });
+    if (probe.error?.code === 'ENOENT') {
+        // Availability is probed rather than assumed. The regression must run on the
+        // Linux hosted path; a developer platform without mkfifo skips explicitly
+        // instead of silently passing.
+        t.skip('mkfifo is unavailable on this platform; the FIFO regression requires the Linux hosted path');
+        return;
+    }
+    const root = await mkdtemp(path.join(os.tmpdir(), 'fortweb-runtime-package-fifo.'));
+    const product = path.join(root, 'product');
+    try {
+        await mkdir(product);
+        await fixture(product);
+        await rm(path.join(product, 'fortweb-release.json'));
+        const fifo = spawnSync('mkfifo', [path.join(product, 'fortweb-release.json')], { encoding: 'utf8' });
+        assert.equal(fifo.status, 0, fifo.stderr);
+        // No writer is ever started, so anything that opens this path blocks. The
+        // subprocess timeout converts that hang into an explicit assertion failure
+        // rather than a stuck CI job.
+        const result = spawnSync(process.execPath, [
+            fileURLToPath(new URL('./verify-runtime-package.mjs', import.meta.url)),
+            '--product-dir', product,
+        ], { encoding: 'utf8', timeout: 15000 });
+        assert.equal(result.error, undefined, 'the verifier must not block on a writerless FIFO');
+        assert.notEqual(result.status, 0, 'a FIFO product entry must fail closed');
+        assert.match(result.stderr, /Unexpected product entry type: fortweb-release\.json/);
+        assert.equal(result.stdout.includes('"ok": true'), false, 'no success receipt may be produced');
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});

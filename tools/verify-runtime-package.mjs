@@ -46,7 +46,13 @@ async function assertRealRoot(root) {
 async function stableRead(root, filename) {
     validatePackagePath(filename, { allowMetadata: true });
     const target = path.join(root, filename);
-    const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+    // O_NONBLOCK is defence in depth against a TOCTOU swap. The caller inventories
+    // directory entry types before this runs, but a regular file could still be
+    // replaced by a FIFO between that inventory and this open. Non-blocking mode
+    // does not change reads from a regular file, whereas opening a writerless FIFO
+    // without it blocks the verifier indefinitely. The type check below then rejects
+    // the non-regular entry instead of hanging on it.
+    const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
         const before = await handle.stat({ bigint: true });
         if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n) {
@@ -180,10 +186,24 @@ export function parseDeterministicZip(bytes) {
 export async function verifyProduct(productDir, { packageVersion = null } = {}) {
     const root = path.resolve(productDir);
     await assertRealRoot(root);
-    // The release metadata filename is version independent, so it is read first to
-    // learn the package version when the caller did not supply an expected one. A
-    // caller that DOES supply an expected version (the release verifier, from the
-    // trusted tag) additionally pins every version-bearing product name and field.
+    // Establish that every directory entry is an unaliased regular file BEFORE any
+    // open(). The metadata filename is version independent, so resolving it first is
+    // tempting — but opening it is what blocks. A FIFO planted at
+    // fortweb-release.json would otherwise hang the verifier forever waiting for a
+    // writer that never comes. Type inventory therefore precedes every read; the
+    // expected versioned filename set is compared afterwards, once it is known.
+    const entries = (await readdir(root, { withFileTypes: true }))
+        .map((entry) => {
+            if (!entry.isFile() || entry.isSymbolicLink()) {
+                throw new Error(`Unexpected product entry type: ${entry.name}`);
+            }
+            return entry.name;
+        })
+        .sort(comparePathBytes);
+    // The release metadata is read next to learn the package version when the caller
+    // did not supply an expected one. A caller that DOES supply an expected version
+    // (the release verifier, from the trusted tag) additionally pins every
+    // version-bearing product name and field.
     const releaseBytes = await stableRead(root, RELEASE_METADATA_FILENAME);
     let releaseValue;
     try {
@@ -199,14 +219,6 @@ export async function verifyProduct(productDir, { packageVersion = null } = {}) 
     }
     const expectedExternal = expectedExternalFiles(expectedVersion);
     const zipBasename = zipBasenameForVersion(expectedVersion);
-    const entries = (await readdir(root, { withFileTypes: true }))
-        .map((entry) => {
-            if (!entry.isFile() || entry.isSymbolicLink()) {
-                throw new Error(`Unexpected product entry type: ${entry.name}`);
-            }
-            return entry.name;
-        })
-        .sort(comparePathBytes);
     if (JSON.stringify(entries) !== JSON.stringify(expectedExternal)) {
         throw new Error('External product file set is not exact.');
     }
