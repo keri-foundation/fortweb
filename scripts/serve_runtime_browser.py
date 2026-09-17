@@ -562,8 +562,6 @@ def main() -> int:
     ) as server:
         host, port = server.server_address[:2]
         payload = {"host": host, "mode": args.mode, "port": port, "url": f"http://{host}:{port}"}
-        _write_ready_file(args.ready_file, payload)
-        print(json.dumps(payload, sort_keys=True), flush=True)
         previous_sigterm = signal.getsignal(signal.SIGTERM)
 
         def stop_server(_signum, _frame) -> None:
@@ -575,6 +573,8 @@ def main() -> int:
 
         signal.signal(signal.SIGTERM, stop_server)
         try:
+            _write_ready_file(args.ready_file, payload)
+            print(json.dumps(payload, sort_keys=True), flush=True)
             server.serve_forever()
         except KeyboardInterrupt:
             return 0

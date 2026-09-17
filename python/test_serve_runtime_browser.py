@@ -5,6 +5,7 @@ import hashlib
 import http.client
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -25,6 +26,7 @@ from scripts.serve_runtime_browser import (
     _oobi_delay_seconds,
     _read_owned_file,
     _write_ready_file,
+    main,
 )
 
 WHEELHOUSE_ROOT = Path(os.environ["FORTWEB_WHEELHOUSE_ROOT"]) if os.environ.get("FORTWEB_WHEELHOUSE_ROOT") else None
@@ -204,19 +206,34 @@ class RuntimeBrowserServerTest(unittest.TestCase):
                 )
             )
             subprocess_ready = root / "subprocess-ready.json"
+            arguments = [
+                "scripts/serve_runtime_browser.py",
+                "--mode",
+                "isolated",
+                "--port",
+                "0",
+                "--ready-file",
+                str(subprocess_ready),
+                "--inventory",
+                str(inventory),
+            ]
+            previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+            def stop_after_ready(path, payload):
+                _write_ready_file(path, payload)
+                self.assertNotEqual(signal.getsignal(signal.SIGTERM), previous_sigterm)
+                signal.raise_signal(signal.SIGTERM)
+
+            with (
+                mock.patch("sys.argv", arguments),
+                mock.patch("scripts.serve_runtime_browser._write_ready_file", side_effect=stop_after_ready),
+            ):
+                self.assertEqual(main(), 0)
+            self.assertEqual(signal.getsignal(signal.SIGTERM), previous_sigterm)
+            subprocess_ready.unlink()
+
             process = subprocess.Popen(
-                [
-                    sys.executable,
-                    "scripts/serve_runtime_browser.py",
-                    "--mode",
-                    "isolated",
-                    "--port",
-                    "0",
-                    "--ready-file",
-                    str(subprocess_ready),
-                    "--inventory",
-                    str(inventory),
-                ],
+                [sys.executable, *arguments],
                 cwd=Path(__file__).resolve().parents[1],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
