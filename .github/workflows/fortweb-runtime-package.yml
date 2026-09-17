@@ -55,6 +55,9 @@ jobs:
       artifact_name: ${{ steps.produce.outputs.artifact_name }}
       artifact_sha256: ${{ steps.produce.outputs.artifact_sha256 }}
       artifact_bytes: ${{ steps.produce.outputs.artifact_bytes }}
+      # Empty unless the selected-release acceptance step ran and succeeded, so a
+      # missing value leaves publication ineligible rather than defaulting to true.
+      release_acceptance: ${{ steps.release_acceptance.outputs.accepted }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
@@ -111,6 +114,33 @@ jobs:
           package_version: ${{ steps.version.outputs.version }}
           ref: ${{ github.head_ref && format('refs/heads/{0}', github.head_ref) || github.ref }}
 
+      # For a real release tag, the exact runtime this job just produced must pass the
+      # shared browser/canary/lifecycle/wheelhouse acceptance sequence BEFORE any
+      # release-consumable artifact exists. Same job, same workspace, same runtime tree,
+      # same reviewed source pin, same tag-derived version — so acceptance covers the
+      # candidate that is about to be attested and published rather than a different
+      # build produced elsewhere.
+      - name: Validate the selected release runtime
+        id: release_acceptance
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: ./.github/actions/runtime-browser-acceptance
+        with:
+          label: release-${{ github.ref_name }}
+
+      # Failure diagnostics for the tag path. These are not release products: the three
+      # product files are uploaded only by the step below, which a failed acceptance
+      # skips, because it carries no failure-tolerant condition.
+      - name: Upload release acceptance failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: release-runtime-acceptance-failure
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Upload the exact verified product files
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
@@ -125,7 +155,16 @@ jobs:
     # Production authority is the GitHub push event plus a v-prefixed tag ref. A
     # workflow_dispatch run aimed at a release tag is a dry run: it produces and
     # verifies a package, but it must never attest or publish.
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    #
+    # The explicit acceptance check is required on top of `needs: package`, which
+    # already stops this job after a failed package job. It protects the distinct
+    # failure mode where acceptance is skipped, removed, miswired, or simply never
+    # emits an output: publication authority demands a positive acceptance result, so
+    # an absent value leaves this job ineligible instead of defaulting to true.
+    if: >
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      needs.package.outputs.release_acceptance == 'true'
     runs-on: ubuntu-latest
     permissions:
       # contents: write is needed only to create the release. The attestation

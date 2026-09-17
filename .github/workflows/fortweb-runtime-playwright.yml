@@ -60,103 +60,12 @@ jobs:
           package_version: '0.0.0'
           ref: ${{ github.head_ref && format('refs/heads/{0}', github.head_ref) || github.ref }}
 
-      - name: Install Playwright browsers
-        run: npx playwright install --only-shell chromium
-
-      - name: Run application Playwright tests
-        run: npm run test:e2e
-
-      - name: Run isolated runtime canary
-        run: |
-          ready_file=test-results/runtime-canary-ready.json
-          server_log=test-results/runtime-canary-server.jsonl
-          python3 scripts/serve_runtime_browser.py \
-            --mode isolated \
-            --port 4174 \
-            --ready-file "$ready_file" \
-            --inventory test-results/runtime-inventory.json \
-            > "$server_log" 2>&1 &
-          server_pid=$!
-          cleanup() {
-            kill "$server_pid" 2>/dev/null || true
-            wait "$server_pid" 2>/dev/null || true
-          }
-          trap cleanup EXIT
-          for attempt in $(seq 1 100); do
-            test -s "$ready_file" && break
-            kill -0 "$server_pid" 2>/dev/null || { cat "$server_log"; exit 1; }
-            sleep 0.1
-          done
-          test -s "$ready_file" || { cat "$server_log"; exit 1; }
-          FORTWEB_BASE_URL=http://127.0.0.1:4174 \
-          FORTWEB_PLAYWRIGHT_OUTPUT_DIR=test-results/runtime-canary \
-          FORTWEB_RUNTIME_DIR=dist/runtime \
-          FORTWEB_CANONICAL_INVENTORY=test-results/runtime-inventory.json \
-          FORTWEB_CANARY_ARTIFACT_DIR=test-results/runtime-canary/evidence \
-          FORTWEB_RUN_ID="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-          FORTWEB_SOURCE_IDENTITY=test-results/source-identity.txt \
-            npm run test:e2e:runtime-canary
-
-      - name: Run runtime lifecycle tests
-        run: |
-          ready_file=test-results/runtime-lifecycle-ready.json
-          server_log=test-results/runtime-lifecycle-server.jsonl
-          python3 scripts/serve_runtime_browser.py \
-            --mode application \
-            --port 4175 \
-            --ready-file "$ready_file" \
-            --inventory test-results/runtime-inventory.json \
-            > "$server_log" 2>&1 &
-          server_pid=$!
-          cleanup() {
-            kill "$server_pid" 2>/dev/null || true
-            wait "$server_pid" 2>/dev/null || true
-          }
-          trap cleanup EXIT
-          for attempt in $(seq 1 100); do
-            test -s "$ready_file" && break
-            kill -0 "$server_pid" 2>/dev/null || { cat "$server_log"; exit 1; }
-            sleep 0.1
-          done
-          test -s "$ready_file" || { cat "$server_log"; exit 1; }
-          FORTWEB_BASE_URL=http://127.0.0.1:4175 \
-          FORTWEB_PLAYWRIGHT_OUTPUT_DIR=test-results/runtime-lifecycle \
-          FORTWEB_RUNTIME_DIR=dist/runtime \
-          FORTWEB_FOCUSED_ARTIFACT_DIR=test-results/runtime-lifecycle/evidence \
-          FORTWEB_RUN_ID="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-          FORTWEB_SOURCE_IDENTITY=test-results/source-identity.txt \
-          FORTWEB_FOCUSED_SERVER_LOG="$server_log" \
-            npm run test:e2e:runtime-lifecycle
-
-      - name: Run source wheelhouse test
-        run: |
-          ready_file=test-results/wheelhouse-ready.json
-          server_log=test-results/wheelhouse-server.jsonl
-          python3 scripts/serve_runtime_browser.py \
-            --mode wheelhouse \
-            --port 4176 \
-            --ready-file "$ready_file" \
-            --wheelhouse-root build/runtime-source \
-            > "$server_log" 2>&1 &
-          server_pid=$!
-          cleanup() {
-            kill "$server_pid" 2>/dev/null || true
-            wait "$server_pid" 2>/dev/null || true
-          }
-          trap cleanup EXIT
-          for attempt in $(seq 1 100); do
-            test -s "$ready_file" && break
-            kill -0 "$server_pid" 2>/dev/null || { cat "$server_log"; exit 1; }
-            sleep 0.1
-          done
-          test -s "$ready_file" || { cat "$server_log"; exit 1; }
-          FORTWEB_BASE_URL=http://127.0.0.1:4176 \
-          FORTWEB_PLAYWRIGHT_OUTPUT_DIR=test-results/wheelhouse \
-          WHEELHOUSE_BUILD_DIR=build/runtime-source \
-          FORTWEB_WHEELHOUSE_ARTIFACT_DIR=test-results/wheelhouse/evidence \
-          FORTWEB_RUN_ID="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-          FORTWEB_SOURCE_IDENTITY=test-results/source-identity.txt \
-            npm run test:e2e:wheelhouse
+      # The acceptance sequence lives in one shared action so this PR lane and the
+      # publisher's tag lane cannot drift into testing different things.
+      - name: Validate the produced runtime
+        uses: ./.github/actions/runtime-browser-acceptance
+        with:
+          label: pull-request
 
       - name: Upload Playwright artifacts on failure
         if: failure()

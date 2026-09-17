@@ -1,0 +1,162 @@
+name: Runtime browser acceptance
+description: >-
+  Validate an already-produced canonical runtime together with the reviewed source
+  inputs it was built from. This action never builds, packages, chooses a version,
+  chooses a ref, or publishes anything. It consumes the workspace state that
+  produce-runtime-package has already created, so the runtime it accepts is the same
+  runtime candidate the caller is about to upload or attest.
+
+inputs:
+  label:
+    description: Human-readable label recorded in the acceptance marker output
+    required: false
+    default: runtime
+
+outputs:
+  accepted:
+    description: >-
+      'true' only when this run reached the final marker step, which is reachable
+      only after every acceptance command before it succeeded.
+    value: ${{ steps.accepted.outputs.accepted }}
+
+runs:
+  using: composite
+  steps:
+    # Fail closed before doing any work. The acceptance path validates a runtime that
+    # already exists; it must never become the thing that creates one.
+    - name: Assert the prepared runtime inputs exist
+      shell: bash
+      run: |
+        set -euo pipefail
+        missing=0
+        for path in \
+          dist/runtime \
+          build/runtime-source \
+          test-results/runtime-inventory.json \
+          test-results/source-identity.txt
+        do
+          if [ ! -e "$path" ]; then
+            printf 'missing prepared runtime input: %s\n' "$path" >&2
+            missing=1
+          fi
+        done
+        if [ "$missing" != "0" ]; then
+          echo "runtime acceptance requires produce-runtime-package to have run in this job" >&2
+          exit 1
+        fi
+        printf 'acceptance label: %s\n' "${{ inputs.label }}"
+
+    - name: Install Playwright browsers
+      shell: bash
+      run: npx playwright install --only-shell chromium
+
+    # Deliberately not the plain `test:e2e` script: it carries a pretest hook that
+    # rebuilds the runtime, which would accept a freshly built runtime instead of the one
+    # this job already produced and is about to publish.
+    - name: Run application Playwright tests against the prepared runtime
+      shell: bash
+      run: npm run test:e2e:prepared-runtime
+
+    - name: Run isolated runtime canary
+      shell: bash
+      run: |
+        ready_file=test-results/runtime-canary-ready.json
+        server_log=test-results/runtime-canary-server.jsonl
+        python3 scripts/serve_runtime_browser.py \
+          --mode isolated \
+          --port 4174 \
+          --ready-file "$ready_file" \
+          --inventory test-results/runtime-inventory.json \
+          > "$server_log" 2>&1 &
+        server_pid=$!
+        cleanup() {
+          kill "$server_pid" 2>/dev/null || true
+          wait "$server_pid" 2>/dev/null || true
+        }
+        trap cleanup EXIT
+        for attempt in $(seq 1 100); do
+          test -s "$ready_file" && break
+          kill -0 "$server_pid" 2>/dev/null || { cat "$server_log"; exit 1; }
+          sleep 0.1
+        done
+        test -s "$ready_file" || { cat "$server_log"; exit 1; }
+        FORTWEB_BASE_URL=http://127.0.0.1:4174 \
+        FORTWEB_PLAYWRIGHT_OUTPUT_DIR=test-results/runtime-canary \
+        FORTWEB_RUNTIME_DIR=dist/runtime \
+        FORTWEB_CANONICAL_INVENTORY=test-results/runtime-inventory.json \
+        FORTWEB_CANARY_ARTIFACT_DIR=test-results/runtime-canary/evidence \
+        FORTWEB_RUN_ID="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+        FORTWEB_SOURCE_IDENTITY=test-results/source-identity.txt \
+          npm run test:e2e:runtime-canary
+
+    - name: Run runtime lifecycle tests
+      shell: bash
+      run: |
+        ready_file=test-results/runtime-lifecycle-ready.json
+        server_log=test-results/runtime-lifecycle-server.jsonl
+        python3 scripts/serve_runtime_browser.py \
+          --mode application \
+          --port 4175 \
+          --ready-file "$ready_file" \
+          --inventory test-results/runtime-inventory.json \
+          > "$server_log" 2>&1 &
+        server_pid=$!
+        cleanup() {
+          kill "$server_pid" 2>/dev/null || true
+          wait "$server_pid" 2>/dev/null || true
+        }
+        trap cleanup EXIT
+        for attempt in $(seq 1 100); do
+          test -s "$ready_file" && break
+          kill -0 "$server_pid" 2>/dev/null || { cat "$server_log"; exit 1; }
+          sleep 0.1
+        done
+        test -s "$ready_file" || { cat "$server_log"; exit 1; }
+        FORTWEB_BASE_URL=http://127.0.0.1:4175 \
+        FORTWEB_PLAYWRIGHT_OUTPUT_DIR=test-results/runtime-lifecycle \
+        FORTWEB_RUNTIME_DIR=dist/runtime \
+        FORTWEB_FOCUSED_ARTIFACT_DIR=test-results/runtime-lifecycle/evidence \
+        FORTWEB_RUN_ID="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+        FORTWEB_SOURCE_IDENTITY=test-results/source-identity.txt \
+        FORTWEB_FOCUSED_SERVER_LOG="$server_log" \
+          npm run test:e2e:runtime-lifecycle
+
+    - name: Run source wheelhouse test
+      shell: bash
+      run: |
+        ready_file=test-results/wheelhouse-ready.json
+        server_log=test-results/wheelhouse-server.jsonl
+        python3 scripts/serve_runtime_browser.py \
+          --mode wheelhouse \
+          --port 4176 \
+          --ready-file "$ready_file" \
+          --wheelhouse-root build/runtime-source \
+          > "$server_log" 2>&1 &
+        server_pid=$!
+        cleanup() {
+          kill "$server_pid" 2>/dev/null || true
+          wait "$server_pid" 2>/dev/null || true
+        }
+        trap cleanup EXIT
+        for attempt in $(seq 1 100); do
+          test -s "$ready_file" && break
+          kill -0 "$server_pid" 2>/dev/null || { cat "$server_log"; exit 1; }
+          sleep 0.1
+        done
+        test -s "$ready_file" || { cat "$server_log"; exit 1; }
+        FORTWEB_BASE_URL=http://127.0.0.1:4176 \
+        FORTWEB_PLAYWRIGHT_OUTPUT_DIR=test-results/wheelhouse \
+        WHEELHOUSE_BUILD_DIR=build/runtime-source \
+        FORTWEB_WHEELHOUSE_ARTIFACT_DIR=test-results/wheelhouse/evidence \
+        FORTWEB_RUN_ID="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+        FORTWEB_SOURCE_IDENTITY=test-results/source-identity.txt \
+          npm run test:e2e:wheelhouse
+
+    # The single positive write site. Reaching this step means every step above ended
+    # with a zero exit, so no earlier failure can produce accepted=true.
+    - name: Mark the prepared runtime accepted
+      id: accepted
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo 'accepted=true' >> "$GITHUB_OUTPUT"
