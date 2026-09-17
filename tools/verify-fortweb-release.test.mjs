@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+
+import { writeRuntimeProduct } from './test-runtime-product.mjs';
 
 const execFileAsync = promisify(execFile);
 const VERIFIER = fileURLToPath(new URL('./verify-fortweb-release.sh', import.meta.url));
@@ -19,9 +21,9 @@ async function scratch(prefix) {
 
 // The verifier must fail closed before it reaches the network, so these cases are
 // fully offline. A non-zero exit is the expected result for every rejection.
-async function verify(args) {
+async function verify(args, env = process.env) {
     try {
-        const result = await execFileAsync('bash', [VERIFIER, ...args]);
+        const result = await execFileAsync('bash', [VERIFIER, ...args], { env });
         return { code: 0, stderr: result.stderr, stdout: result.stdout };
     } catch (error) {
         return { code: error.code ?? 1, stderr: error.stderr ?? '', stdout: error.stdout ?? '' };
@@ -148,5 +150,130 @@ test('an unpublished local build passes the trust gate and is then checked by th
     } finally {
         await rm(product, { recursive: true, force: true });
         await rm(out, { recursive: true, force: true });
+    }
+});
+
+const RELEASE_IDENTITY = `https://github.com/${REPO}/.github/workflows/fortweb-runtime-package.yml@refs/tags/${TAG}`;
+
+// A stand-in for `gh`, placed first in PATH. It supports only the two subcommands the
+// release path uses, and it pins the expected release tag, repository, artifact name,
+// and identity. Because it accepts exactly one identity value, a verifier that passed
+// anything else fails here. The regex flag variants exit non-zero on purpose: this path
+// requires an exact identity, so a weakened or misspelled flag must never pass.
+const FAKE_GH = `#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%s\\n' "$*" >> "\${FAKE_GH_LOG}"
+
+case "\${1:-}" in
+  release)
+    [[ "\${2:-}" == "download" ]] || { echo "fake gh: unsupported release subcommand" >&2; exit 2; }
+    tag="\${3:-}"
+    shift 3
+    dir=""; pattern=""; repo=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --repo) repo="$2"; shift 2 ;;
+        --pattern) pattern="$2"; shift 2 ;;
+        --dir) dir="$2"; shift 2 ;;
+        --clobber) shift ;;
+        *) echo "fake gh: unexpected release argument: $1" >&2; exit 2 ;;
+      esac
+    done
+    [[ "\${tag}" == "\${FAKE_GH_TAG}" ]] || { echo "fake gh: unexpected tag \${tag}" >&2; exit 1; }
+    [[ "\${repo}" == "\${FAKE_GH_REPO}" ]] || { echo "fake gh: unexpected repo \${repo}" >&2; exit 1; }
+    cp "\${FAKE_GH_ASSETS}/\${pattern}" "\${dir}/\${pattern}"
+    ;;
+  attestation)
+    [[ "\${2:-}" == "verify" ]] || { echo "fake gh: unsupported attestation subcommand" >&2; exit 2; }
+    artifact="\${3:-}"
+    shift 3
+    identity=""; repo=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --repo) repo="$2"; shift 2 ;;
+        --cert-identity) identity="$2"; shift 2 ;;
+        --cert-identity-regex|--cert-identity-regexp)
+          echo "fake gh: exact --cert-identity is required, got $1" >&2; exit 3 ;;
+        *) echo "fake gh: unexpected attestation argument: $1" >&2; exit 2 ;;
+      esac
+    done
+    [[ "$(basename "\${artifact}")" == "\${FAKE_GH_ARTIFACT}" ]] || { echo "fake gh: unexpected artifact \${artifact}" >&2; exit 1; }
+    [[ "\${repo}" == "\${FAKE_GH_REPO}" ]] || { echo "fake gh: unexpected repo \${repo}" >&2; exit 1; }
+    [[ "\${identity}" == "\${FAKE_GH_IDENTITY}" ]] || { echo "fake gh: unexpected identity \${identity}" >&2; exit 1; }
+    ;;
+  *)
+    echo "fake gh: unsupported command: \${1:-}" >&2
+    exit 2
+    ;;
+esac
+`;
+
+function fakeGhEnv({ assets, bin, identity = RELEASE_IDENTITY, log }) {
+    return {
+        ...process.env,
+        FAKE_GH_ARTIFACT: 'fortweb-runtime-1.2.3.zip',
+        FAKE_GH_ASSETS: assets,
+        FAKE_GH_IDENTITY: identity,
+        FAKE_GH_LOG: log,
+        FAKE_GH_REPO: REPO,
+        FAKE_GH_TAG: TAG,
+        PATH: `${bin}${path.delimiter}${process.env.PATH}`,
+    };
+}
+
+async function releaseHarness(prefix) {
+    const root = await scratch(prefix);
+    const assets = path.join(root, 'assets');
+    const bin = path.join(root, 'bin');
+    const out = path.join(root, 'out');
+    const log = path.join(root, 'gh.log');
+    await mkdir(assets, { recursive: true });
+    await mkdir(bin, { recursive: true });
+    await mkdir(out, { recursive: true });
+    await writeRuntimeProduct(assets, { ref: `refs/tags/${TAG}`, packageVersion: '1.2.3' });
+    await writeFile(path.join(bin, 'gh'), FAKE_GH, { mode: 0o755 });
+    await writeFile(log, '');
+    return { assets, bin, log, out, root };
+}
+
+test('release mode downloads the tagged assets and verifies an exact publisher identity', async () => {
+    const { assets, bin, log, out, root } = await releaseHarness('release');
+    try {
+        // No --product-dir and no attestation skip, so this genuinely enters release mode.
+        const result = await verify(
+            ['--repo', REPO, '--tag', TAG, '--out', out],
+            fakeGhEnv({ assets, bin, log }),
+        );
+        assert.equal(result.code, 0, result.stderr);
+        const receipt = JSON.parse(await readFile(path.join(out, 'fortweb-verification-receipt.json'), 'utf8'));
+        assert.equal(receipt.verification_mode, 'release');
+        assert.equal(receipt.attestation_verified, true);
+        assert.equal(receipt.package_version, '1.2.3');
+        assert.equal(receipt.artifact_name, 'fortweb-runtime-1.2.3.zip');
+        assert.equal(receipt.workflow_identity, RELEASE_IDENTITY);
+        const invocations = await readFile(log, 'utf8');
+        assert.match(invocations, /release download v1\.2\.3 --repo keri-foundation\/fortweb/);
+        assert.match(invocations, /attestation verify .*fortweb-runtime-1\.2\.3\.zip --repo keri-foundation\/fortweb --cert-identity /);
+        assert.doesNotMatch(invocations, /--cert-identity-regex/);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
+});
+
+test('release mode fails closed when the attestation identity is not the exact expected one', async () => {
+    const { assets, bin, log, out, root } = await releaseHarness('release-identity');
+    try {
+        // Same repository and workflow, different tag: a plausible but wrong identity.
+        const wrong = `https://github.com/${REPO}/.github/workflows/fortweb-runtime-package.yml@refs/tags/v9.9.9`;
+        const result = await verify(
+            ['--repo', REPO, '--tag', TAG, '--out', out],
+            fakeGhEnv({ assets, bin, identity: wrong, log }),
+        );
+        assert.notEqual(result.code, 0);
+        assert.match(result.stderr, /unexpected identity/);
+        assert.equal(existsSync(path.join(out, 'fortweb-verification-receipt.json')), false);
+    } finally {
+        await rm(root, { recursive: true, force: true });
     }
 });

@@ -40,7 +40,7 @@ export function generateReleaseMetadata({ artifactSha256, artifactBytes, fortweb
     const artifactName = zipBasenameForVersion(version);
     let refName;
     let workflowIdentity;
-    let identityPattern;
+    let verifyCommand;
     if (tagMatch) {
         // The tag is authoritative for the release version: a package labelled with a
         // different version must not be able to describe itself as that release.
@@ -50,14 +50,18 @@ export function generateReleaseMetadata({ artifactSha256, artifactBytes, fortweb
         }
         refName = tag;
         workflowIdentity = releaseWorkflowIdentity(REPOSITORY, tag);
-        // A published release is verified against the exact tag identity.
-        identityPattern = escapeRegExp(workflowIdentity);
+        // A published release is verified against that one exact identity. An exact
+        // match is strictly stronger than a pattern, so the trusted identity is
+        // quoted whole instead of being escaped into a regex.
+        verifyCommand = `gh attestation verify ${artifactName} --repo ${REPOSITORY} --cert-identity "${workflowIdentity}"`;
     } else {
         refName = ref.slice('refs/heads/'.length);
         workflowIdentity = 'unpublished-local-build';
-        // An unpublished build has no attestation, so its metadata records the
-        // publisher identity as a shape rather than claiming a verified one.
-        identityPattern = `${escapeRegExp(authenticatedPublisherPrefix())}(heads/main|tags/v.*)`;
+        // An unpublished build has no attestation to verify, so there is no command
+        // that could honestly verify one. Publishing a suggested command here would
+        // either be inert or invite a reader to run an identity check that never
+        // applied to this artifact.
+        verifyCommand = null;
     }
     return {
         artifact_bytes: artifactBytes,
@@ -70,7 +74,7 @@ export function generateReleaseMetadata({ artifactSha256, artifactBytes, fortweb
             status: 'not-produced',
             type: 'github-artifact-attestation',
             verified: false,
-            verify_command: `gh attestation verify ${artifactName} --repo ${REPOSITORY} --cert-identity-regexp "^${identityPattern}$"`,
+            verify_command: verifyCommand,
         },
         commit_sha: fortwebCommitSha,
         entrypoint: ENTRYPOINT,
@@ -83,14 +87,6 @@ export function generateReleaseMetadata({ artifactSha256, artifactBytes, fortweb
         workflow: PUBLISHER_WORKFLOW,
         workflow_identity: workflowIdentity,
     };
-}
-
-function authenticatedPublisherPrefix() {
-    return `https://github.com/${REPOSITORY}/${PUBLISHER_WORKFLOW}@refs/`;
-}
-
-function escapeRegExp(value) {
-    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 export function serializeReleaseMetadata(values) {

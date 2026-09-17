@@ -82,10 +82,6 @@ cleanup() {
 
 trap cleanup EXIT
 
-escape_regex() {
-    node -e 'process.stdout.write(process.argv[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));' "$1"
-}
-
 metadata_field() {
     node -e '
         const fs = require("node:fs");
@@ -179,7 +175,6 @@ fi
 VERSION="${TAG_NAME#v}"
 REF="refs/tags/${TAG_NAME}"
 IDENTITY="https://github.com/${REPO_NAME}/${EXPECTED_WORKFLOW}@refs/tags/${TAG_NAME}"
-IDENTITY_PATTERN="$(escape_regex "${IDENTITY}")"
 ARTIFACT_NAME="fortweb-runtime-${VERSION}.zip"
 
 if [[ "${MODE}" == "release" ]]; then
@@ -219,9 +214,12 @@ fi
 
 ATTESTATION_VERIFIED=false
 if [[ "${MODE}" == "release" ]]; then
+    # An exact SAN identity, not a pattern. The identity is derived from the trusted
+    # repository, expected workflow, and requested tag; the downloaded product never
+    # nominates the identity it is checked against.
     gh attestation verify "${VERIFY_DIR}/${ARTIFACT_NAME}" \
         --repo "${REPO_NAME}" \
-        --cert-identity-regexp "^${IDENTITY_PATTERN}\$" >&2
+        --cert-identity "${IDENTITY}" >&2
     ATTESTATION_VERIFIED=true
 fi
 

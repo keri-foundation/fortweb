@@ -39,13 +39,10 @@ test('release metadata is canonical and explicitly unpublished', () => {
     assert.equal(release.entrypoint, 'app/index.html');
     assert.equal(release.repository, 'keri-foundation/fortweb');
     assert.equal(release.workflow, '.github/workflows/fortweb-runtime-package.yml');
-    assert.ok(
-        release.attestation.verify_command.includes('gh attestation verify fortweb-runtime-0.0.0.zip'),
+    assert.equal(
         release.attestation.verify_command,
-    );
-    assert.ok(
-        release.attestation.verify_command.includes('github\\.com/keri-foundation/fortweb/'),
-        release.attestation.verify_command,
+        null,
+        'an unpublished build has no attestation to verify, so no command may be suggested',
     );
     assert.equal(JSON.parse(serializeReleaseMetadata(values())).artifact_bytes, 123);
 });
@@ -65,10 +62,16 @@ test('release-tag metadata binds tag, version, and publisher identity together',
         release.workflow_identity,
         releaseWorkflowIdentity('keri-foundation/fortweb', 'v1.2.3'),
     );
-    assert.ok(
-        release.attestation.verify_command.includes('@refs/tags/v1\\.2\\.3$'),
+    assert.equal(
         release.attestation.verify_command,
+        'gh attestation verify fortweb-runtime-1.2.3.zip --repo keri-foundation/fortweb'
+        + ` --cert-identity "${releaseWorkflowIdentity('keri-foundation/fortweb', 'v1.2.3')}"`,
     );
+    // The exact-identity flag is required. A regex variant is a weaker check and a
+    // misspelled one is not a flag at all, so neither may reappear here.
+    for (const forbidden of ['--cert-identity-regexp', '--cert-identity-regex']) {
+        assert.equal(release.attestation.verify_command.includes(forbidden), false, forbidden);
+    }
 });
 
 test('release metadata rejects tag/version disagreement and non-release refs', () => {
