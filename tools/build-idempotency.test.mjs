@@ -20,10 +20,16 @@ const PACKAGE_LINK = path.join(SCRATCH, `idempotency-package-link-${process.pid}
 const PACKAGE_DIRLINK = path.join(SCRATCH, `idempotency-package-dirlink-${process.pid}`);
 const SYMLINK_DIR = path.join(SCRATCH, `idempotency-links-${process.pid}`);
 
+// GitHub checks pull requests out at a synthetic merge commit, so HEAD is detached and
+// `git symbolic-ref HEAD` fails. The packager requires an explicit ref — the composite
+// action fails closed when one is missing — so these tests must supply the same
+// explicit input instead of depending on symbolic HEAD. This is a test identity, never
+// a release tag.
+const PACKAGER_REF = process.env.PACKAGE_REF ?? 'refs/heads/test-build-idempotency';
+
 function runPackager(runtime, output) {
     const args = [path.join(PROJECT_DIR, 'tools/package-runtime.mjs'),
-        '--runtime-dir', runtime, '--output-dir', output];
-    if (process.env.PACKAGE_REF) args.push('--ref', process.env.PACKAGE_REF);
+        '--runtime-dir', runtime, '--output-dir', output, '--ref', PACKAGER_REF];
     return spawnSync(process.execPath, args, { cwd: PROJECT_DIR, encoding: 'utf8' });
 }
 
@@ -145,7 +151,7 @@ test('packager CLI packages identically through symlinked entry points', () => {
     for (const [name, entry, output] of cases) {
         removeTarget(output);
         const result = spawnSync(process.execPath,
-            [entry, '--runtime-dir', BUILD_1, '--output-dir', output],
+            [entry, '--runtime-dir', BUILD_1, '--output-dir', output, '--ref', PACKAGER_REF],
             { cwd: PROJECT_DIR, encoding: 'utf8' });
         assert.equal(result.status, 0, `${name}: ${result.stderr}`);
         assert.notEqual(result.stdout.trim(), '', `${name}: the CLI produced no output`);
