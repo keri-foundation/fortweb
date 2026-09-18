@@ -1,4 +1,4 @@
-import { constants } from 'node:fs';
+import { constants, realpathSync } from 'node:fs';
 import { lstat, open, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,13 +13,18 @@ import {
     sha256,
     validateManifest,
     validatePackagePath,
-    ZIP_BASENAME,
+    validatePackageVersion,
+    zipBasenameForVersion,
 } from './runtime-package-manifest.mjs';
 
 const PROJECT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PREFIX = 'fortweb-runtime/';
-const EXPECTED_EXTERNAL = [ZIP_BASENAME, `${ZIP_BASENAME}.sha256`, 'fortweb-release.json']
-    .sort(comparePathBytes);
+const RELEASE_METADATA_FILENAME = 'fortweb-release.json';
+
+function expectedExternalFiles(packageVersion) {
+    const zipBasename = zipBasenameForVersion(packageVersion);
+    return [zipBasename, `${zipBasename}.sha256`, RELEASE_METADATA_FILENAME].sort(comparePathBytes);
+}
 
 function sameState(left, right) {
     return left.dev === right.dev
@@ -41,7 +46,13 @@ async function assertRealRoot(root) {
 async function stableRead(root, filename) {
     validatePackagePath(filename, { allowMetadata: true });
     const target = path.join(root, filename);
-    const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+    // O_NONBLOCK is defence in depth against a TOCTOU swap. The caller inventories
+    // directory entry types before this runs, but a regular file could still be
+    // replaced by a FIFO between that inventory and this open. Non-blocking mode
+    // does not change reads from a regular file, whereas opening a writerless FIFO
+    // without it blocks the verifier indefinitely. The type check below then rejects
+    // the non-regular entry instead of hanging on it.
+    const handle = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
         const before = await handle.stat({ bigint: true });
         if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n) {
@@ -172,9 +183,15 @@ export function parseDeterministicZip(bytes) {
     return members;
 }
 
-export async function verifyProduct(productDir) {
+export async function verifyProduct(productDir, { packageVersion = null } = {}) {
     const root = path.resolve(productDir);
     await assertRealRoot(root);
+    // Establish that every directory entry is an unaliased regular file BEFORE any
+    // open(). The metadata filename is version independent, so resolving it first is
+    // tempting — but opening it is what blocks. A FIFO planted at
+    // fortweb-release.json would otherwise hang the verifier forever waiting for a
+    // writer that never comes. Type inventory therefore precedes every read; the
+    // expected versioned filename set is compared afterwards, once it is known.
     const entries = (await readdir(root, { withFileTypes: true }))
         .map((entry) => {
             if (!entry.isFile() || entry.isSymbolicLink()) {
@@ -183,27 +200,41 @@ export async function verifyProduct(productDir) {
             return entry.name;
         })
         .sort(comparePathBytes);
-    if (JSON.stringify(entries) !== JSON.stringify(EXPECTED_EXTERNAL)) {
-        throw new Error('External product file set is not exact.');
-    }
-    const zip = await stableRead(root, ZIP_BASENAME);
-    const sidecar = await stableRead(root, `${ZIP_BASENAME}.sha256`);
-    const release = await stableRead(root, 'fortweb-release.json');
-    const zipDigest = sha256(zip);
-    if (!sidecar.equals(Buffer.from(`${zipDigest}  ${ZIP_BASENAME}\n`))) {
-        throw new Error('External ZIP sidecar mismatch.');
-    }
+    // The release metadata is read next to learn the package version when the caller
+    // did not supply an expected one. A caller that DOES supply an expected version
+    // (the release verifier, from the trusted tag) additionally pins every
+    // version-bearing product name and field.
+    const releaseBytes = await stableRead(root, RELEASE_METADATA_FILENAME);
     let releaseValue;
     try {
-        releaseValue = JSON.parse(release.toString('utf8'));
+        releaseValue = JSON.parse(releaseBytes.toString('utf8'));
     } catch (error) {
         throw new Error('Release metadata is not valid JSON.', { cause: error });
+    }
+    const expectedVersion = packageVersion === null
+        ? validatePackageVersion(releaseValue.package_version)
+        : validatePackageVersion(packageVersion);
+    if (releaseValue.package_version !== expectedVersion) {
+        throw new Error('Release metadata package version does not match the expected version.');
+    }
+    const expectedExternal = expectedExternalFiles(expectedVersion);
+    const zipBasename = zipBasenameForVersion(expectedVersion);
+    if (JSON.stringify(entries) !== JSON.stringify(expectedExternal)) {
+        throw new Error('External product file set is not exact.');
+    }
+    const zip = await stableRead(root, zipBasename);
+    const sidecar = await stableRead(root, `${zipBasename}.sha256`);
+    const release = releaseBytes;
+    const zipDigest = sha256(zip);
+    if (!sidecar.equals(Buffer.from(`${zipDigest}  ${zipBasename}\n`))) {
+        throw new Error('External ZIP sidecar mismatch.');
     }
     if (!release.equals(Buffer.from(serializeReleaseMetadata({
         artifactSha256: zipDigest,
         artifactBytes: zip.length,
         fortwebCommitSha: releaseValue.commit_sha,
         ref: releaseValue.ref,
+        packageVersion: expectedVersion,
     })))) {
         throw new Error('Release metadata mismatch.');
     }
@@ -212,7 +243,7 @@ export async function verifyProduct(productDir) {
     const checksumBytes = members.get('checksums.sha256');
     if (!manifestBytes || !checksumBytes) throw new Error('ZIP metadata is missing.');
     const manifest = JSON.parse(manifestBytes.toString('utf8'));
-    validateManifest(manifest);
+    validateManifest(manifest, expectedVersion);
     if (releaseValue.commit_sha !== manifest.fortweb_commit_sha) {
         throw new Error('Release metadata commit does not match the package manifest.');
     }
@@ -237,13 +268,14 @@ export async function verifyProduct(productDir) {
         throw new Error('Manifest and ZIP content closure differ.');
     }
     const productFiles = [];
-    for (const filename of EXPECTED_EXTERNAL) {
+    for (const filename of expectedExternal) {
         const payload = await stableRead(root, filename);
         productFiles.push({ bytes: payload.length, path: filename, sha256: sha256(payload) });
     }
     return {
         manifest_rows: manifest.files.length,
         ok: true,
+        package_version: expectedVersion,
         product_files: productFiles,
         zip_bytes: zip.length,
         zip_entries: members.size,
@@ -252,16 +284,53 @@ export async function verifyProduct(productDir) {
 }
 
 function parseArgs(arguments_) {
-    const index = arguments_.indexOf('--product-dir');
-    if (index === -1 || !arguments_[index + 1] || arguments_.length !== 2) {
-        throw new Error('Usage: node tools/verify-runtime-package.mjs --product-dir <directory>');
+    const values = { '--product-dir': '', '--package-version': '' };
+    const seen = new Set();
+    for (let index = 0; index < arguments_.length; index += 2) {
+        const key = arguments_[index];
+        const value = arguments_[index + 1];
+        if (!(key in values) || seen.has(key) || !value || value.startsWith('--')) {
+            throw new Error(`invalid verify argument: ${key}`);
+        }
+        values[key] = value;
+        seen.add(key);
     }
-    return path.resolve(process.cwd(), arguments_[index + 1]);
+    if (!values['--product-dir']) {
+        throw new Error('Usage: node tools/verify-runtime-package.mjs --product-dir <directory> [--package-version <version>]');
+    }
+    return {
+        productDir: path.resolve(process.cwd(), values['--product-dir']),
+        packageVersion: values['--package-version'] || null,
+    };
 }
 
-if (path.resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
+// Main-module detection has to survive a symlinked entry point. Comparing lexical
+// paths makes `node <symlink-to-this-file>` skip the CLI entirely, exiting 0 with
+// no output, which is indistinguishable from a verification that succeeded. Both
+// sides are canonicalized instead, so every invocation path actually verifies.
+function isDirectCliInvocation() {
+    const invokedPath = process.argv[1];
+    if (!invokedPath) {
+        return false;
+    }
+    const modulePath = fileURLToPath(import.meta.url);
+    if (path.resolve(invokedPath) === modulePath) {
+        return true;
+    }
     try {
-        const report = await verifyProduct(parseArgs(process.argv.slice(2)));
+        return realpathSync(invokedPath) === realpathSync(modulePath);
+    } catch {
+        // A path that cannot be canonicalized is not this module's own entry point.
+        // A real direct invocation always resolves, so this only ever declines to run
+        // the CLI, and never turns an error into a reported success.
+        return false;
+    }
+}
+
+if (isDirectCliInvocation()) {
+    try {
+        const options = parseArgs(process.argv.slice(2));
+        const report = await verifyProduct(options.productDir, { packageVersion: options.packageVersion });
         process.stdout.write(`${JSON.stringify(report)}\n`);
     } catch (error) {
         process.stderr.write(`verify-runtime-package: ${error.message}\n`);

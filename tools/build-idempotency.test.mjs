@@ -1,11 +1,19 @@
 import assert from 'node:assert/strict';
 import { after, test } from 'node:test';
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { ZIP_BASENAME } from './runtime-package-manifest.mjs';
+import { DEFAULT_PACKAGE_VERSION, zipBasenameForVersion } from './runtime-package-manifest.mjs';
+
+// The package identity under test is selected once and then propagated to every
+// packager invocation. Deriving the expected ZIP name from the default version while
+// passing an unrelated ref let the two disagree silently: a release-tag run could still
+// package a default-version artifact, and the disagreement surfaced only later when
+// release metadata generation rejected the mismatch.
+const SELECTED_PACKAGE_VERSION = process.env.PACKAGE_VERSION ?? DEFAULT_PACKAGE_VERSION;
+const ZIP_BASENAME = zipBasenameForVersion(SELECTED_PACKAGE_VERSION);
 
 const PROJECT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BUILDER = path.join(PROJECT_DIR, 'tools/build-runtime.mjs');
@@ -14,11 +22,23 @@ const BUILD_1 = path.join(SCRATCH, `idempotency-a-${process.pid}`);
 const BUILD_2 = path.join(SCRATCH, `idempotency-b-${process.pid}`);
 const PACKAGE_1 = path.join(SCRATCH, `idempotency-package-a-${process.pid}`);
 const PACKAGE_2 = path.join(SCRATCH, `idempotency-package-b-${process.pid}`);
+const PACKAGE_LINK = path.join(SCRATCH, `idempotency-package-link-${process.pid}`);
+const PACKAGE_DIRLINK = path.join(SCRATCH, `idempotency-package-dirlink-${process.pid}`);
+const SYMLINK_DIR = path.join(SCRATCH, `idempotency-links-${process.pid}`);
+const RELEASE_PACKAGE = path.join(SCRATCH, `idempotency-release-${process.pid}`);
+const RELEASE_MISMATCH = path.join(SCRATCH, `idempotency-release-mismatch-${process.pid}`);
 
-function runPackager(runtime, output) {
+// GitHub checks pull requests out at a synthetic merge commit, so HEAD is detached and
+// `git symbolic-ref HEAD` fails. The packager requires an explicit ref — the composite
+// action fails closed when one is missing — so these tests must supply the same
+// explicit input instead of depending on symbolic HEAD. This is a test identity, never
+// a release tag.
+const PACKAGER_REF = process.env.PACKAGE_REF ?? 'refs/heads/test-build-idempotency';
+
+function runPackager(runtime, output, { packageVersion = SELECTED_PACKAGE_VERSION, ref = PACKAGER_REF } = {}) {
     const args = [path.join(PROJECT_DIR, 'tools/package-runtime.mjs'),
-        '--runtime-dir', runtime, '--output-dir', output];
-    if (process.env.PACKAGE_REF) args.push('--ref', process.env.PACKAGE_REF);
+        '--runtime-dir', runtime, '--output-dir', output,
+        '--ref', ref, '--package-version', packageVersion];
     return spawnSync(process.execPath, args, { cwd: PROJECT_DIR, encoding: 'utf8' });
 }
 
@@ -81,6 +101,11 @@ after(() => {
     removeTarget(BUILD_2);
     removeTarget(PACKAGE_1);
     removeTarget(PACKAGE_2);
+    removeTarget(PACKAGE_LINK);
+    removeTarget(PACKAGE_DIRLINK);
+    removeTarget(SYMLINK_DIR);
+    removeTarget(RELEASE_PACKAGE);
+    removeTarget(RELEASE_MISMATCH);
 });
 
 test('two clean runtime builds and all three verified package products are byte identical', () => {
@@ -114,6 +139,47 @@ test('rebuild removes stale and changed output bytes', () => {
     assert.equal(result.status, 0, result.stderr);
     assert.equal(existsSync(path.join(BUILD_1, 'stale-output.txt')), false);
     assert.deepEqual(snapshot(BUILD_1), baseline);
+});
+
+test('packager CLI packages identically through symlinked entry points', () => {
+    assert.equal(existsSync(BUILD_1), true, 'the idempotency runtime build must already exist');
+    removeTarget(SYMLINK_DIR);
+    mkdirSync(SYMLINK_DIR);
+    // Both a symlink to the file and a symlink to its directory previously made the
+    // lexical entry-point comparison fail, so the CLI exited 0 without packaging.
+    const linkedFile = path.join(SYMLINK_DIR, 'package-runtime-link.mjs');
+    symlinkSync(path.join(PROJECT_DIR, 'tools/package-runtime.mjs'), linkedFile);
+    symlinkSync(path.join(PROJECT_DIR, 'tools'), path.join(SYMLINK_DIR, 'tools'));
+    const linkedDirEntry = path.join(SYMLINK_DIR, 'tools', 'package-runtime.mjs');
+
+    const expected = [ZIP_BASENAME, `${ZIP_BASENAME}.sha256`, 'fortweb-release.json'].sort();
+    const products = new Map();
+    const cases = [
+        ['direct', path.join(PROJECT_DIR, 'tools/package-runtime.mjs'), PACKAGE_1],
+        ['file-symlink', linkedFile, PACKAGE_LINK],
+        ['directory-symlink', linkedDirEntry, PACKAGE_DIRLINK],
+    ];
+    for (const [name, entry, output] of cases) {
+        removeTarget(output);
+        const result = spawnSync(process.execPath,
+            [entry, '--runtime-dir', BUILD_1, '--output-dir', output,
+                '--ref', PACKAGER_REF, '--package-version', SELECTED_PACKAGE_VERSION],
+            { cwd: PROJECT_DIR, encoding: 'utf8' });
+        assert.equal(result.status, 0, `${name}: ${result.stderr}`);
+        assert.notEqual(result.stdout.trim(), '', `${name}: the CLI produced no output`);
+        assert.equal(JSON.parse(result.stdout).ok, true, `${name}: verification did not run`);
+        assert.deepEqual(readdirSync(output).sort(), expected, `${name}: product file set`);
+        products.set(name, readFileSync(path.join(output, ZIP_BASENAME)));
+    }
+    // Invocation path must never change package identity.
+    assert(products.get('direct').equals(products.get('file-symlink')), 'file symlink changed the product');
+    assert(products.get('direct').equals(products.get('directory-symlink')), 'directory symlink changed the product');
+
+    for (const entry of [linkedFile, linkedDirEntry]) {
+        const missing = spawnSync(process.execPath, [entry], { cwd: PROJECT_DIR, encoding: 'utf8' });
+        assert.notEqual(missing.status, 0, `${entry} must fail closed without arguments`);
+        assert.match(missing.stderr, /package-runtime:/);
+    }
 });
 
 for (const fault of ['before-backup', 'after-backup', 'during-promotion']) {
@@ -161,4 +227,38 @@ test('backup restore failure retains the complete backup for explicit recovery',
     assert.deepEqual(snapshot(backups[0]), before);
     renameSync(backups[0], BUILD_2);
     assert.deepEqual(snapshot(BUILD_2), before);
+});
+
+test('a release tag and its package version produce one release identity', () => {
+    assert.equal(existsSync(BUILD_1), true, 'the idempotency runtime build must already exist');
+    const releaseVersion = '1.2.3';
+    const releaseRef = `refs/tags/v${releaseVersion}`;
+    const releaseZip = zipBasenameForVersion(releaseVersion);
+    removeTarget(RELEASE_PACKAGE);
+    const result = runPackager(BUILD_1, RELEASE_PACKAGE, { packageVersion: releaseVersion, ref: releaseRef });
+    assert.equal(result.status, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.ok, true);
+    assert.equal(report.package_version, releaseVersion);
+    assert.deepEqual(
+        readdirSync(RELEASE_PACKAGE).sort(),
+        [releaseZip, `${releaseZip}.sha256`, 'fortweb-release.json'].sort(),
+        'the external product set must be named for the release version',
+    );
+    const release = JSON.parse(readFileSync(path.join(RELEASE_PACKAGE, 'fortweb-release.json'), 'utf8'));
+    assert.equal(release.package_version, releaseVersion);
+    assert.equal(release.artifact_name, releaseZip);
+    assert.equal(release.ref, releaseRef);
+    assert.equal(release.ref_name, `v${releaseVersion}`);
+});
+
+test('a release tag that disagrees with the package version fails closed', () => {
+    assert.equal(existsSync(BUILD_1), true, 'the idempotency runtime build must already exist');
+    removeTarget(RELEASE_MISMATCH);
+    const result = runPackager(BUILD_1, RELEASE_MISMATCH, {
+        packageVersion: '1.2.4',
+        ref: 'refs/tags/v1.2.3',
+    });
+    assert.notEqual(result.status, 0, 'a tag/version disagreement must not package successfully');
+    assert.match(result.stderr, /tag does not match the package version/);
 });
