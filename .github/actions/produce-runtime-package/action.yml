@@ -38,18 +38,10 @@ inputs:
       Explicit Git ref recorded in the release metadata. Branch refs describe
       unpublished builds; release-tag refs describe publication candidates.
     required: true
-  runtime_dir:
-    description: Runtime tree output directory.
-    required: false
-    default: dist/runtime
   output_dir:
     description: Product output directory.
     required: false
     default: dist/package
-  python:
-    description: Python interpreter used by the producer.
-    required: false
-    default: python3
 
 outputs:
   artifact_name:
@@ -142,10 +134,12 @@ runs:
         set -euo pipefail
         node --test \
           tools/deterministic-zip.test.mjs \
+          tools/direct-cli.test.mjs \
           tools/runtime-package-base.test.mjs \
           tools/runtime-package-manifest.test.mjs \
           tools/runtime-package-release.test.mjs \
           tools/runtime-origin-local-dev.test.mjs \
+          tools/runtime-publication-workflow.test.mjs \
           tools/verify-fortweb-release.test.mjs \
           tools/verify-runtime-package.test.mjs
         python3 -m unittest \
@@ -163,14 +157,12 @@ runs:
 
     - name: Verify runtime tree
       shell: bash
-      env:
-        RUNTIME_DIR: ${{ inputs.runtime_dir }}
       run: |
         set -euo pipefail
         mkdir -p test-results
         git rev-parse HEAD > test-results/source-identity.txt
         python3 scripts/verify_runtime_tree.py \
-          --runtime-dir "$RUNTIME_DIR" \
+          --runtime-dir dist/runtime \
           --source-manifest "$FORTWEB_RUNTIME_SOURCE_MANIFEST" \
           --inventory-output test-results/runtime-inventory.json \
           --digest-output test-results/runtime-tree.sha256 \
@@ -187,9 +179,7 @@ runs:
       env:
         PACKAGE_VERSION: ${{ inputs.package_version }}
         PACKAGE_REF: ${{ inputs.ref }}
-        RUNTIME_DIR: ${{ inputs.runtime_dir }}
         OUTPUT_DIR: ${{ inputs.output_dir }}
-        PRODUCER_PYTHON: ${{ inputs.python }}
       run: |
         set -euo pipefail
         test -n "$PACKAGE_VERSION" || { echo "package_version is required"; exit 1; }
@@ -199,8 +189,8 @@ runs:
         # package-runtime verifies the produced product against the pinned version
         # and prints the verification report, which is kept as evidence.
         npm run --silent package:runtime -- \
-          --runtime-dir "$RUNTIME_DIR" \
-          --python "$PRODUCER_PYTHON" \
+          --runtime-dir dist/runtime \
+          --python python3 \
           --ref "$PACKAGE_REF" \
           --package-version "$PACKAGE_VERSION" \
           --output-dir "$OUTPUT_DIR" | tee test-results/product-verification.json
