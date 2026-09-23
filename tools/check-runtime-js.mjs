@@ -4,6 +4,8 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import { isDirectCliInvocation } from './direct-cli.mjs';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PROJECT_DIR = path.resolve(__dirname, '..');
 
@@ -197,9 +199,9 @@ export async function main(projectDir = DEFAULT_PROJECT_DIR) {
     process.stdout.write('[check-runtime-js] generated runtime JavaScript output exists and is deterministic.\n');
 }
 
-const entrypointPath = process.argv[1] ? path.resolve(process.argv[1]) : null;
-
-if (entrypointPath === fileURLToPath(import.meta.url)) {
+// Direct-CLI detection lives in one shared helper so every CLI in this directory
+// behaves the same way through a symlinked entry point.
+if (isDirectCliInvocation(import.meta.url)) {
     main().catch((error) => {
         process.stderr.write(`${error.message}\n`);
         process.exitCode = 1;

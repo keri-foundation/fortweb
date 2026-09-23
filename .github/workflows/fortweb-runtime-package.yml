@@ -1,0 +1,259 @@
+name: FortWeb Runtime Package and Publisher
+
+# Two jobs, one artifact, one release:
+#   package: builds and verifies the canonical product on every relevant run and
+#            uploads the exact three product files as a same-run artifact.
+#   release: runs only for a v-prefixed tag, downloads that artifact, REVERIFIES
+#            the downloaded bytes against the tag, then attests the exact
+#            verified bytes and publishes them.
+# The two jobs never share a filesystem, so the artifact transfer is the only
+# channel between them and the release job trusts nothing it did not reverify.
+
+on:
+  pull_request:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      runtime_source_url:
+        description: Public HTTPS URL for the reviewed runtime source archive
+        required: false
+        type: string
+      runtime_source_archive_sha256:
+        description: SHA-256 digest of the runtime source archive
+        required: false
+        type: string
+      runtime_source_manifest_sha256:
+        description: SHA-256 digest of manifest.json inside the source archive
+        required: false
+        type: string
+      package_version:
+        description: >-
+          Package version for a dry run only. Ignored whenever the run is
+          triggered by a release tag, because the tag is authoritative.
+        required: false
+        type: string
+
+concurrency:
+  # A published release must never be cancelled mid-flight, so publishing runs
+  # queue instead of replacing each other.
+  group: fortweb-runtime-package-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Produce canonical runtime package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      package_version: ${{ steps.produce.outputs.package_version }}
+      artifact_name: ${{ steps.produce.outputs.artifact_name }}
+      artifact_sha256: ${{ steps.produce.outputs.artifact_sha256 }}
+      artifact_bytes: ${{ steps.produce.outputs.artifact_bytes }}
+      # Empty unless the selected-release acceptance step ran and succeeded, so a
+      # missing value leaves publication ineligible rather than defaulting to true.
+      release_acceptance: ${{ steps.release_acceptance.outputs.accepted }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: '3.12'
+
+      - name: Resolve the package version from the authoritative ref
+        id: version
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          DISPATCH_VERSION: ${{ inputs.package_version || '' }}
+          OVERRIDE_SOURCE_URL: ${{ inputs.runtime_source_url || '' }}
+          OVERRIDE_SOURCE_ARCHIVE_SHA256: ${{ inputs.runtime_source_archive_sha256 || '' }}
+          OVERRIDE_SOURCE_MANIFEST_SHA256: ${{ inputs.runtime_source_manifest_sha256 || '' }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" = "tag" ]; then
+            # Trust is a property of this workflow's identity, so a tag-referenced run
+            # must build from the reviewed runtime source pin and may not redirect what
+            # gets attested and published. Overrides stay available on branch refs only.
+            if [ -n "$OVERRIDE_SOURCE_URL" ] || [ -n "$OVERRIDE_SOURCE_ARCHIVE_SHA256" ] || [ -n "$OVERRIDE_SOURCE_MANIFEST_SHA256" ]; then
+              echo "runtime source overrides are not permitted for a release tag; the reviewed pin is authoritative"
+              exit 1
+            fi
+            case "$REF_NAME" in
+              v*) ;;
+              *) echo "release tags must be v-prefixed: $REF_NAME"; exit 1 ;;
+            esac
+            # The tag is authoritative. Any dispatch-supplied version is ignored.
+            version="${REF_NAME#v}"
+          else
+            version="${DISPATCH_VERSION:-0.0.0}"
+          fi
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          printf 'resolved package version: %s (ref_type=%s)\n' "$version" "$REF_TYPE"
+
+      - name: Produce the canonical runtime package
+        id: produce
+        uses: ./.github/actions/produce-runtime-package
+        with:
+          runtime_source_url: ${{ inputs.runtime_source_url }}
+          runtime_source_archive_sha256: ${{ inputs.runtime_source_archive_sha256 }}
+          runtime_source_manifest_sha256: ${{ inputs.runtime_source_manifest_sha256 }}
+          package_version: ${{ steps.version.outputs.version }}
+          ref: ${{ github.head_ref && format('refs/heads/{0}', github.head_ref) || github.ref }}
+
+      # For a real release tag, the exact runtime this job just produced must pass the
+      # shared browser/canary/lifecycle/wheelhouse acceptance sequence BEFORE any
+      # release-consumable artifact exists. Same job, same workspace, same runtime tree,
+      # same reviewed source pin, same tag-derived version — so acceptance covers the
+      # candidate that is about to be attested and published rather than a different
+      # build produced elsewhere.
+      - name: Validate the selected release runtime
+        id: release_acceptance
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: ./.github/actions/runtime-browser-acceptance
+        with:
+          label: release-${{ github.ref_name }}
+
+      # Failure diagnostics for the tag path. These are not release products: the three
+      # product files are uploaded only by the step below, which a failed acceptance
+      # skips, because it carries no failure-tolerant condition.
+      - name: Upload release acceptance failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: release-runtime-acceptance-failure
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload the exact verified product files
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: fortweb-runtime-product
+          path: dist/package
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Attest and publish the verified package
+    needs: package
+    # Production authority is the GitHub push event plus a v-prefixed tag ref. A
+    # workflow_dispatch run aimed at a release tag is a dry run: it produces and
+    # verifies a package, but it must never attest or publish.
+    #
+    # The explicit acceptance check is required on top of `needs: package`, which
+    # already stops this job after a failed package job. It protects the distinct
+    # failure mode where acceptance is skipped, removed, miswired, or simply never
+    # emits an output: publication authority demands a positive acceptance result, so
+    # an absent value leaves this job ineligible instead of defaulting to true.
+    if: >
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/v') &&
+      needs.package.outputs.release_acceptance == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      # contents: write is needed only to create the release. The attestation
+      # permissions are id-token: write plus attestations: write.
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '20'
+
+      # No Python in this job. The release job only re-verifies, attests, and
+      # publishes already-produced bytes, and the verifier runs on Node alone with
+      # no node_modules and no Python on PATH.
+      - name: Download the produced product artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          name: fortweb-runtime-product
+          path: dist/package
+
+      - name: Resolve the package version from the trusted tag
+        id: version
+        run: |
+          set -euo pipefail
+          case "$RELEASE_TAG" in
+            v*) ;;
+            *) echo "release tags must be v-prefixed: $RELEASE_TAG"; exit 1 ;;
+          esac
+          # Derived from the tag, never read back from the artifact.
+          printf 'version=%s\n' "${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Reverify the downloaded product bytes
+        env:
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          node tools/verify-runtime-package.mjs \
+            --product-dir dist/package \
+            --package-version "$EXPECTED_VERSION"
+
+      - name: Assert the artifact matches the producer's reported digest
+        env:
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+          EXPECTED_SHA256: ${{ needs.package.outputs.artifact_sha256 }}
+          EXPECTED_BYTES: ${{ needs.package.outputs.artifact_bytes }}
+        run: |
+          set -euo pipefail
+          artifact="dist/package/fortweb-runtime-${EXPECTED_VERSION}.zip"
+          test -f "$artifact" || { echo "missing product: $artifact"; exit 1; }
+          actual_sha256="$(node -e 'const c = require("node:crypto"); const f = require("node:fs"); process.stdout.write(c.createHash("sha256").update(f.readFileSync(process.argv[1])).digest("hex"));' "$artifact")"
+          actual_bytes="$(wc -c < "$artifact" | tr -d '[:space:]')"
+          test "$actual_sha256" = "$EXPECTED_SHA256" || { echo "artifact digest differs from the producer report"; exit 1; }
+          test "$actual_bytes" = "$EXPECTED_BYTES" || { echo "artifact size differs from the producer report"; exit 1; }
+
+      - name: Attest the verified package
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6  # v4
+        with:
+          subject-path: dist/package/fortweb-runtime-*.zip
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$RELEASE_TAG" \
+            --notes "FortWeb runtime package $EXPECTED_VERSION" \
+            "dist/package/fortweb-runtime-${EXPECTED_VERSION}.zip" \
+            "dist/package/fortweb-runtime-${EXPECTED_VERSION}.zip.sha256" \
+            "dist/package/fortweb-release.json"
+
+      - name: Assert the published remote inventory
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          expected="$(printf 'fortweb-release.json\nfortweb-runtime-%s.zip\nfortweb-runtime-%s.zip.sha256\n' "$EXPECTED_VERSION" "$EXPECTED_VERSION" | sort)"
+          actual="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | sort)"
+          if [ "$actual" != "$expected" ]; then
+            printf 'published inventory mismatch\nexpected:\n%s\nactual:\n%s\n' "$expected" "$actual" >&2
+            exit 1
+          fi

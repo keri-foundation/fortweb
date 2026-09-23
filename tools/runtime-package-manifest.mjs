@@ -1,12 +1,46 @@
 import { createHash } from 'node:crypto';
 
 export const PACKAGE_NAME = 'fortweb-runtime';
-export const PACKAGE_VERSION = '0.0.0';
+export const DEFAULT_PACKAGE_VERSION = '0.0.0';
 export const PACKAGE_SCHEMA_VERSION = '2.0.0';
-export const ZIP_BASENAME = 'fortweb-runtime-0.0.0.zip';
 export const ENTRYPOINT = 'app/index.html';
 export const REQUIREMENTS_PATH = 'contracts/runtime-requirements.json';
 export const REQUIREMENTS_SCHEMA = 'fort.runtime-requirements.v2';
+
+// Release identity is a producer input, not a process-global constant. The release
+// tag is authoritative for the version, and the version is part of the package
+// identity because it is a manifest field and it appears in the product filenames.
+// Only the plain release form (and an optional conservative prerelease suffix) is
+// accepted; anything containing a leading "v", whitespace, a path separator, or
+// other shell-significant text is rejected rather than escaped.
+const PACKAGE_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+const PACKAGE_VERSION_MAX_LENGTH = 64;
+
+export function validatePackageVersion(value) {
+    if (typeof value !== 'string' || value.length === 0) {
+        throw new Error('Package version must be a non-empty string.');
+    }
+    if (value.length > PACKAGE_VERSION_MAX_LENGTH) {
+        throw new Error('Package version is unreasonably long.');
+    }
+    if (!PACKAGE_VERSION_PATTERN.test(value)) {
+        throw new Error(`Package version is not a plain release version: ${value}`);
+    }
+    return value;
+}
+
+// The tag parser owns removal of the leading "v" so the producer only ever
+// receives an already-normalized package version.
+export function packageVersionFromTag(tag) {
+    if (typeof tag !== 'string' || !tag.startsWith('v')) {
+        throw new Error('Release tag must start with "v".');
+    }
+    return validatePackageVersion(tag.slice(1));
+}
+
+export function zipBasenameForVersion(value) {
+    return `${PACKAGE_NAME}-${validatePackageVersion(value)}.zip`;
+}
 
 function compareCodePoints(left, right) {
     const a = Array.from(left, (value) => value.codePointAt(0));
@@ -148,26 +182,27 @@ export function validateFileRows(rows, expectedCount) {
     return paths;
 }
 
-export function generateManifest({ files, provenance, fortwebCommitSha }) {
+export function generateManifest({ files, provenance, fortwebCommitSha, packageVersion }) {
     validateFileRows(files);
     requireCommit(fortwebCommitSha, 'Manifest FortWeb commit');
+    validatePackageVersion(packageVersion);
     const manifest = {
         contracts: { runtime_requirements: { path: REQUIREMENTS_PATH } },
         entrypoint: ENTRYPOINT,
         files,
         fortweb_commit_sha: fortwebCommitSha,
         package_name: PACKAGE_NAME,
-        package_version: PACKAGE_VERSION,
+        package_version: packageVersion,
         payload_profile: 'offline-runtime',
         producer: 'fortweb',
         provenance,
         schema_version: PACKAGE_SCHEMA_VERSION,
     };
-    validateManifest(manifest);
+    validateManifest(manifest, packageVersion);
     return manifest;
 }
 
-export function validateManifest(manifest) {
+export function validateManifest(manifest, packageVersion) {
     requireExactKeys(manifest, [
         'contracts', 'entrypoint', 'files', 'fortweb_commit_sha', 'package_name',
         'package_version', 'payload_profile', 'producer', 'provenance',
@@ -176,14 +211,14 @@ export function validateManifest(manifest) {
     const expected = {
         entrypoint: ENTRYPOINT,
         package_name: PACKAGE_NAME,
-        package_version: PACKAGE_VERSION,
+        package_version: validatePackageVersion(packageVersion),
         payload_profile: 'offline-runtime',
         producer: 'fortweb',
         schema_version: PACKAGE_SCHEMA_VERSION,
     };
     for (const [key, value] of Object.entries(expected)) {
         if (manifest[key] !== value) {
-            throw new Error(`Manifest ${key} is not the fixed value.`);
+            throw new Error(`Manifest ${key} is not the expected value.`);
         }
     }
     requireCommit(manifest.fortweb_commit_sha, 'Manifest FortWeb commit');

@@ -7,11 +7,12 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 import { createDeterministicZip } from './deterministic-zip.mjs';
+import { isDirectCliInvocation } from './direct-cli.mjs';
 import { serializeReleaseMetadata } from './generate-release-metadata.mjs';
 import { serializeRuntimeRequirements } from './generate-runtime-requirements.mjs';
 import {
-    canonicalJson, comparePathBytes, generateManifest, REQUIREMENTS_PATH, sha256,
-    validateFileRows, validatePackagePath, ZIP_BASENAME,
+    canonicalJson, comparePathBytes, DEFAULT_PACKAGE_VERSION, generateManifest, REQUIREMENTS_PATH, sha256,
+    validateFileRows, validatePackagePath, validatePackageVersion, zipBasenameForVersion,
 } from './runtime-package-manifest.mjs';
 import { verifyProduct } from './verify-runtime-package.mjs';
 
@@ -99,6 +100,7 @@ function parseArgs(argv) {
         '--source-manifest': process.env.FORTWEB_RUNTIME_SOURCE_MANIFEST ?? '',
         '--source-manifest-sha256': process.env.FORTWEB_RUNTIME_SOURCE_MANIFEST_SHA256 ?? '',
         '--python': process.env.FORTWEB_PYTHON ?? 'python3',
+        '--package-version': process.env.FORTWEB_PACKAGE_VERSION ?? DEFAULT_PACKAGE_VERSION,
         '--output-dir': '', '--ref': '',
     };
     const seen = new Set();
@@ -112,6 +114,7 @@ function parseArgs(argv) {
     if (!values['--source-manifest'] || !values['--output-dir'] || !/^[0-9a-f]{64}$/.test(values['--source-manifest-sha256'])) {
         throw new Error('package requires --source-manifest, --source-manifest-sha256, and --output-dir');
     }
+    validatePackageVersion(values['--package-version']);
     return values;
 }
 
@@ -170,7 +173,9 @@ async function main() {
                 wheelhouse_manifest_sha256: sha256(sourceBytes),
             },
         };
-        const manifest = Buffer.from(canonicalJson(generateManifest({ files: rows, provenance, fortwebCommitSha: source.head })));
+        const manifest = Buffer.from(canonicalJson(generateManifest({
+            files: rows, provenance, fortwebCommitSha: source.head, packageVersion: args['--package-version'],
+        })));
         const zip = createDeterministicZip([
             ...[...payloads].map(([name, data]) => ({ name: `fortweb-runtime/${name}`, data })),
             { name: `fortweb-runtime/${REQUIREMENTS_PATH}`, data: requirements },
@@ -184,18 +189,22 @@ async function main() {
         const output = path.resolve(args['--output-dir']);
         await mkdir(output, { recursive: false });
         const zipDigest = sha256(zip);
-        await writeFile(path.join(output, ZIP_BASENAME), zip, { flag: 'wx' });
-        await writeFile(path.join(output, `${ZIP_BASENAME}.sha256`), `${zipDigest}  ${ZIP_BASENAME}\n`, { flag: 'wx' });
+        const zipBasename = zipBasenameForVersion(args['--package-version']);
+        await writeFile(path.join(output, zipBasename), zip, { flag: 'wx' });
+        await writeFile(path.join(output, `${zipBasename}.sha256`), `${zipDigest}  ${zipBasename}\n`, { flag: 'wx' });
         await writeFile(path.join(output, 'fortweb-release.json'), serializeReleaseMetadata({
             artifactSha256: zipDigest, artifactBytes: zip.length, fortwebCommitSha: source.head, ref,
+            packageVersion: args['--package-version'],
         }), { flag: 'wx' });
-        process.stdout.write(`${JSON.stringify(await verifyProduct(output))}\n`);
+        process.stdout.write(`${JSON.stringify(await verifyProduct(output, { packageVersion: args['--package-version'] }))}\n`);
     } finally {
         await rm(scratch, { recursive: true, force: true });
     }
 }
 
-if (path.resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
+// Direct-CLI detection lives in one shared helper so every CLI in this directory
+// behaves the same way through a symlinked entry point.
+if (isDirectCliInvocation(import.meta.url)) {
     main().catch((error) => {
         process.stderr.write(`package-runtime: ${error.message}\n`);
         process.exitCode = 1;
