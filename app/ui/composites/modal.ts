@@ -1,5 +1,5 @@
 import { escapeHtml } from "../../shared/dom.js";
-import { captureFocusReturn } from "../core/a11y.js";
+import { captureFocusReturn, containTabKey, findFocusableElements } from "../core/a11y.js";
 
 interface ModalAction {
     label: string;
@@ -31,7 +31,7 @@ export function createModal(props: ModalProps): ModalController {
     let isOpen = false;
     let openingFrame = 0;
     let removalTimer: ReturnType<typeof setTimeout> | null = null;
-    const backgroundInert = new Map<HTMLElement, string | null>();
+    const backgroundInert = new Map<HTMLElement, boolean>();
 
     const root = document.createElement("div");
     root.className = "lk-dialog-root";
@@ -71,16 +71,7 @@ export function createModal(props: ModalProps): ModalController {
     `;
 
     function focusableElements(): HTMLElement[] {
-        return Array.from(root.querySelectorAll<HTMLElement>(
-            "button, [href], input, select, textarea, [tabindex]",
-        )).filter((element) => element instanceof HTMLElement
-            && element.tabIndex >= 0
-            && !element.matches(":disabled")
-            && !element.closest("[inert]")
-            && element.getClientRects().length > 0
-            && !["hidden", "collapse"].includes(getComputedStyle(element).visibility))
-            .sort((a, b) => (a.tabIndex > 0 ? a.tabIndex : Infinity)
-                - (b.tabIndex > 0 ? b.tabIndex : Infinity));
+        return findFocusableElements(root, "button, [href], input, select, textarea, [tabindex]");
     }
 
     function focusFirst(): void {
@@ -100,7 +91,7 @@ export function createModal(props: ModalProps): ModalController {
             // modal feedback; background toast actions remain isolated.
             if (child.id === "fw-live-region") continue;
             if (!backgroundInert.has(child)) {
-                backgroundInert.set(child, child.getAttribute("inert"));
+                backgroundInert.set(child, child.inert);
                 child.inert = true;
             }
         }
@@ -123,14 +114,7 @@ export function createModal(props: ModalProps): ModalController {
             return;
         }
         if (event.key !== "Tab") return;
-        const focusable = focusableElements();
-        const index = focusable.indexOf(document.activeElement as HTMLElement);
-        if (!focusable.length || index === -1
-            || (event.shiftKey ? index === 0 : index === focusable.length - 1)) {
-            event.preventDefault();
-            (event.shiftKey ? focusable.at(-1) ?? root : focusable[0] ?? root)
-                .focus({ preventScroll: true });
-        }
+        containTabKey(event, root, focusableElements());
     }
 
     function releaseBackground(): void {
@@ -139,9 +123,8 @@ export function createModal(props: ModalProps): ModalController {
         document.removeEventListener("keydown", onKeyDown, true);
         document.removeEventListener("focusin", onFocusIn, true);
         backgroundObserver.disconnect();
-        for (const [element, previous] of backgroundInert) {
-            if (previous === null) element.removeAttribute("inert");
-            else element.setAttribute("inert", previous);
+        for (const [element, wasInert] of backgroundInert) {
+            element.inert = wasInert;
         }
         backgroundInert.clear();
         // The fading dialog must no longer participate in keyboard navigation.

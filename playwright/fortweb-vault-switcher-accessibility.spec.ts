@@ -181,10 +181,22 @@ test('populated vault switcher traps current and refreshed vault controls', asyn
         document.body.insertBefore(opener, appRoot);
         opener.focus();
 
-        const controller = (window as typeof window & { vaultDrawerController?: { open(): void; close(): void } })
+        const controller = (window as typeof window & {
+            vaultDrawerController?: { open(): void; close(): void; isOpen: boolean };
+        })
             .vaultDrawerController;
-        controller?.open();
-        controller?.close();
+        if (!controller) {
+            throw new Error('Vault drawer controller is missing.');
+        }
+        controller.open();
+        const drawer = document.querySelector('.lk-drawer');
+        if (!controller.isOpen || !drawer?.classList.contains('is-open')) {
+            throw new Error('Vault drawer did not open before the close operation.');
+        }
+        controller.close();
+        if (controller.isOpen || drawer.classList.contains('is-open')) {
+            throw new Error('Vault drawer did not close.');
+        }
     });
     await expect(page.getByRole('button', { name: 'External opener' })).toBeFocused();
     await expect(page.locator('#app-root')).toHaveJSProperty('inert', true);

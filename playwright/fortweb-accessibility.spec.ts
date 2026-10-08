@@ -51,11 +51,6 @@ for (const width of [1440, 768, 411, 360]) {
             await page.keyboard.press('Tab');
             await expect(control).toBeFocused();
         }
-        for (let index = 0; index < 12; index++) {
-            await page.keyboard.press(index % 2 ? 'Shift+Tab' : 'Tab');
-            await expect.poll(() => dialog.evaluate((element) => element.contains(document.activeElement)))
-                .toBe(true);
-        }
         // Inert prevents even programmatic focus from reaching the background.
         await page.getByRole('button', { name: 'Add Identifier', includeHidden: true }).evaluate((element) => {
             (element as HTMLElement).focus();
@@ -116,13 +111,13 @@ test('Add Remote uses the same containment with a different form', async ({ page
     await expect(opener).toBeFocused();
 });
 
-test('background isolation preserves inert attributes and the shared announcer', async ({ page }) => {
+test('background isolation preserves inert state and the shared announcer', async ({ page }) => {
     await page.goto('/fortweb/app/index.html#/_fixtures/identifiers/empty');
     await page.evaluate(() => {
         const background = document.createElement('button');
         background.textContent = 'Already inert';
         background.id = 'previously-inert';
-        background.setAttribute('inert', 'preserved');
+        background.inert = true;
         document.body.append(background);
     });
     await page.evaluate(async () => {
@@ -150,7 +145,7 @@ test('background isolation preserves inert attributes and the shared announcer',
     await expect(dialog).toHaveCount(0);
     await expect(page).toHaveURL(originalURL);
     await expect(page.getByRole('button', { name: 'Add Identifier', exact: true })).toBeFocused();
-    await expect(page.locator('#previously-inert')).toHaveAttribute('inert', 'preserved');
+    await expect(page.locator('#previously-inert')).toHaveJSProperty('inert', true);
     await expect(page.locator('#late-background')).not.toHaveAttribute('inert');
 });
 

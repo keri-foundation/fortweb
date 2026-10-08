@@ -6,7 +6,7 @@
  */
 
 import { escapeHtml } from "./dom.js";
-import { captureFocusReturn } from "../ui/core/a11y.js";
+import { captureFocusReturn, containTabKey, findFocusableElements } from "../ui/core/a11y.js";
 
 interface DialogOptions {
     title?: string;
@@ -208,38 +208,12 @@ export function createVaultDrawer<Vault extends VaultDrawerRecord>(opts: VaultDr
 
     let isOpen = false;
     let closeTimer: ReturnType<typeof setTimeout> | undefined;
-    let opener: HTMLElement | null = null;
     let restoreOpenerFocus: (() => void) | null = null;
     let inertRoot: HTMLElement | null = null;
     let wasRootInert = false;
 
-    const focusableSelector = [
-        "a[href]",
-        "area[href]",
-        "button:not([disabled])",
-        "input:not([type='hidden']):not([disabled])",
-        "select:not([disabled])",
-        "textarea:not([disabled])",
-        "iframe",
-        "object",
-        "embed",
-        "[contenteditable='true']",
-        "[tabindex]",
-    ].join(",");
-
     function getFocusableElements(): HTMLElement[] {
-        return [...drawer.querySelectorAll<HTMLElement>(focusableSelector)].filter((element) => {
-            if (
-                element.tabIndex < 0
-                || element.matches(":disabled, [hidden]")
-                || element.closest("[inert], [hidden], [aria-hidden='true']")
-                || element.getClientRects().length === 0
-            ) {
-                return false;
-            }
-
-            return window.getComputedStyle(element).visibility !== "hidden";
-        });
+        return findFocusableElements(drawer, "button, .lk-drawer__item[tabindex]");
     }
 
     function restoreBackground(): void {
@@ -270,28 +244,7 @@ export function createVaultDrawer<Vault extends VaultDrawerRecord>(opts: VaultDr
             return;
         }
 
-        if (event.key !== "Tab") {
-            return;
-        }
-
-        const focusableElements = getFocusableElements();
-        if (focusableElements.length === 0) {
-            event.preventDefault();
-            drawer.focus({ preventScroll: true });
-            return;
-        }
-
-        const firstFocusable = focusableElements[0];
-        const lastFocusable = focusableElements[focusableElements.length - 1];
-        const focusIsInside = drawer.contains(document.activeElement);
-
-        if (event.shiftKey && (!focusIsInside || document.activeElement === firstFocusable)) {
-            event.preventDefault();
-            lastFocusable.focus({ preventScroll: true });
-        } else if (!event.shiftKey && (!focusIsInside || document.activeElement === lastFocusable)) {
-            event.preventDefault();
-            firstFocusable.focus({ preventScroll: true });
-        }
+        containTabKey(event, drawer, getFocusableElements());
     }
 
     function renderList(nextVaults: Vault[]): void {
@@ -349,9 +302,7 @@ export function createVaultDrawer<Vault extends VaultDrawerRecord>(opts: VaultDr
             clearTimeout(closeTimer);
             closeTimer = undefined;
         }
-        const activeElement = document.activeElement;
-        opener = activeElement instanceof HTMLElement && activeElement !== document.body ? activeElement : null;
-        restoreOpenerFocus = opener ? captureFocusReturn() : null;
+        restoreOpenerFocus = captureFocusReturn();
         isOpen = true;
         document.body.appendChild(el);
         inertRoot = document.getElementById("app-root");
@@ -376,18 +327,9 @@ export function createVaultDrawer<Vault extends VaultDrawerRecord>(opts: VaultDr
         el.classList.remove("is-open");
         restoreBackground();
 
-        const focusTarget = opener;
         const restoreFocus = restoreOpenerFocus;
-        opener = null;
         restoreOpenerFocus = null;
-        if (
-            focusTarget?.isConnected
-            && !focusTarget.matches(":disabled, [hidden]")
-            && !focusTarget.closest("[inert], [hidden], [aria-hidden='true']")
-            && focusTarget.getClientRects().length > 0
-        ) {
-            restoreFocus?.();
-        }
+        restoreFocus?.();
 
         closeTimer = setTimeout(() => {
             el.remove();
