@@ -1,5 +1,5 @@
 import { escapeHtml } from "../../shared/dom.js";
-import { captureFocusReturn } from "../core/a11y.js";
+import { captureFocusReturn, containTabKey, findFocusableElements } from "../core/a11y.js";
 
 interface ModalAction {
     label: string;
@@ -28,12 +28,17 @@ export function createModal(props: ModalProps): ModalController {
     const { title, body, tone = "default", actions = [], onClose } = props;
 
     let restoreFocus: (() => void) | null = null;
+    let isOpen = false;
+    let openingFrame = 0;
+    let removalTimer: ReturnType<typeof setTimeout> | null = null;
+    const backgroundInert = new Map<HTMLElement, boolean>();
 
     const root = document.createElement("div");
     root.className = "lk-dialog-root";
     root.setAttribute("role", "dialog");
     root.setAttribute("aria-modal", "true");
     root.setAttribute("aria-label", title);
+    root.tabIndex = -1;
 
     const toneClass = tone === "danger" ? "ui-modal--danger" : "";
 
@@ -65,11 +70,82 @@ export function createModal(props: ModalProps): ModalController {
         </div>
     `;
 
-    function close(): void {
-        root.classList.remove("is-visible");
-        root.addEventListener("transitionend", () => root.remove(), { once: true });
-        setTimeout(() => root.remove(), 350);
+    function focusableElements(): HTMLElement[] {
+        return findFocusableElements(root, "button, [href], input, select, textarea, [tabindex]");
+    }
+
+    function focusFirst(): void {
+        (focusableElements()[0] ?? root).focus({ preventScroll: true });
+    }
+
+    function isActive(): boolean {
+        // A later modal makes this root inert until it closes.
+        return isOpen && !root.inert;
+    }
+
+    function isolateBackground(): void {
+        if (!isActive()) return;
+        for (const child of Array.from(document.body.children)) {
+            if (!(child instanceof HTMLElement) || child === root) continue;
+            // The shared announcer contains only text. Keep it available for
+            // modal feedback; background toast actions remain isolated.
+            if (child.id === "fw-live-region") continue;
+            if (!backgroundInert.has(child)) {
+                backgroundInert.set(child, child.inert);
+                child.inert = true;
+            }
+        }
+    }
+
+    const backgroundObserver = new MutationObserver(isolateBackground);
+
+    function onFocusIn(event: FocusEvent): void {
+        if (isActive() && event.target instanceof Node && !root.contains(event.target)) {
+            focusFirst();
+        }
+    }
+
+    function onKeyDown(event: KeyboardEvent): void {
+        if (!isActive()) return;
+        if (event.key === "Escape") {
+            event.preventDefault();
+            event.stopPropagation();
+            close();
+            return;
+        }
+        if (event.key !== "Tab") return;
+        containTabKey(event, root, focusableElements());
+    }
+
+    function releaseBackground(): void {
+        isOpen = false;
+        cancelAnimationFrame(openingFrame);
+        document.removeEventListener("keydown", onKeyDown, true);
+        document.removeEventListener("focusin", onFocusIn, true);
+        backgroundObserver.disconnect();
+        for (const [element, wasInert] of backgroundInert) {
+            element.inert = wasInert;
+        }
+        backgroundInert.clear();
+        // The fading dialog must no longer participate in keyboard navigation.
+        root.inert = true;
         restoreFocus?.();
+        restoreFocus = null;
+    }
+
+    function removeRoot(): void {
+        root.removeEventListener("transitionend", removeRoot);
+        if (removalTimer !== null) clearTimeout(removalTimer);
+        removalTimer = null;
+        root.remove();
+    }
+
+    function close(): void {
+        if (!isOpen) return;
+        root.classList.remove("is-visible");
+        root.addEventListener("transitionend", removeRoot);
+        removalTimer = setTimeout(removeRoot, 350);
+        releaseBackground();
         onClose?.();
     }
 
@@ -78,18 +154,28 @@ export function createModal(props: ModalProps): ModalController {
     });
 
     function open(): void {
+        if (isOpen) return;
+        root.removeEventListener("transitionend", removeRoot);
+        if (removalTimer !== null) clearTimeout(removalTimer);
+        removalTimer = null;
         restoreFocus = captureFocusReturn();
+        isOpen = true;
+        root.inert = false;
         document.body.appendChild(root);
-        requestAnimationFrame(() => {
+        isolateBackground();
+        backgroundObserver.observe(document.body, { childList: true });
+        document.addEventListener("keydown", onKeyDown, true);
+        document.addEventListener("focusin", onFocusIn, true);
+        openingFrame = requestAnimationFrame(() => {
+            if (!isOpen) return;
             root.classList.add("is-visible");
-            const firstFocusable = root.querySelector("button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])") as HTMLElement | null;
-            firstFocusable?.focus();
+            if (isActive()) focusFirst();
         });
     }
 
     function destroy(): void {
-        root.remove();
-        restoreFocus?.();
+        if (isOpen) releaseBackground();
+        removeRoot();
     }
 
     return { open, close, destroy };
