@@ -6,6 +6,7 @@
  */
 
 import { escapeHtml } from "./dom.js";
+import { captureFocusReturn } from "../ui/core/a11y.js";
 
 interface DialogOptions {
     title?: string;
@@ -169,7 +170,7 @@ export function createVaultDrawer<Vault extends VaultDrawerRecord>(opts: VaultDr
     el.className = "lk-drawer-root";
     el.innerHTML = `
         <div class="lk-drawer-overlay"></div>
-        <aside class="lk-drawer" aria-label="Vault switcher" role="dialog" aria-modal="true">
+        <aside class="lk-drawer" aria-label="Vault switcher" role="dialog" aria-modal="true" tabindex="-1">
             <div class="lk-drawer__header">
                 <div class="lk-drawer__heading">
                     <img src="./assets/brand/SymbolLogo.svg" alt="" width="36" height="36">
@@ -196,8 +197,102 @@ export function createVaultDrawer<Vault extends VaultDrawerRecord>(opts: VaultDr
         throw new Error("Vault drawer list is missing.");
     }
 
+    const drawer = el.querySelector<HTMLElement>(".lk-drawer");
+    const overlay = el.querySelector(".lk-drawer-overlay");
+    const closeButton = el.querySelector(".lk-drawer__close");
+    const newVaultButton = el.querySelector(".lk-drawer__new-vault");
+
+    if (!(drawer instanceof HTMLElement) || !(overlay instanceof HTMLElement) || !(closeButton instanceof HTMLButtonElement) || !(newVaultButton instanceof HTMLButtonElement)) {
+        throw new Error("Vault drawer controls are missing.");
+    }
+
     let isOpen = false;
     let closeTimer: ReturnType<typeof setTimeout> | undefined;
+    let opener: HTMLElement | null = null;
+    let restoreOpenerFocus: (() => void) | null = null;
+    let inertRoot: HTMLElement | null = null;
+    let wasRootInert = false;
+
+    const focusableSelector = [
+        "a[href]",
+        "area[href]",
+        "button:not([disabled])",
+        "input:not([type='hidden']):not([disabled])",
+        "select:not([disabled])",
+        "textarea:not([disabled])",
+        "iframe",
+        "object",
+        "embed",
+        "[contenteditable='true']",
+        "[tabindex]",
+    ].join(",");
+
+    function getFocusableElements(): HTMLElement[] {
+        return [...drawer.querySelectorAll<HTMLElement>(focusableSelector)].filter((element) => {
+            if (
+                element.tabIndex < 0
+                || element.matches(":disabled, [hidden]")
+                || element.closest("[inert], [hidden], [aria-hidden='true']")
+                || element.getClientRects().length === 0
+            ) {
+                return false;
+            }
+
+            return window.getComputedStyle(element).visibility !== "hidden";
+        });
+    }
+
+    function restoreBackground(): void {
+        if (inertRoot) {
+            inertRoot.inert = wasRootInert;
+            inertRoot = null;
+        }
+    }
+
+    function handleFocusIn(event: FocusEvent): void {
+        if (!isOpen || !(event.target instanceof Node) || drawer.contains(event.target)) {
+            return;
+        }
+
+        const firstFocusable = getFocusableElements()[0];
+        (firstFocusable ?? drawer).focus({ preventScroll: true });
+    }
+
+    function handleKeydown(event: KeyboardEvent): void {
+        if (!isOpen) {
+            return;
+        }
+
+        if (event.key === "Escape") {
+            event.preventDefault();
+            event.stopPropagation();
+            close();
+            return;
+        }
+
+        if (event.key !== "Tab") {
+            return;
+        }
+
+        const focusableElements = getFocusableElements();
+        if (focusableElements.length === 0) {
+            event.preventDefault();
+            drawer.focus({ preventScroll: true });
+            return;
+        }
+
+        const firstFocusable = focusableElements[0];
+        const lastFocusable = focusableElements[focusableElements.length - 1];
+        const focusIsInside = drawer.contains(document.activeElement);
+
+        if (event.shiftKey && (!focusIsInside || document.activeElement === firstFocusable)) {
+            event.preventDefault();
+            lastFocusable.focus({ preventScroll: true });
+        } else if (!event.shiftKey && (!focusIsInside || document.activeElement === lastFocusable)) {
+            event.preventDefault();
+            firstFocusable.focus({ preventScroll: true });
+        }
+    }
 
     function renderList(nextVaults: Vault[]): void {
         list.replaceChildren(
@@ -254,10 +349,21 @@ export function createVaultDrawer<Vault extends VaultDrawerRecord>(opts: VaultDr
             clearTimeout(closeTimer);
             closeTimer = undefined;
         }
+        const activeElement = document.activeElement;
+        opener = activeElement instanceof HTMLElement && activeElement !== document.body ? activeElement : null;
+        restoreOpenerFocus = opener ? captureFocusReturn() : null;
         isOpen = true;
         document.body.appendChild(el);
+        inertRoot = document.getElementById("app-root");
+        wasRootInert = inertRoot?.inert ?? false;
+        if (inertRoot) {
+            inertRoot.inert = true;
+        }
         el.offsetHeight;
         el.classList.add("is-open");
+        document.addEventListener("focusin", handleFocusIn, true);
+        document.addEventListener("keydown", handleKeydown, true);
+        (getFocusableElements()[0] ?? drawer).focus({ preventScroll: true });
     }
 
     function close(): void {
@@ -265,7 +371,24 @@ export function createVaultDrawer<Vault extends VaultDrawerRecord>(opts: VaultDr
             return;
         }
         isOpen = false;
+        document.removeEventListener("focusin", handleFocusIn, true);
+        document.removeEventListener("keydown", handleKeydown, true);
         el.classList.remove("is-open");
+        restoreBackground();
+
+        const focusTarget = opener;
+        const restoreFocus = restoreOpenerFocus;
+        opener = null;
+        restoreOpenerFocus = null;
+        if (
+            focusTarget?.isConnected
+            && !focusTarget.matches(":disabled, [hidden]")
+            && !focusTarget.closest("[inert], [hidden], [aria-hidden='true']")
+            && focusTarget.getClientRects().length > 0
+        ) {
+            restoreFocus?.();
+        }
+
         closeTimer = setTimeout(() => {
             el.remove();
             closeTimer = undefined;
@@ -275,14 +398,6 @@ export function createVaultDrawer<Vault extends VaultDrawerRecord>(opts: VaultDr
     function refresh(nextVaults: Vault[]): void {
         vaults = [...nextVaults];
         renderList(vaults);
-    }
-
-    const overlay = el.querySelector(".lk-drawer-overlay");
-    const closeButton = el.querySelector(".lk-drawer__close");
-    const newVaultButton = el.querySelector(".lk-drawer__new-vault");
-
-    if (!(overlay instanceof HTMLElement) || !(closeButton instanceof HTMLButtonElement) || !(newVaultButton instanceof HTMLButtonElement)) {
-        throw new Error("Vault drawer controls are missing.");
     }
 
     overlay.addEventListener("click", close);
