@@ -189,7 +189,7 @@ test('populated vault switcher traps current and refreshed vault controls', asyn
             throw new Error('Vault drawer controller is missing.');
         }
         controller.open();
-        const drawer = document.querySelector('.lk-drawer');
+        const drawer = document.querySelector('.lk-drawer-root');
         if (!controller.isOpen || !drawer?.classList.contains('is-open')) {
             throw new Error('Vault drawer did not open before the close operation.');
         }
