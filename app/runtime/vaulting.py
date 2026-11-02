@@ -52,7 +52,6 @@ def configure_runtime(
     wallet_storage_prefix: str,
     registry_name: str,
     registry_store: str,
-    legacy_root_salt: str,
     passcode_kdf_defaults: dict,
     default_settings: dict,
     kf_state_subdb: str,
@@ -66,7 +65,6 @@ def configure_runtime(
         wallet_storage_prefix=wallet_storage_prefix,
         registry_name=registry_name,
         registry_store=registry_store,
-        legacy_root_salt=legacy_root_salt,
         passcode_kdf_defaults=dict(passcode_kdf_defaults),
         default_settings=dict(default_settings),
         kf_state_subdb=kf_state_subdb,
@@ -175,7 +173,9 @@ def _coerce_vault_record(record):
     alias = str(record.get("alias") or "").strip() or vault_id
     encrypted = bool(record.get("encrypted", False))
     created_at = str(record.get("createdAt") or "").strip() or now_iso()
-    root_salt = str(record.get("rootSalt") or "").strip() or _CONFIG["legacy_root_salt"]
+    root_salt = str(record.get("rootSalt") or "").strip()
+    if not root_salt:
+        raise RuntimeFault("BAD_STATE", "Protected vault is missing its root salt.")
     coerced = _vault_record(
         vault_id=vault_id,
         alias=alias,
@@ -188,8 +188,8 @@ def _coerce_vault_record(record):
     coerced["runtimeMode"] = str(record.get("runtimeMode") or coerced["runtimeMode"])
     coerced["otpConfigured"] = bool(record.get("otpConfigured", record.get("hasOtp", False)))
     storage_name = str(record.get("storageName") or "").strip()
-    if storage_name:
-        coerced["storageName"] = storage_name
+    if storage_name != coerced["storageName"]:
+        raise RuntimeFault("BAD_STATE", "Protected vault storage name is invalid.")
     return coerced
 
 

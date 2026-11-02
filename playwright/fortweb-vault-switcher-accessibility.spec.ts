@@ -30,6 +30,7 @@ test('empty vault switcher contains keyboard focus and restores its opener', asy
 
     const closeButton = switcher.closeButton;
     const initializeButton = switcher.dialog.getByRole('button', { name: 'Initialize New Vault' });
+    const storageNotice = switcher.dialog.getByText('Older vaults remain in separate storage and cannot yet be opened here. No keys have been migrated.');
     const background = page.locator('#app-root');
     await expect(background).toHaveJSProperty('inert', true);
     await expect(page.locator('#fw-live-region')).toHaveJSProperty('inert', false);
@@ -37,6 +38,8 @@ test('empty vault switcher contains keyboard focus and restores its opener', asy
     for (const width of [1280, 411, 360]) {
         await page.setViewportSize({ width, height: 900 });
         await expect(switcher.dialog).toBeVisible();
+        await expect(storageNotice).toBeVisible();
+        expect(await storageNotice.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
 
         await closeButton.focus();
         await page.keyboard.press('Shift+Tab');

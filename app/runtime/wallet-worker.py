@@ -28,7 +28,6 @@ warnings.filterwarnings("ignore", category=SyntaxWarning, module=r"^hio(\.|$)")
 WALLET_STORAGE_PREFIX = "fortweb-vault-"
 REGISTRY_NAME = "fortweb-vault-registry"
 REGISTRY_STORE = "vaults."
-LEGACY_ROOT_SALT = "0AAwMTIzNDU2Nzg5YWJjZGVm"
 REQUEST_KIND = "fortweb.runtime.request"
 RESPONSE_KIND = "fortweb.runtime.response"
 PASSCODE_KDF_DEFAULTS = {
@@ -133,8 +132,7 @@ async def _acquire_writer():
     options.mode = "exclusive"
     options.ifAvailable = True
     try:
-        # shortcut: legacy workers ignore this lock; establish a verified upgrade boundary before rollout.
-        request = asyncio.ensure_future(locks.request("@fortweb/writer", options, callback))
+        request = asyncio.ensure_future(locks.request("@fortweb-v2/writer", options, callback))
     except BaseException:
         callback.destroy()
         raise RuntimeFault("UNSUPPORTED", "Exclusive browser storage locking is unavailable.")
@@ -274,7 +272,7 @@ class _WorkerStorage:
 
 async def _open_worker_storage(namespace):
     module = importlib.import_module("polyscript")
-    return _WorkerStorage(await module.storage(f"@fortweb/{namespace}"))
+    return _WorkerStorage(await module.storage(f"@fortweb-v2/{namespace}"))
 
 
 def _runtime_origin_contract():
@@ -448,7 +446,6 @@ vaulting.configure_runtime(
     wallet_storage_prefix=WALLET_STORAGE_PREFIX,
     registry_name=REGISTRY_NAME,
     registry_store=REGISTRY_STORE,
-    legacy_root_salt=LEGACY_ROOT_SALT,
     passcode_kdf_defaults=PASSCODE_KDF_DEFAULTS,
     default_settings=DEFAULT_SETTINGS,
     kf_state_subdb=KF_STATE_SUBDB,

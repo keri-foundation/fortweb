@@ -104,7 +104,7 @@ class _HarnessStorage:
 
 async def _open_worker_storage(namespace):
     module = importlib.import_module("polyscript")
-    return _HarnessStorage(await module.storage(f"@fortweb/{namespace}"))
+    return _HarnessStorage(await module.storage(f"@fortweb-v2/{namespace}"))
 
 
 def _runtime_evidence():

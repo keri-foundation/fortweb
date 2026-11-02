@@ -174,11 +174,23 @@ the open vault until its close is retried. These checks do not repair persisted
 data. Cooperating wallet workers use an exclusive browser Web Lock while a
 vault is open and reject access when the lock is unavailable or busy.
 
-Web Locks cannot prevent an older runtime or other code that ignores the lock
-from writing the same IndexedDB data. Do not use this protection as a mixed-version
-rollout guarantee: the old writer must be excluded before relying on it. A safe
-upgrade boundary is not established by this runtime. Web Lock availability and
-storage scope in the target iOS and Android WebViews remain unverified.
+New vaults use the `@fortweb-v2/` storage namespace, separate from the legacy
+`@fortweb/` namespace. Their keys are generated in the new vault; legacy keys
+and identities are not migrated. Older vaults remain in legacy storage and are
+not available in the new vault list. Copying legacy signing authority into the
+new namespace would not make that identity safe from a legacy writer.
+
+Web Locks cannot prevent code that ignores the lock from writing the same
+IndexedDB data. The namespace boundary protects against the normal paths of
+legacy FortWeb workers, not arbitrary same-origin code or copies of signing
+keys outside this storage. Different browser origins and application containers
+are separate lock and storage scopes. Web Lock availability and storage scope
+in the target iOS and Android WebViews remain unverified.
+
+The mixed-version lifecycle test requires `FORTWEB_LEGACY_RUNTIME_DIR` to point
+to a verified legacy runtime tree; without it the test is skipped. Existing
+legacy signing identities are not eligible for protected use until a separate
+safe migration procedure has been established.
 
 Run the wheelhouse, WebBaser lifecycle, runtime canary, and application suites.
 The lifecycle suite uses new workers for persistence and recovery. It checks

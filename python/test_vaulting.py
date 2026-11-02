@@ -21,6 +21,21 @@ def _load_module():
     return module
 
 
+class ProtectedVaultRecordTest(unittest.TestCase):
+    def test_missing_salt_and_changed_storage_name_are_rejected(self):
+        vaulting = _load_module()
+        vaulting._CONFIG.update(wallet_storage_prefix="fortweb-vault-", passcode_kdf_defaults={
+            "algorithm": "argon2id13", "salt": "salt", "opslimit": 2,
+            "memlimit": 67108864, "outlen": 16,
+        })
+        record = vaulting._vault_record(vault_id="test", alias="test", encrypted=False, root_salt="fresh")
+        self.assertEqual(vaulting._coerce_vault_record(record)["rootSalt"], "fresh")
+        for change in ({"rootSalt": ""}, {"storageName": "legacy"}):
+            with self.subTest(change=change), self.assertRaises(vaulting.RuntimeFault) as error:
+                vaulting._coerce_vault_record({**record, **change})
+            self.assertEqual(error.exception.code, "BAD_STATE")
+
+
 class FailedPersistenceTest(unittest.IsolatedAsyncioTestCase):
     async def test_flush_failure_blocks_use_and_success_flushes_keeper_first(self):
         vaulting = _load_module()
@@ -117,7 +132,6 @@ class VaultlessSettingsTest(unittest.TestCase):
             wallet_storage_prefix="fortweb-vault-",
             registry_name="fortweb-vault-registry",
             registry_store="vaults.",
-            legacy_root_salt="0AAwMTIzNDU2Nzg5YWJjZGVm",
             passcode_kdf_defaults={},
             default_settings={"tempDatastore": False, "keyTier": "low"},
             kf_state_subdb="kfst.",
