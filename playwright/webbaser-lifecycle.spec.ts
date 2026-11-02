@@ -675,6 +675,220 @@ test("@smoke bundled wallet allows HTTPS service data and rejects cleartext and 
     }
 });
 
+test("public identifier export and import survive vault and worker restarts", async ({ page, baseURL }, testInfo) => {
+    test.setTimeout(PHASE_TIMEOUT_MS);
+    const started = page.waitForEvent("worker", { timeout: PHASE_TIMEOUT_MS });
+    await page.goto(new URL(PRODUCTION_HARNESS_PATH, baseURL).toString());
+    await page.waitForFunction(() => (
+        window as typeof window & { webbaserProductionHarnessReady?: boolean }
+    ).webbaserProductionHarnessReady === true);
+    let worker = await started;
+    const request = (method: string, params: Record<string, unknown> = {}) => page.evaluate(
+        ({ method, params }) => (
+            window as typeof window & { webbaserProductionHarness: ProductionHarness }
+        ).webbaserProductionHarness.request(method, params), { method, params },
+    );
+    try {
+        const created = await request("vaults.create", { name: uniqueName("export"), passcode: "" });
+        const vaultId = String((created.vault as Record<string, unknown>).id);
+        await request("vaults.open", { vaultId, passcode: "" });
+        const createdIdentifier = await request("identifiers.create", { vaultId, alias: "exported" });
+        const aid = String((createdIdentifier.identifier as Record<string, unknown>).prefix);
+        const exported = await request("identifiers.export", { vaultId, aid });
+        const cesr = Buffer.from(String(exported.cesr), "base64");
+        expect(cesr.length).toBeGreaterThan(0);
+        expect(cesr.includes(aid)).toBe(true);
+        await request("vaults.close", { vaultId });
+        await request("vaults.open", { vaultId, passcode: "" });
+        expect(await request("identifiers.export", { vaultId, aid })).toEqual(exported);
+        writeFileSync(testInfo.outputPath("identifier.cesr"), cesr);
+        await expect(request("remotes.import", { vaultId, aid, alias: "self", cesr: exported.cesr }))
+            .rejects.toThrow(/local identifier cannot be imported/);
+        await request("vaults.close", { vaultId });
+
+        const recipient = await request("vaults.create", { name: uniqueName("import"), passcode: "" });
+        const recipientId = String((recipient.vault as Record<string, unknown>).id);
+        await request("vaults.open", { vaultId: recipientId, passcode: "" });
+        await expect(request("remotes.import", { vaultId: recipientId, alias: "bad", cesr: "bm90IENFU1I=" }))
+            .rejects.toThrow(/invalid or unsupported/);
+        const imported = await request("remotes.import", { vaultId: recipientId, alias: "sender", cesr: exported.cesr });
+        expect(imported.remote).toEqual(expect.objectContaining({ aid, alias: "sender" }));
+        const refreshed = await request("remotes.import", { vaultId: recipientId, alias: "sender", cesr: exported.cesr });
+        expect(refreshed.remote).toEqual(expect.objectContaining({ aid, alias: "sender" }));
+        await request("vaults.close", { vaultId: recipientId });
+        const closed = worker.waitForEvent("close", { timeout: PHASE_TIMEOUT_MS });
+        await page.evaluate(() => (
+            window as typeof window & { webbaserProductionHarness: ProductionHarness }
+        ).webbaserProductionHarness.destroy());
+        await closed;
+        const restarted = page.waitForEvent("worker", { timeout: PHASE_TIMEOUT_MS });
+        await page.reload();
+        await page.waitForFunction(() => (
+            window as typeof window & { webbaserProductionHarnessReady?: boolean }
+        ).webbaserProductionHarnessReady === true);
+        worker = await restarted;
+        await request("vaults.open", { vaultId: recipientId, passcode: "" });
+        const restored = await request("remotes.get", { vaultId: recipientId, aid });
+        expect(restored.remote).toEqual(expect.objectContaining({ aid, alias: "sender" }));
+        await request("vaults.close", { vaultId: recipientId });
+    } finally {
+        const closed = worker.waitForEvent("close", { timeout: PHASE_TIMEOUT_MS });
+        await page.evaluate(() => (
+            window as typeof window & { webbaserProductionHarness: ProductionHarness }
+        ).webbaserProductionHarness.destroy());
+        await closed;
+    }
+});
+
+test("a user can import a public identifier file into a browser vault", async ({ page, baseURL }) => {
+    test.setTimeout(PHASE_TIMEOUT_MS);
+    await page.goto(new URL(PRODUCTION_HARNESS_PATH, baseURL).toString());
+    await page.waitForFunction(() => (
+        window as typeof window & { webbaserProductionHarnessReady?: boolean }
+    ).webbaserProductionHarnessReady === true);
+    const request = (method: string, params: Record<string, unknown> = {}) => page.evaluate(
+        ({ method, params }) => (
+            window as typeof window & { webbaserProductionHarness: ProductionHarness }
+        ).webbaserProductionHarness.request(method, params), { method, params },
+    );
+    const source = await request("vaults.create", { name: uniqueName("file-source"), passcode: "" });
+    const sourceId = String((source.vault as Record<string, unknown>).id);
+    await request("vaults.open", { vaultId: sourceId, passcode: "" });
+    const identifier = await request("identifiers.create", { vaultId: sourceId, alias: "source" });
+    const aid = String((identifier.identifier as Record<string, unknown>).aid);
+    const exported = await request("identifiers.export", { vaultId: sourceId, aid });
+    await request("vaults.close", { vaultId: sourceId });
+    const recipient = await request("vaults.create", { name: uniqueName("file-recipient"), passcode: "" });
+    const recipientId = String((recipient.vault as Record<string, unknown>).id);
+    await page.goto(new URL(`/fortweb/app/index.html#/vaults/${encodeURIComponent(recipientId)}/unlock`, baseURL).toString());
+    await page.getByRole("button", { name: "Open", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Local Identifiers", exact: true })).toBeVisible();
+    await page.evaluate((id) => { window.location.hash = `#/vaults/${encodeURIComponent(id)}/remotes`; }, recipientId);
+    await page.getByRole("button", { name: "Add Remote Identifier" }).click();
+    await page.getByLabel("Alias").fill("imported sender");
+    await page.getByLabel("Or select a public CESR identifier file").setInputFiles({
+        name: "sender.cesr", mimeType: "application/cesr", buffer: Buffer.from(String(exported.cesr), "base64"),
+    });
+    await page.getByRole("button", { name: "Import CESR" }).click();
+    await expect(page.getByRole("link", { name: "imported sender" })).toBeVisible();
+    await page.getByRole("button", { name: "Lock vault" }).click();
+    await page.getByRole("button", { name: "Open", exact: true }).click();
+    await page.evaluate((id) => { window.location.hash = `#/vaults/${encodeURIComponent(id)}/remotes`; }, recipientId);
+    await expect(page.getByRole("link", { name: "imported sender" })).toBeVisible();
+});
+
+test("credential schema import validates the expected ID and survives a worker restart", async ({ page, baseURL }) => {
+    test.setTimeout(PHASE_TIMEOUT_MS);
+    const schema = readFileSync(path.join(process.cwd(), "playwright/fixtures/default-acdc-schema.json"), "utf8");
+    const schemaId = String((JSON.parse(schema) as Record<string, unknown>)["$id"]);
+    const started = page.waitForEvent("worker", { timeout: PHASE_TIMEOUT_MS });
+    await page.goto(new URL(PRODUCTION_HARNESS_PATH, baseURL).toString());
+    await page.waitForFunction(() => (
+        window as typeof window & { webbaserProductionHarnessReady?: boolean }
+    ).webbaserProductionHarnessReady === true);
+    let worker = await started;
+    const request = (method: string, params: Record<string, unknown> = {}) => page.evaluate(
+        ({ method, params }) => (
+            window as typeof window & { webbaserProductionHarness: ProductionHarness }
+        ).webbaserProductionHarness.request(method, params), { method, params },
+    );
+    try {
+        const created = await request("vaults.create", { name: uniqueName("credential-schema"), passcode: "" });
+        const vaultId = String((created.vault as Record<string, unknown>).id);
+        await expect(request("schemas.import", { vaultId, schemaId, schema })).rejects.toThrow(/Open a vault/);
+        await request("vaults.open", { vaultId, passcode: "" });
+        await expect(request("schemas.import", { vaultId, schemaId: "wrong", schema })).rejects.toThrow(/invalid or does not match/);
+        await expect(request("schemas.import", { vaultId, schemaId, schema: "not JSON" })).rejects.toThrow(/invalid or does not match/);
+        const tampered = JSON.parse(schema) as Record<string, unknown>;
+        tampered.title = "Altered";
+        await expect(request("schemas.import", { vaultId, schemaId, schema: JSON.stringify(tampered) })).rejects.toThrow(/invalid or does not match/);
+        const imported = await request("schemas.import", { vaultId, schemaId, schema });
+        expect(imported.schema).toEqual(expect.objectContaining({ said: schemaId, title: "ACM Default Schema" }));
+        expect(await request("schemas.import", { vaultId, schemaId, schema })).toEqual(imported);
+        await request("vaults.close", { vaultId });
+        const closed = worker.waitForEvent("close", { timeout: PHASE_TIMEOUT_MS });
+        await page.evaluate(() => (
+            window as typeof window & { webbaserProductionHarness: ProductionHarness }
+        ).webbaserProductionHarness.destroy());
+        await closed;
+        const restarted = page.waitForEvent("worker", { timeout: PHASE_TIMEOUT_MS });
+        await page.reload();
+        await page.waitForFunction(() => (
+            window as typeof window & { webbaserProductionHarnessReady?: boolean }
+        ).webbaserProductionHarnessReady === true);
+        worker = await restarted;
+        await request("vaults.open", { vaultId, passcode: "" });
+        expect(await request("schemas.get", { vaultId, schemaId })).toEqual(imported);
+        await request("vaults.close", { vaultId });
+    } finally {
+        const closed = worker.waitForEvent("close", { timeout: PHASE_TIMEOUT_MS });
+        await page.evaluate(() => (
+            window as typeof window & { webbaserProductionHarness: ProductionHarness }
+        ).webbaserProductionHarness.destroy());
+        await closed;
+    }
+});
+
+test("signed credential issuance respects the selected browser runtime", async ({ page, baseURL }, testInfo) => {
+    test.setTimeout(PHASE_TIMEOUT_MS);
+    const schema = readFileSync(path.join(process.cwd(), "playwright/fixtures/default-acdc-schema.json"), "utf8");
+    const schemaId = String((JSON.parse(schema) as Record<string, unknown>)["$id"]);
+    const started = page.waitForEvent("worker", { timeout: PHASE_TIMEOUT_MS });
+    await page.goto(new URL(PRODUCTION_HARNESS_PATH, baseURL).toString());
+    await page.waitForFunction(() => (
+        window as typeof window & { webbaserProductionHarnessReady?: boolean }
+    ).webbaserProductionHarnessReady === true);
+    const worker = await started;
+    const request = (method: string, params: Record<string, unknown> = {}) => page.evaluate(
+        ({ method, params }) => (
+            window as typeof window & { webbaserProductionHarness: ProductionHarness }
+        ).webbaserProductionHarness.request(method, params), { method, params },
+    );
+    try {
+        const source = await request("vaults.create", { name: uniqueName("signed-issuer"), passcode: "" });
+        const vaultId = String((source.vault as Record<string, unknown>).id);
+        await request("vaults.open", { vaultId, passcode: "" });
+        const createdIssuer = await request("identifiers.create", { vaultId, alias: "issuer" });
+        const issuerAid = String((createdIssuer.identifier as Record<string, unknown>).aid);
+        const issuer = await request("identifiers.export", { vaultId, aid: issuerAid });
+        await request("vaults.close", { vaultId });
+        const recipientVault = await request("vaults.create", { name: uniqueName("signed-recipient"), passcode: "" });
+        const recipientId = String((recipientVault.vault as Record<string, unknown>).id);
+        await request("vaults.open", { vaultId: recipientId, passcode: "" });
+        const createdRecipient = await request("identifiers.create", { vaultId: recipientId, alias: "recipient" });
+        const recipientAid = String((createdRecipient.identifier as Record<string, unknown>).aid);
+        const recipient = await request("identifiers.export", { vaultId: recipientId, aid: recipientAid });
+        await request("vaults.close", { vaultId: recipientId });
+        await request("vaults.open", { vaultId, passcode: "" });
+        await request("remotes.import", { vaultId, alias: "recipient", cesr: recipient.cesr });
+        await request("schemas.import", { vaultId, schemaId, schema });
+        const params = { vaultId, issuerAid, recipientAid, schemaId, attributes: { name: "Example" } };
+        await expect(request("credentials.issueSigned", { ...params, schemaId: "missing" })).rejects.toThrow(/Schema was not found/);
+        await expect(request("credentials.issueSigned", { ...params, attributes: { i: issuerAid } })).rejects.toThrow(/match the recipient/);
+        if (process.env["FORTWEB_EXPECT_BROWSER_ACDC"] !== "1") {
+            await expect(request("credentials.issueSigned", params)).rejects.toThrow(/runtime does not support ACDC/);
+        } else {
+            const result = await request("credentials.issueSigned", params);
+            const credential = result.credential as Record<string, unknown>;
+            expect(credential).toEqual(expect.objectContaining({ issuerAid, recipientAid, schemaId, authentication: "signature", registry: null }));
+            writeFileSync(testInfo.outputPath("credential.cesr"), Buffer.from(String(credential.cesr), "base64"));
+            writeFileSync(testInfo.outputPath("issuer.cesr"), Buffer.from(String(issuer.cesr), "base64"));
+            writeFileSync(testInfo.outputPath("schema.json"), schema);
+            writeFileSync(testInfo.outputPath("public.json"), JSON.stringify({ issuer: issuerAid, holder: recipientAid }));
+        }
+        await request("vaults.close", { vaultId });
+        await request("vaults.open", { vaultId, passcode: "" });
+        expect((await request("schemas.get", { vaultId, schemaId })).schema).toEqual(expect.objectContaining({ said: schemaId }));
+        await request("vaults.close", { vaultId });
+    } finally {
+        const closed = worker.waitForEvent("close", { timeout: PHASE_TIMEOUT_MS });
+        await page.evaluate(() => (
+            window as typeof window & { webbaserProductionHarness: ProductionHarness }
+        ).webbaserProductionHarness.destroy());
+        await closed;
+    }
+});
+
 test("@smoke WebBaser production bridge loads local wheels and resolves an OOBI", async ({ page, baseURL }) => {
     test.setTimeout(900_000);
     expect(baseURL).toBeTruthy();

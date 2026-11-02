@@ -72,6 +72,29 @@ async function expectNoUnexpectedErrors(page: Page, pageErrors: string[], consol
 }
 
 test.describe('FortWeb route acceptance', () => {
+    test('remote identifier dialog accepts a public CESR file', async ({ page }) => {
+        await page.goto('/fortweb/app/index.html#/_fixtures/remotes/empty');
+        await page.getByRole('button', { name: 'Add Remote Identifier' }).click();
+        await page.getByLabel('Alias').fill('sender');
+        await page.getByLabel('Or select a public CESR identifier file').setInputFiles({
+            name: 'sender.cesr', mimeType: 'application/cesr', buffer: Buffer.from('fixture'),
+        });
+        await page.getByRole('button', { name: 'Import CESR' }).click();
+        await expect(page.getByText('Remote identifier imported.')).toBeVisible();
+    });
+
+    test('identifier detail downloads the exported CESR bytes', async ({ page }) => {
+        await page.goto('/fortweb/app/index.html#/_fixtures/identifier-detail');
+        const downloadPromise = page.waitForEvent('download');
+        await page.getByRole('button', { name: 'Export CESR' }).click();
+        const download = await downloadPromise;
+        expect(download.suggestedFilename()).toMatch(/\.cesr$/);
+        const stream = await download.createReadStream();
+        const chunks: Buffer[] = [];
+        for await (const chunk of stream) chunks.push(Buffer.from(chunk));
+        expect(Buffer.concat(chunks).toString()).toBe('FIXTURE');
+    });
+
     test('fixture index route renders correctly', async ({ page }) => {
         const pageErrors = collectUnexpectedPageErrors(page);
         const consoleErrors = collectUnexpectedConsoleErrors(page);

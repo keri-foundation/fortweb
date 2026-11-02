@@ -365,9 +365,24 @@ actions = {
         await render();
     },
 
+    async exportIdentifier(aid: string): Promise<string> {
+        const vaultId = requireUnlockedVaultId();
+        const result = await bridge.request<{ cesr: string }>(METHODS.identifiersExport, { vaultId, aid });
+        return result.cesr;
+    },
+
     async resolveRemoteOobi(url: string, alias: string): Promise<void> {
         const vaultId = requireUnlockedVaultId();
         await bridge.request(METHODS.remotesResolveOobi, { vaultId, url, alias });
+        const { vault } = await bridge.request<{ vault: VaultSummary }>(METHODS.vaultsSummary, { vaultId });
+        session.patch({ vaultSummary: vault });
+        await actions.refreshVaults(vaultId, vault);
+        await render();
+    },
+
+    async importRemote(cesr: string, alias: string): Promise<void> {
+        const vaultId = requireUnlockedVaultId();
+        await bridge.request(METHODS.remotesImport, { vaultId, cesr, alias });
         const { vault } = await bridge.request<{ vault: VaultSummary }>(METHODS.vaultsSummary, { vaultId });
         session.patch({ vaultSummary: vault });
         await actions.refreshVaults(vaultId, vault);

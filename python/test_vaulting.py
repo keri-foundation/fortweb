@@ -134,6 +134,23 @@ class IdentifierNamespaceTest(unittest.TestCase):
         self.assertEqual(raised.exception.code, "NOT_FOUND")
         self.assertIs(hby.habByPre("internal"), internal)
 
+        vaulting._STATE = {
+            "vault": {"id": "vault"},
+            "hby": hby,
+            "modules": {"organizing": SimpleNamespace(Organizer=lambda **_: None)},
+        }
+        exported = []
+        vaulting._identifier_introduction = lambda hab, _: exported.append(hab) or b"public CESR"
+        result = asyncio.run(vaulting.dispatch("identifiers.export", {"vaultId": "vault", "aid": "public"}))
+        self.assertEqual(result, {"cesr": "cHVibGljIENFU1I="})
+        for vault_id, aid, code in (("vault", "internal", "NOT_FOUND"), ("vault", "missing", "NOT_FOUND"),
+                                    ("other", "public", "LOCKED")):
+            with self.subTest(vault_id=vault_id, aid=aid):
+                with self.assertRaises(vaulting.RuntimeFault) as error:
+                    asyncio.run(vaulting.dispatch("identifiers.export", {"vaultId": vault_id, "aid": aid}))
+                self.assertEqual(error.exception.code, code)
+        self.assertEqual(exported, [public])
+
 
 class VaultSetupTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):

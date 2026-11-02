@@ -86,19 +86,19 @@ const FIXTURES: Record<string, FixtureFactory> = {
     }),
 
     "identifier-detail": () => ({
-        page: renderIdentifierDetailPage({ vault: fixtureVault, identifier: fixtureIdentifiers[0] }),
+        page: renderIdentifierDetailPage({ vault: fixtureVault, identifier: fixtureIdentifiers[0], onExportIdentifier: async () => "RklYVFVSRQ==" }),
         vault: fixtureVault,
         route: { name: "identifier-detail", shellMode: "vault", navMode: "core", path: "/_fixtures/identifier-detail", params: { vaultId: FIXTURE_VAULT_ID_CONST, aid: fixtureIdentifiers[0].aid } },
     }),
 
     "remotes/empty": () => ({
-        page: renderRemotesPage({ vault: fixtureVault, remotes: [], filter: "all", onResolveRemote: asyncNoop, onUpdateRemote: asyncNoop, onFilterChange: noop }),
+        page: renderRemotesPage({ vault: fixtureVault, remotes: [], filter: "all", onResolveRemote: asyncNoop, onImportRemote: asyncNoop, onUpdateRemote: asyncNoop, onFilterChange: noop }),
         vault: fixtureVault,
         route: { name: "remotes", shellMode: "vault", navMode: "core", path: "/_fixtures/remotes/empty", params: { vaultId: FIXTURE_VAULT_ID_CONST } },
     }),
 
     "remotes/populated": () => ({
-        page: renderRemotesPage({ vault: fixtureVault, remotes: fixtureRemotes, filter: "all", onResolveRemote: asyncNoop, onUpdateRemote: asyncNoop, onFilterChange: noop }),
+        page: renderRemotesPage({ vault: fixtureVault, remotes: fixtureRemotes, filter: "all", onResolveRemote: asyncNoop, onImportRemote: asyncNoop, onUpdateRemote: asyncNoop, onFilterChange: noop }),
         vault: fixtureVault,
         route: { name: "remotes", shellMode: "vault", navMode: "core", path: "/_fixtures/remotes/populated", params: { vaultId: FIXTURE_VAULT_ID_CONST } },
     }),

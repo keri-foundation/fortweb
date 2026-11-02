@@ -82,6 +82,39 @@ Retain the source declaration and patches with the build evidence. Compare
 packaged source modules and dependency metadata with the patched source before
 promoting a changed wheel.
 
+### Browser ACDC import patch
+
+The optional [`keripy-pyodide-acdc-imports.patch`](../scripts/patches/keripy-pyodide-acdc-imports.patch)
+allows ACDC message construction in Pyodide without importing the native LMDB
+registry classes. Native Python keeps those imports. Copy the patch beside the
+source declaration and include it in the Keripy source entry:
+
+```json
+"patches": [{
+  "path": "keripy-pyodide-acdc-imports.patch",
+  "sha256": "8de46e856d6fc68f7096a4e25ca169cbf3caaf92037b0f71e79c5ee09e4c1177"
+}]
+```
+
+Build a new runtime source and use its manifest and digest when running the
+runtime builder. The published default source remains unpatched until a new
+reviewed source archive is published and pinned. Set
+`FORTWEB_EXPECT_BROWSER_ACDC=1` when running the WebBaser lifecycle browser test
+against a runtime built with this patch; the unpatched runtime must reject the
+operation without interrupting the vault worker.
+
+The `credentials.issueSigned` worker method creates a schema-validated signed
+ACDC for a known remote identifier and returns its CESR bytes. It does not store
+or deliver the credential, create a registry, track revocation, or verify receipt.
+The caller must retain the returned bytes and the recipient must verify issuer
+authentication independently. This patch does not enable V2 browser registry
+management or change the pinned KERIpy issuer-authentication implementation.
+The patched-runtime browser test writes a synthetic credential, issuer history,
+and schema to its Playwright output directory. In an environment with Locksmith
+installed, set `FORTWEB_CREDENTIAL_INTEROP_DIR` to that directory and run
+`python -m unittest python.test_credential_issuance.CredentialIssuanceTest.test_browser_output_with_locksmith_issuer_authentication`
+to verify the result independently.
+
 ## Acquire, build, and verify
 
 For a published runtime-source archive, supply both archive and manifest

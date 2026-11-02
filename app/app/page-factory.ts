@@ -49,10 +49,12 @@ interface StateSnapshot {
 
 interface PageActions {
     createIdentifier(alias: string): Promise<void>;
+    exportIdentifier(aid: string): Promise<string>;
     loadKfBootstrap(bootUrl?: string): Promise<WitnessOverviewProps["bootstrapState"]>;
     openVault(vaultId: string, passcode?: string): Promise<RecordValue>;
     refreshKfWatcherStatuses(watcherEids?: string[]): Promise<void>;
     resolveRemoteOobi(url: string, alias: string): Promise<void>;
+    importRemote(cesr: string, alias: string): Promise<void>;
     setRemoteFilter(filter: string): void;
     startKfOnboarding(request: {
         bootUrl: string;
@@ -132,6 +134,7 @@ export async function loadPage({
             page: renderIdentifierDetailPage({
                 vault: assumeType<IdentifierDetailProps["vault"]>(findVault(route.params.vaultId)),
                 identifier: assumeType<IdentifierDetailProps["identifier"]>(pageData.identifier),
+                onExportIdentifier: () => actions.exportIdentifier(route.params.aid ?? ""),
             }),
             vault: findVault(route.params.vaultId),
         };
@@ -146,6 +149,9 @@ export async function loadPage({
                 filter: currentState().remoteFilter,
                 async onResolveRemote(url: string, alias: string) {
                     await actions.resolveRemoteOobi(url, alias);
+                },
+                async onImportRemote(cesr: string, alias: string) {
+                    await actions.importRemote(cesr, alias);
                 },
                 async onUpdateRemote(aid: string, patch: Record<string, unknown>) {
                     await actions.updateRemote(aid, patch);

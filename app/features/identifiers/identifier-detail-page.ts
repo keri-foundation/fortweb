@@ -29,9 +29,10 @@ interface IdentifierRecord {
 interface IdentifierDetailProps {
     vault: VaultRecord;
     identifier: IdentifierRecord;
+    onExportIdentifier(): Promise<string>;
 }
 
-export function renderIdentifierDetailPage({ vault, identifier }: IdentifierDetailProps) {
+export function renderIdentifierDetailPage({ vault, identifier, onExportIdentifier }: IdentifierDetailProps) {
     const witnessPills = identifier.witnesses.length
         ? identifier.witnesses
               .map((witness) => badgeHtml({ label: `${witness.alias} · ${witness.status}`, tone: "neutral" }))
@@ -51,6 +52,7 @@ export function renderIdentifierDetailPage({ vault, identifier }: IdentifierDeta
                         </p>
                     </div>
                     <div class="page-header__actions">
+                        <button class="button button--secondary" type="button" data-export-identifier>Export CESR</button>
                         <a class="button button--secondary" href="${identifiersHref(vault.id)}">Back to Identifiers</a>
                     </div>
                 </header>
@@ -123,6 +125,24 @@ export function renderIdentifierDetailPage({ vault, identifier }: IdentifierDeta
             </section>
         `,
         setup(root: HTMLElement): void {
+            const exportButton = root.querySelector<HTMLButtonElement>("[data-export-identifier]");
+            exportButton?.addEventListener("click", async () => {
+                exportButton.disabled = true;
+                try {
+                    const encoded = await onExportIdentifier();
+                    const bytes = Uint8Array.from(atob(encoded), (char) => char.charCodeAt(0));
+                    const url = URL.createObjectURL(new Blob([bytes], { type: "application/cesr" }));
+                    const link = document.createElement("a");
+                    link.href = url;
+                    link.download = `${identifier.prefix}.cesr`;
+                    link.click();
+                    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+                } catch {
+                    showToast({ message: "Could not export this identifier.", tone: "error", durationMs: 3000 });
+                } finally {
+                    exportButton.disabled = false;
+                }
+            });
             root.querySelectorAll("[data-copy]").forEach((button) => {
                 if (!(button instanceof HTMLElement)) {
                     return;
