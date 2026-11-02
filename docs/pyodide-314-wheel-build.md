@@ -115,6 +115,24 @@ installed, set `FORTWEB_CREDENTIAL_INTEROP_DIR` to that directory and run
 `python -m unittest python.test_credential_issuance.CredentialIssuanceTest.test_browser_output_with_locksmith_issuer_authentication`
 to verify the result independently.
 
+### Promoting a patched source archive
+
+The source archive is a separate release input from the runtime package. After
+reviewing and publishing a source archive, update the source URL, archive
+SHA-256, and manifest SHA-256 together in
+`.github/actions/produce-runtime-package/action.yml`. Do not point the default
+pin at an unpublished archive. Retain the prior three values for rollback.
+
+The shared browser acceptance action runs the lifecycle suite without
+`FORTWEB_EXPECT_BROWSER_ACDC`. When promoting this patch, set that variable to
+`1` for its lifecycle step in the same reviewed pin change; otherwise the suite
+expects the unpatched runtime to reject credential construction. Supporting
+both patched and unpatched branch overrides requires passing the matching
+expectation through the workflow; the current workflow has no such input.
+Verify the produced runtime and its complete browser acceptance sequence before
+using it as a release candidate. Tag-based releases reject source overrides and
+consume the reviewed default pin.
+
 ## Acquire, build, and verify
 
 For a published runtime-source archive, supply both archive and manifest

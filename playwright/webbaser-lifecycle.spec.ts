@@ -505,6 +505,7 @@ test("@smoke WebBaser persists and clears WebBaser state across explicit PyWorke
         "habery-create-rotate",
         "browserclienter-http-oobi",
         "aggregate-close-partial-failure-retry",
+        "interrupted-kel-flush-export-safety",
         "mixed-version-witness-receipt-ingestion",
         "multi-witness-receipts-from-parser",
         "nested-v2-exn-stored-from-parser",

@@ -669,6 +669,76 @@ async def _check_partial_close_retry():
         vaulting._STATE = original_state
 
 
+async def _check_interrupted_kel_flush():
+    class Storage:
+        def __init__(self, backend, name):
+            self.backend, self.name = backend, name
+            self.local = dict(backend.persisted.get(name, {}))
+
+        def get(self, key, default=None):
+            return self.local.get(key, default)
+
+        def __setitem__(self, key, value):
+            self.local[key] = value
+
+        async def sync(self):
+            if self.backend.failure == self.name:
+                raise RuntimeError("injected sync failure")
+            self.backend.persisted[self.name] = dict(self.local)
+
+    class Backend:
+        def __init__(self):
+            self.persisted, self.failure = {}, None
+
+        async def open(self, name):
+            return Storage(self, name)
+
+    kering = importlib.import_module("keri.kering")
+    habbing = importlib.import_module("keri.app.habbing")
+    webkeeping = importlib.import_module("keri.app.webkeeping")
+    webbasing = importlib.import_module("keri.db.webbasing")
+    modules = {"kering": kering, "db": importlib.import_module("keri.db"),
+               "eventing": importlib.import_module("keri.core.eventing")}
+    backend = Backend()
+    name = "interrupted-kel-flush"
+
+    async def open_habery():
+        keeper, baser = webkeeping.WebKeeper(name=name), webbasing.WebBaser(name=name)
+        await keeper.reopen(storageOpener=backend.open)
+        await baser.reopen(storageOpener=backend.open)
+        return habbing.Habery(name=name, ks=keeper, db=baser, cf=vaulting.NullConfiger(),
+                              temp=False, salt=ROOT_SALT, version=kering.Vrsn_2_0)
+
+    hby = await open_habery()
+    hab = hby.makeHab(name="issuer", version=kering.Vrsn_2_0)
+    await vaulting.close_habery(hby)
+    hby = await open_habery()
+    hab = hby.habByName("issuer")
+    hab.interact(data=[{"d": hab.pre}], version=kering.Vrsn_2_0, gvrsn=kering.Vrsn_2_0)
+    said, sn = hab.kever.serder.said, hab.kever.sn
+    backend.failure = f"{name}:sigs."
+    try:
+        await hby.db.flush()
+    except RuntimeError as error:
+        _require(str(error) == "injected sync failure", "unexpected KEL flush error")
+    else:
+        raise AssertionError("KEL flush did not reach the injected failure")
+
+    # Open fresh storage handles without closing the failed worker's in-memory state.
+    backend.failure = None
+    recovered = await open_habery()
+    issuer = recovered.habByName("issuer")
+    indexed = recovered.db.kels.getLast(keys=issuer.pre, on=sn)
+    try:
+        vaulting._identifier_introduction(issuer, modules)
+    except vaulting.RuntimeFault as error:
+        _require(error.code == "BAD_STATE", "incomplete KEL produced the wrong error")
+    else:
+        _require(indexed is None or recovered.db.sigs.get(keys=(issuer.pre, said)),
+                 "incomplete KEL was exported without its signature")
+    await vaulting.close_habery(recovered)
+
+
 def _check_witness_receipt_ingestion():
     onboarding = importlib.import_module("onboarding")
     eventing = importlib.import_module("keri.core.eventing")
@@ -1035,6 +1105,7 @@ async def _oobi_absent(fixture):
 
 async def _create(names):
     await _check_partial_close_retry()
+    await _check_interrupted_kel_flush()
     _check_witness_receipt_ingestion()
     await _check_witness_receipt_aggregation()
     fixtures = {
@@ -1054,6 +1125,7 @@ async def _create(names):
             "habery-create-rotate",
             "browserclienter-http-oobi",
             "aggregate-close-partial-failure-retry",
+            "interrupted-kel-flush-export-safety",
             "mixed-version-witness-receipt-ingestion",
             "multi-witness-receipts-from-parser",
             "nested-v2-exn-stored-from-parser",
