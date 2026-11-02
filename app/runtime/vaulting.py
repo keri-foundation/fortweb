@@ -1046,6 +1046,89 @@ def _vault_summary(state):
     }
 
 
+async def _registry_operation(method, params, state):
+    try:
+        from keri.acdc import registering, registraring, regeventing, webregbasing
+    except ImportError as exc:
+        raise RuntimeFault("UNSUPPORTED", "This runtime does not support browser registries.") from exc
+
+    name = require_text(params.get("name"), field="Registry name")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", name) or name == "_fortweb_pending":
+        raise RuntimeFault("VALIDATION", "Registry name must contain only letters, numbers, hyphens, and underscores.")
+    baser = webregbasing.WebRegBaser(name=state["vault"]["storageName"])
+    await baser.reopen(storageOpener=_CONFIG["storage_opener"])
+    try:
+        store = registering.RegistryStore(baser)
+        if store.records.get(keys="_fortweb_pending") is not None:
+            raise RuntimeFault("BAD_STATE", "Registry operation is incomplete and requires recovery.")
+        try:
+            manager = registraring.Regery(hby=state["hby"], baser=baser)
+        except Exception as exc:
+            raise RuntimeFault("BAD_STATE", "Registry storage is invalid or incomplete.") from exc
+
+        def validate():
+            count = len(manager.names)
+            for key in ("evts.", "ancs.", "tels.", "heds."):
+                if len(baser.db._stores[key].items) != count:
+                    raise RuntimeFault("BAD_STATE", "Registry storage is incomplete or conflicting.")
+            if baser.db._stores["maes."].items or baser.db._stores["ooes."].items:
+                raise RuntimeFault("BAD_STATE", "Registry storage contains unresolved events.")
+            if len(manager.regs) != count:
+                raise RuntimeFault("BAD_STATE", "Registry aliases conflict.")
+            for reg in manager.names.values():
+                rip = store.seqEvent(reg.regk, 0)
+                head = store.head(reg.regk)
+                anchor = store.anchor(reg.regk)
+                if rip is None or rip.said != reg.regk or head is None or head.qb64 != reg.regk or anchor is None:
+                    raise RuntimeFault("BAD_STATE", "Registry inception evidence is incomplete.")
+                try:
+                    verified = regeventing.vet(rip, db=state["hby"].db)
+                except Exception as exc:
+                    raise RuntimeFault("BAD_STATE", "Registry anchoring evidence is invalid.") from exc
+                if verified.issuer != reg.hab.pre or verified.regid != reg.regk or verified.anchors[0] != (anchor[0].sn, anchor[1].qb64):
+                    raise RuntimeFault("BAD_STATE", "Registry anchoring evidence conflicts.")
+
+        validate()
+        if method == "registries.create":
+            if name in manager.names:
+                raise RuntimeFault("CONFLICT", "Registry name already exists.")
+            issuer = require_text(params.get("issuerAid"), field="Issuer")
+            _get_identifier_record(state["hby"], issuer)
+            hab = state["hby"].habByPre(issuer)
+            # shortcut: incomplete operations stay blocked until verified recovery exists.
+            if not store.records.pin(keys="_fortweb_pending", val=registering.RegistryRecord(registryKey="pending")):
+                raise RuntimeFault("BAD_STATE", "Unable to record the pending registry operation.")
+            try:
+                await baser.db.flush()
+                reg = manager.makeRegistry(name=name, prefix=issuer)
+                rip = store.event(reg.regk)
+                hab.interact(data=[dict(i=reg.regk, s=rip.sad["n"], d=rip.said)],
+                             version=state["modules"]["kering"].Vrsn_2_0,
+                             gvrsn=state["modules"]["kering"].Vrsn_2_0)
+                if not reg.anchorMsg(rip.said) or reg.sn != 0:
+                    raise RuntimeFault("BAD_STATE", "Registry inception was not accepted.")
+                await flush_open_state()
+                await _validate_open_kels(state["hby"].db, state["modules"], keeper=state["hby"].ks)
+                await baser.db.flush()
+                validate()
+                if not store.records.rem(keys="_fortweb_pending"):
+                    raise RuntimeFault("BAD_STATE", "Unable to complete the pending registry operation.")
+                await baser.db.flush()
+            except BaseException:
+                state["persistence_failed"] = True
+                raise
+        else:
+            reg = manager.registryByName(name)
+            if reg is None:
+                raise RuntimeFault("NOT_FOUND", "Registry was not found.")
+            rip = store.seqEvent(reg.regk, 0)
+        return {"registry": {"name": name, "registryId": reg.regk, "issuerAid": reg.hab.pre,
+                             "inception": base64.b64encode(rip.raw).decode("ascii"),
+                             "kel": base64.b64encode(_identifier_introduction(reg.hab, state["modules"])).decode("ascii")}}
+    finally:
+        await baser.aclose()
+
+
 async def dispatch(method: str, params: dict):
     if method == "vaults.list":
         registry = await ensure_registry()
@@ -1107,6 +1190,8 @@ async def dispatch(method: str, params: dict):
             }
 
     state = require_open_state(_require_vault_id(params))
+    if method.startswith("registries."):
+        return await _registry_operation(method, params, state)
     if method == "settings.get":
         return {
             "settings": {

@@ -8,6 +8,8 @@ export const METHODS = Object.freeze({
     identifiersGet: "identifiers.get",
     identifiersCreate: "identifiers.create",
     identifiersExport: "identifiers.export",
+    registriesCreate: "registries.create",
+    registriesGet: "registries.get",
     schemasImport: "schemas.import",
     schemasGet: "schemas.get",
     credentialsIssueSigned: "credentials.issueSigned",

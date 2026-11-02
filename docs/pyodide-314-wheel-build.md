@@ -115,6 +115,34 @@ installed, set `FORTWEB_CREDENTIAL_INTEROP_DIR` to that directory and run
 `python -m unittest python.test_credential_issuance.CredentialIssuanceTest.test_browser_output_with_locksmith_issuer_authentication`
 to verify the result independently.
 
+### Browser registry backend patch
+
+The optional [`keripy-pyodide-registry.patch`](../scripts/patches/keripy-pyodide-registry.patch)
+avoids the native registry import in Pyodide, adds the browser alias store, and supplies
+the ordered KEL iterator used by registry anchor discovery. Apply it after the
+ACDC import patch and record its digest in the source declaration. Browser
+registry management requires a pre-opened WebRegBaser with alias storage; the
+native backend keeps its existing behavior. FortWeb validates persisted TEL
+indexes and KEL anchors when looking up a registry; the underlying manager
+does not provide these browser recovery checks on its own. FortWeb records an incomplete
+operation before signing, and refuses further registry operations if a failure
+leaves that marker behind. Automatic recovery of such operations is not yet
+available; do not clear the marker or discard evidence without verified recovery.
+Set `FORTWEB_EXPECT_REGISTRY_BACKEND=1` to run
+`playwright/registry-backend.spec.ts` against this patch.
+
+The worker exposes `registries.create` with `vaultId`, `issuerAid`, and `name`,
+and `registries.get` with `vaultId` and `name`. Each returns the registry ID,
+issuer, base64-encoded inception event, and public issuer KEL. These methods
+support inception only; registry-backed issuance and update processing are not
+implemented. A registry with unresolved events is rejected without deleting
+its evidence.
+
+The browser registry test writes initial and recovered public evidence to its
+Playwright output directory. Set `FORTWEB_REGISTRY_INTEROP_DIR` to that
+directory and run `python -m unittest python.test_registry_interop` with a
+compatible native KERIpy to verify both KEL anchors and the inception event.
+
 ### Promoting a patched source archive
 
 The source archive is a separate release input from the runtime package. After
