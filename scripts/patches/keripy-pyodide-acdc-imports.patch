@@ -1,0 +1,18 @@
+diff --git a/src/keri/acdc/__init__.py b/src/keri/acdc/__init__.py
+--- a/src/keri/acdc/__init__.py
++++ b/src/keri/acdc/__init__.py
+@@ -7,3 +7,5 @@
++import sys
++
+ from .messaging import (regcept, blindate, update, acdcmap, acdcatt, acdcagg,
+                        sectschema, sectattr, sectaggr, sectedge, sectrule,
+                        sectionate,
+@@ -15,4 +17,5 @@
+-from .regbasing import RegBaser
+ from .webregbasing import WebRegBaser
+-from .registering import RegistryStore, openRegistry
+-from .registraring import Regery, Registry, Registrar
++if sys.platform != "emscripten":
++    from .regbasing import RegBaser
++    from .registering import RegistryStore, openRegistry
++    from .registraring import Regery, Registry, Registrar
