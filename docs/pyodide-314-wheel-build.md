@@ -171,7 +171,14 @@ come from the generated inventory, not a previous acceptance run.
 Vault opening checks local identifier histories and signing-key state, and
 refuses incomplete or conflicting state. A failed flush blocks further use of
 the open vault until its close is retried. These checks do not repair persisted
-data, and independent workers do not yet have a shared single-writer lock.
+data. Cooperating wallet workers use an exclusive browser Web Lock while a
+vault is open and reject access when the lock is unavailable or busy.
+
+Web Locks cannot prevent an older runtime or other code that ignores the lock
+from writing the same IndexedDB data. Do not use this protection as a mixed-version
+rollout guarantee: the old writer must be excluded before relying on it. A safe
+upgrade boundary is not established by this runtime. Web Lock availability and
+storage scope in the target iOS and Android WebViews remain unverified.
 
 Run the wheelhouse, WebBaser lifecycle, runtime canary, and application suites.
 The lifecycle suite uses new workers for persistence and recovery. It checks

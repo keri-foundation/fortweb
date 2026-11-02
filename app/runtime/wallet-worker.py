@@ -89,6 +89,111 @@ IOS_LOOPBACK_NONCE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{16,}$")
 _MODULES = None
 _REQUEST_LOCK = asyncio.Lock()
 _RUNTIME_READY_TASK = None
+_WRITER_LOCK = None
+_WRITER_REQUEST = None
+_WRITER_CALLBACK = None
+_WRITER_RELEASING = False
+_WRITER_LOST = False
+_ACTIVE_REQUEST = None
+
+
+async def _acquire_writer():
+    global _WRITER_LOCK, _WRITER_REQUEST, _WRITER_CALLBACK, _WRITER_LOST
+    if _WRITER_LOST:
+        raise RuntimeFault("BAD_STATE", "Storage ownership was lost. Restart the wallet worker.")
+    if _WRITER_REQUEST is not None:
+        if _WRITER_REQUEST.done():
+            _WRITER_LOST = True
+            raise RuntimeFault("BAD_STATE", "Storage ownership was lost. Restart the wallet worker.")
+        return
+
+    locks = getattr(js.navigator, "locks", None)
+    if not locks:
+        raise RuntimeFault("UNSUPPORTED", "Exclusive browser storage locking is unavailable.")
+    from pyodide.ffi import create_proxy
+
+    loop = asyncio.get_running_loop()
+    granted = loop.create_future()
+    holder = {"release": None, "abandoned": False}
+
+    def claim(lock):
+        if holder["abandoned"] or not lock:
+            if not granted.done():
+                granted.set_result(False)
+            return None
+
+        release = loop.create_future()
+        holder["release"] = lambda: release.set_result(None)
+        holder["waiter"] = create_proxy(release)
+        granted.set_result(True)
+        return holder["waiter"]
+
+    callback = create_proxy(claim)
+    options = js.Object.new()
+    options.mode = "exclusive"
+    options.ifAvailable = True
+    try:
+        # shortcut: legacy workers ignore this lock; establish a verified upgrade boundary before rollout.
+        request = asyncio.ensure_future(locks.request("@fortweb/writer", options, callback))
+    except BaseException:
+        callback.destroy()
+        raise RuntimeFault("UNSUPPORTED", "Exclusive browser storage locking is unavailable.")
+
+    try:
+        done, _ = await asyncio.wait((granted, request), return_when=asyncio.FIRST_COMPLETED)
+        if granted not in done:
+            await request
+            raise RuntimeFault("BAD_STATE", "Browser storage ownership could not be verified.")
+        if not granted.result():
+            await request
+            raise RuntimeFault("BUSY", "This wallet is already open in another browser worker.")
+        if request.done():
+            await request
+            raise RuntimeFault("BAD_STATE", "Browser storage ownership was lost.")
+    except BaseException:
+        holder["abandoned"] = True
+        if holder["release"] is not None:
+            holder["release"]()
+
+        def cleanup(task):
+            if not task.cancelled():
+                task.exception()
+            if "waiter" in holder:
+                holder["waiter"].destroy()
+            callback.destroy()
+
+        request.add_done_callback(cleanup)
+        raise
+
+    _WRITER_LOCK, _WRITER_REQUEST, _WRITER_CALLBACK = holder, request, callback
+
+    def lost(task):
+        global _WRITER_LOST
+        if _WRITER_REQUEST is task and not _WRITER_RELEASING:
+            _WRITER_LOST = True
+            if vaulting._STATE is not None:
+                vaulting._STATE["persistence_failed"] = True
+            if _ACTIVE_REQUEST is not None:
+                _ACTIVE_REQUEST.cancel()
+
+    request.add_done_callback(lost)
+
+
+async def _release_writer():
+    global _WRITER_LOCK, _WRITER_REQUEST, _WRITER_CALLBACK, _WRITER_RELEASING
+    if _WRITER_REQUEST is None:
+        return
+    if _WRITER_LOST or _WRITER_REQUEST.done():
+        raise RuntimeFault("BAD_STATE", "Storage ownership was lost. Restart the wallet worker.")
+    _WRITER_RELEASING = True
+    try:
+        _WRITER_LOCK["release"]()
+        await _WRITER_REQUEST
+        _WRITER_LOCK["waiter"].destroy()
+        _WRITER_CALLBACK.destroy()
+        _WRITER_LOCK = _WRITER_REQUEST = _WRITER_CALLBACK = None
+    finally:
+        _WRITER_RELEASING = False
 
 
 def _origin():
@@ -375,6 +480,37 @@ async def _dispatch(method: str, params: dict):
     return await vaulting.dispatch(method, params)
 
 
+async def _dispatch_owned(method: str, params: dict):
+    global _ACTIVE_REQUEST
+    await _acquire_writer()
+    _ACTIVE_REQUEST = asyncio.current_task()
+    try:
+        result = await _dispatch(method, params)
+        if _WRITER_LOST or _WRITER_REQUEST.done():
+            raise RuntimeFault("BAD_STATE", "Storage ownership was lost. Restart the wallet worker.")
+        if vaulting._STATE is not None:
+            await vaulting.flush_open_state()
+        else:
+            await vaulting.close_idle_registry()
+            await _release_writer()
+        return result
+    except BaseException:
+        state = vaulting._STATE
+        if state is not None:
+            stores = (state["hby"].ks, state["hby"].db)
+            if any(subdb.dirty for store in stores for subdb in getattr(store, "_stores", {}).values()):
+                state["persistence_failed"] = True
+        elif not _WRITER_LOST:
+            try:
+                await vaulting.close_idle_registry()
+                await _release_writer()
+            except BaseException:
+                pass
+        raise
+    finally:
+        _ACTIVE_REQUEST = None
+
+
 def _error_payload(message_id: str, code: str, message: str):
     return json.dumps(
         {
@@ -434,7 +570,7 @@ async def handle_request(raw_message):
     try:
         await _ensure_runtime_ready()
         async with _REQUEST_LOCK:
-            result = await _dispatch(method, params)
+            result = await _dispatch_owned(method, params)
         return json.dumps(
             {
                 "id": message_id,
@@ -445,6 +581,10 @@ async def handle_request(raw_message):
         )
     except (RuntimeFault, vaulting.RuntimeFault) as exc:
         return _error_payload(message_id, exc.code, str(exc))
+    except asyncio.CancelledError:
+        if _WRITER_LOST:
+            return _error_payload(message_id, "BAD_STATE", "Storage ownership was lost. Restart the wallet worker.")
+        raise
     except Exception:
         return _error_payload(message_id, "RUNTIME_ERROR", "Runtime request failed.")
 

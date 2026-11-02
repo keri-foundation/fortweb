@@ -282,6 +282,17 @@ async def ensure_registry():
     return _REGISTRY
 
 
+async def close_idle_registry():
+    global _REGISTRY
+    if _STATE is not None:
+        return False
+    if _REGISTRY is not None:
+        await _REGISTRY["db"].flush()
+        _REGISTRY["db"].close()
+        _REGISTRY = None
+    return True
+
+
 def _format_bran(passcode: str):
     return passcode.replace("-", "")
 
