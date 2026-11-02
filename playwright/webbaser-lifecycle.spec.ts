@@ -493,6 +493,7 @@ test("@smoke WebBaser persists and clears WebBaser state across explicit PyWorke
         habery: uniqueName("webbaser-habery"),
         oobi: uniqueName("webbaser-oobi"),
         nested: uniqueName("webbaser-nested-v2"),
+        interrupted_kel: uniqueName("webbaser-interrupted-kel"),
     };
 
     const workerA = await bootWorker(page);
@@ -506,6 +507,7 @@ test("@smoke WebBaser persists and clears WebBaser state across explicit PyWorke
         "browserclienter-http-oobi",
         "aggregate-close-partial-failure-retry",
         "interrupted-kel-flush-export-safety",
+        "browser-kel-interruption-blocks-use",
         "mixed-version-witness-receipt-ingestion",
         "multi-witness-receipts-from-parser",
         "nested-v2-exn-stored-from-parser",
@@ -518,6 +520,7 @@ test("@smoke WebBaser persists and clears WebBaser state across explicit PyWorke
     expectPhasePassed(recovered, "recover");
     expect(recovered.checks).toEqual(expect.arrayContaining([
         "new-worker-recovery",
+        "interrupted-browser-kel-reopen-checked",
         "webkeeper-sign-after-rotation",
         "habery-kel-key-state-recovery",
         "oobi-contact-recovery",

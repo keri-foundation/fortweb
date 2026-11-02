@@ -885,6 +885,7 @@ async def _rotate_kf_account_to_witnesses(
             adds=[witness for witness in allocated_wits if witness not in current_wits],
         )
 
+    await vaulting.flush_open_state()
     rotation_msg = bytes(_msg_own_event(hab, sn=hab.kever.sn))
 
     for witness in witnesses:
@@ -1168,6 +1169,7 @@ async def _run_kf_onboarding(
     ephemeral_hab = _load_or_create_kf_onboarding_hab(hby, record)
     record.onboarding_auth_alias = getattr(ephemeral_hab, "name", "")
     _save_kf_state(hby, record)
+    await vaulting.flush_open_state()
 
     try:
         if record.onboarding_session_id:
@@ -1358,6 +1360,7 @@ async def _run_kf_onboarding(
             timeout_ms=_CONFIG["cesr_timeout_ms"],
         )
     except Exception as exc:
+        vaulting.require_open_state()
         allocated_wits = [witness["eid"] for witness in witness_rows]
         current_wits = list(getattr(getattr(account_hab, "kever", None), "wits", []) or []) if account_hab is not None else []
         preserve_session = bool(allocated_wits) and current_wits == allocated_wits

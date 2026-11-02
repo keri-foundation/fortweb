@@ -168,6 +168,11 @@ come from the generated inventory, not a previous acceptance run.
 
 ## Browser and package proof
 
+Vault opening checks local identifier histories and signing-key state, and
+refuses incomplete or conflicting state. A failed flush blocks further use of
+the open vault until its close is retried. These checks do not repair persisted
+data, and independent workers do not yet have a shared single-writer lock.
+
 Run the wheelhouse, WebBaser lifecycle, runtime canary, and application suites.
 The lifecycle suite uses new workers for persistence and recovery. It checks
 multi-witness receipt validation, invalid and repeated receipts, nested EXN

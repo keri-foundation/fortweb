@@ -318,6 +318,68 @@ def _vault_id_for_alias(alias: str, existing_ids: set[str]):
     return candidate
 
 
+async def _validate_open_kels(baser, modules, *, keeper=None):
+    """Reject incomplete local histories before making a vault available."""
+    habs = baser._stores["habs."]
+    persisted_habs = modules["webdbing"]._deserialize_records(habs.handle.get("__records__"))
+    if dict(habs.items) != persisted_habs:
+        # Browser reload removes orphaned habitat records; preserve them for recovery.
+        habs.items.clear()
+        habs.items.update(persisted_habs)
+        habs.dirty = False
+        raise RuntimeFault("BAD_STATE", "Vault contains incomplete identifier state and requires recovery.")
+    if any(record.hid not in baser.prefixes for _, record in baser.habs.getTopItemIter()):
+        raise RuntimeFault("BAD_STATE", "Vault contains an identifier without a verified key state.")
+
+    staging = modules["webbasing"].WebBaser(name="kel-validation", temp=True)
+    try:
+        await staging.reopen(storageOpener=_open_transient_storage)
+        staging.prefixes.update(baser.prefixes)
+        staging.groups.update(baser.groups)
+        kevery = modules["eventing"].Kevery(db=staging, lax=False, local=True)
+        for pre in baser.prefixes:
+            kever = baser.kevers[pre]
+            if keeper is not None and pre not in baser.groups:
+                situation = keeper.sits.get(keys=(pre,))
+                if (situation is None or situation.new.pubs != [verfer.qb64 for verfer in kever.verfers] or
+                        len(situation.nxt.pubs) != len(kever.ndigers) or
+                        any(not diger.verify(ser=pub.encode("utf-8"))
+                            for diger, pub in zip(kever.ndigers, situation.nxt.pubs))):
+                    raise RuntimeFault("BAD_STATE", "Vault signing keys do not match its identifier history.")
+            events = list(baser.kels.getAllItemIter(keys=pre, on=0))
+            if len(events) != kever.sn + 1:
+                raise RuntimeFault("BAD_STATE", "Vault contains incomplete or conflicting identifier history.")
+            digests = []
+            for expected_sn, (_, sn, dig) in enumerate(events):
+                if sn != expected_sn:
+                    raise RuntimeFault("BAD_STATE", "Vault contains incomplete or conflicting identifier history.")
+                event = baser.evts.get(keys=(pre, dig))
+                if event is None or event.said != dig or event.pre != pre or event.sn != sn or not event.verify():
+                    raise RuntimeFault("BAD_STATE", "Vault contains an invalid identifier event.")
+                sigers = baser.sigs.get(keys=(pre, dig))
+                if not sigers:
+                    raise RuntimeFault("BAD_STATE", "Vault contains an identifier event without signatures.")
+                try:
+                    kevery.processEvent(serder=event, sigers=sigers, local=True)
+                except Exception as exc:
+                    raise RuntimeFault("BAD_STATE", "Vault contains an unverifiable identifier history.") from exc
+                if pre not in staging.kevers or staging.kevers[pre].serder.said != dig:
+                    raise RuntimeFault("BAD_STATE", "Vault contains an unverifiable identifier history.")
+                digests.append(dig)
+            first_seen = [dig for _, _, dig in baser.fels.getAllItemIter(keys=pre, on=0)]
+            if digests != first_seen or not digests or digests[-1] != kever.serder.said:
+                raise RuntimeFault("BAD_STATE", "Vault contains incomplete or conflicting identifier history.")
+            stored_state = asdict(kever.state())
+            replayed_state = asdict(staging.kevers[pre].state())
+            for field in ("dt", "f"):
+                stored_state.pop(field, None)
+                replayed_state.pop(field, None)
+            if stored_state != replayed_state:
+                raise RuntimeFault("BAD_STATE", "Vault key state does not match its verified identifier history.")
+    finally:
+        await staging.aclose(clear=True)
+
+
 async def _build_vault_state(record, *, bran: str = ""):
     await _ensure_runtime_packages()
     modules = load_modules()
@@ -330,6 +392,7 @@ async def _build_vault_state(record, *, bran: str = ""):
     try:
         await keeper.reopen(storageOpener=_CONFIG["storage_opener"])
         await baser.reopen(storageOpener=_CONFIG["storage_opener"])
+        await _validate_open_kels(baser, modules, keeper=keeper)
         hby = modules["habbing"].Habery(
             name=record["storageName"],
             ks=keeper,
@@ -386,7 +449,7 @@ async def open_vault_state(record, *, passcode=None, bran: str | None = None):
     global _STATE
 
     if _STATE is not None and _STATE["vault"]["id"] == record["id"]:
-        return _STATE
+        return require_open_state(record["id"])
 
     await close_state(clear=False)
 
@@ -408,11 +471,13 @@ async def open_vault_state(record, *, passcode=None, bran: str | None = None):
     return _STATE
 
 
-def require_open_state(vault_id: str | None = None):
+def require_open_state(vault_id: str | None = None, *, allow_failed_close: bool = False):
     if _STATE is None:
         raise RuntimeFault("LOCKED", "Open a vault before calling vault operations.")
     if vault_id and _STATE["vault"]["id"] != vault_id:
         raise RuntimeFault("LOCKED", f"Vault '{vault_id}' is not open.")
+    if _STATE.get("persistence_failed") and not allow_failed_close:
+        raise RuntimeFault("BAD_STATE", "Vault persistence failed. Close the vault to retry saving before further use.")
     return _STATE
 
 
@@ -422,9 +487,23 @@ async def close_state(*, clear: bool = False):
         return
 
     state = _STATE
-    await close_habery(state["hby"], clear=clear)
+    try:
+        await close_habery(state["hby"], clear=clear)
+    except BaseException:
+        state["persistence_failed"] = True
+        raise
     if _STATE is state:
         _STATE = None
+
+
+async def flush_open_state():
+    state = require_open_state()
+    try:
+        await state["hby"].ks.flush()
+        await state["hby"].db.flush()
+    except BaseException:
+        state["persistence_failed"] = True
+        raise
 
 
 async def persist_and_reload():
@@ -998,7 +1077,7 @@ async def dispatch(method: str, params: dict):
 
     if method == "vaults.close":
         vault_id = _require_vault_id(params)
-        require_open_state(vault_id)
+        require_open_state(vault_id, allow_failed_close=True)
         await close_state(clear=False)
         return {"vault": {"id": vault_id, "opened": False}}
 

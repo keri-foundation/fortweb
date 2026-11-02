@@ -138,5 +138,35 @@ class KelReplayTest(unittest.TestCase):
         )
 
 
+class RotationPersistenceTest(unittest.IsolatedAsyncioTestCase):
+    async def test_rotation_is_flushed_before_any_witness_submission(self):
+        onboarding = _load_module()
+        calls = []
+        kever = types.SimpleNamespace(wits=[], toader=types.SimpleNamespace(num=0), sn=1)
+        hab = types.SimpleNamespace(kever=kever, rotate=lambda **_: calls.append("rotate"))
+
+        async def flush():
+            calls.append("flush")
+            if fail_flush:
+                raise RuntimeError("sync failed")
+
+        async def send(*_args):
+            calls.append("send")
+            raise RuntimeError("stop after first submission")
+
+        onboarding.vaulting.flush_open_state = flush
+        onboarding._msg_own_event = lambda *_args, **_kwargs: calls.append("message") or b"event"
+        onboarding._witness_auth_header = lambda _seed: ""
+        onboarding._submit_witness_rotation_receipt = send
+        witness = {"eid": "witness"}
+
+        for fail_flush in (True, False):
+            calls.clear()
+            with self.subTest(fail_flush=fail_flush), self.assertRaises(RuntimeError):
+                await onboarding._rotate_kf_account_to_witnesses(hab, [witness], toad=1)
+            self.assertEqual(calls, ["rotate", "flush"] if fail_flush else
+                             ["rotate", "flush", "message", "send"])
+
+
 if __name__ == "__main__":
     unittest.main()
