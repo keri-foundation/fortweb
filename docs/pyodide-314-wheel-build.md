@@ -133,15 +133,37 @@ Set `FORTWEB_EXPECT_REGISTRY_BACKEND=1` to run
 
 The worker exposes `registries.create` with `vaultId`, `issuerAid`, and `name`,
 and `registries.get` with `vaultId` and `name`. Each returns the registry ID,
-issuer, base64-encoded inception event, and public issuer KEL. These methods
-support inception only; registry-backed issuance and update processing are not
-implemented. A registry with unresolved events is rejected without deleting
-its evidence.
+issuer, base64-encoded inception event, and public issuer KEL. A registry with
+unresolved or incomplete evidence is rejected without deleting that evidence.
+
+`credentials.issueRegistered` accepts `vaultId`, registry `name`, `requestId`,
+`issuerAid`, `recipientAid`, `schemaId`, and `attributes`. It signs the ACDC,
+anchors and accepts its KERIpy blindable update, and persists the credential
+and disclosure before returning. Reusing a request ID with the same input
+returns the existing issuance; conflicting input is rejected.
+`credentials.getIssued` retrieves the stored evidence using `vaultId`, registry
+`name`, and `requestId`. Both return the signed CESR, issuance sequence,
+disclosed blinder, registry TEL and public issuer KEL. Treat the blinder and
+credential as private disclosure material. The vault substore uses plain-value
+browser IndexedDB and does not separately encrypt this material; same-origin
+code with storage access can read it. Browser test artifacts contain synthetic
+disclosure material and should be handled accordingly.
+
+The TEL may contain later blinded updates. A verifier can bind the credential
+to the chain through its issuance sequence and independently validate the full
+chain; later blinded events do not by themselves reveal the credential's current
+status. Revocation, credential delivery, and automatic recovery of interrupted
+operations are not implemented.
 
 The browser registry test writes initial and recovered public evidence to its
 Playwright output directory. Set `FORTWEB_REGISTRY_INTEROP_DIR` to that
 directory and run `python -m unittest python.test_registry_interop` with a
 compatible native KERIpy to verify both KEL anchors and the inception event.
+Run `playwright/registry-issuance.spec.ts` with
+`FORTWEB_EXPECT_REGISTRY_BACKEND=1`; it writes synthetic evidence. Set
+`FORTWEB_ISSUANCE_INTEROP_DIR` to its output directory and run
+`python -m unittest python.test_registered_issuance_interop` with compatible
+native KERIpy to verify issuance and disclosure independently.
 
 ### Promoting a patched source archive
 

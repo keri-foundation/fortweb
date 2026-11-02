@@ -280,7 +280,7 @@ function captureNetwork(page: Page, baseURL: string): {
             throw new Error(`response has no captured request sequence: ${response.url()}`);
         }
         const sequence = ++responseSequence;
-        responseTasks.push((async () => {
+        const responseTask = (async () => {
             if (response.status() === 304) {
                 responses.push({
                     sequence,
@@ -303,7 +303,10 @@ function captureNetwork(page: Page, baseURL: string): {
                 bytes: body.byteLength,
                 sha256: createHash("sha256").update(body).digest("hex"),
             });
-        })());
+        })();
+        // Attach a handler now; finish still awaits and reports the original failure.
+        void responseTask.catch(() => {});
+        responseTasks.push(responseTask);
     });
 
     return {
@@ -1638,6 +1641,7 @@ test("@smoke WebBaser production worker reports a package preload failure withou
         message: "Runtime worker preload failed.",
     });
     expect(failure!.elapsedMs).toBeLessThan(30_000);
+    await networkRecorder.finish();
 
     await page.evaluate(() => {
         const harness = (

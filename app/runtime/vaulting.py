@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import importlib
 import json
 import re
@@ -397,8 +398,9 @@ async def _build_vault_state(record, *, bran: str = ""):
     keeper = modules["webkeeping"].WebKeeper(name=record["storageName"])
     baser = modules["webbasing"].WebBaser(name=record["storageName"])
     kf_state_subdb = _CONFIG["kf_state_subdb"]
-    if kf_state_subdb not in baser.SubDbNames:
-        baser.SubDbNames = [*baser.SubDbNames, kf_state_subdb]
+    for subdb in (kf_state_subdb, "fwic."):
+        if subdb not in baser.SubDbNames:
+            baser.SubDbNames = [*baser.SubDbNames, subdb]
     cf = NullConfiger()
     try:
         await keeper.reopen(storageOpener=_CONFIG["storage_opener"])
@@ -728,7 +730,7 @@ async def _import_identifier(hby, organizer, modules, encoded, alias):
     return aid
 
 
-def _issue_signed_credential(hby, organizer, modules, params):
+def _signed_credential(hby, organizer, modules, params, *, registry_id=None):
     issuer = require_text(params.get("issuerAid"), field="Issuer")
     recipient = require_text(params.get("recipientAid"), field="Recipient")
     schema_id = require_text(params.get("schemaId"), field="Schema ID")
@@ -744,7 +746,9 @@ def _issue_signed_credential(hby, organizer, modules, params):
     schemer = hby.db.schema.get(keys=(schema_id,))
     if schemer is None:
         raise RuntimeFault("NOT_FOUND", "Schema was not found in this vault.")
-    if "rd" in schemer.sed.get("required", []):
+    if schemer.said != schema_id:
+        raise RuntimeFault("BAD_STATE", "Stored schema does not match its identifier.")
+    if registry_id is None and "rd" in schemer.sed.get("required", []):
         raise RuntimeFault("UNSUPPORTED", "This schema requires registry-backed issuance.")
     try:
         messaging = importlib.import_module("keri.acdc.messaging")
@@ -752,16 +756,30 @@ def _issue_signed_credential(hby, organizer, modules, params):
         raise RuntimeFault("UNSUPPORTED", "This runtime does not support ACDC issuance.") from exc
     try:
         credential = messaging.acdcmap(israid=issuer, uuid=modules["coring"].Noncer().qb64,
-                                       schema=schema_id, attribute={"d": "", **attributes},
+                                       regid=registry_id, schema=schema_id, attribute={"d": "", **attributes},
                                        iseaid=recipient)
         schemer.typ.resolver = modules["scheming"].CacheResolver(hby.db)
-        schemer.verify(raw=json.dumps(credential.sad).encode("utf-8"))
+        if not schemer.verify(raw=json.dumps(credential.sad).encode("utf-8")):
+            raise ValueError("Schema validation failed")
     except Exception as exc:
         raise RuntimeFault("VALIDATION", "Credential does not match the selected schema.") from exc
     proof = hby.habByPre(issuer).endorse(credential, gvrsn=modules["kering"].Vrsn_2_0)
-    return {"said": credential.said, "issuerAid": issuer, "recipientAid": recipient,
-            "schemaId": schema_id, "authentication": "signature", "registry": None,
+    return credential, {"said": credential.said, "issuerAid": issuer, "recipientAid": recipient,
+            "schemaId": schema_id, "authentication": "signature", "registry": registry_id,
             "cesr": base64.b64encode(proof).decode("ascii")}
+
+
+def _issue_signed_credential(hby, organizer, modules, params):
+    return _signed_credential(hby, organizer, modules, params)[1]
+
+
+def _issuance_fingerprint(issuer, recipient, schema, registry, attributes):
+    if (not isinstance(attributes, dict) or len(_json_bytes(attributes)) > 1024 * 1024 or
+            attributes.get("i", recipient) != recipient or attributes.get("d", "") != "" or attributes.get("rd")):
+        raise ValueError("Invalid credential attributes")
+    request = {"issuerAid": issuer, "recipientAid": recipient, "schemaId": schema, "registryId": registry,
+               "attributes": {key: value for key, value in attributes.items() if key not in ("d", "i")}}
+    return hashlib.sha256(_json_bytes(request)).hexdigest()
 
 
 def _dedupe(values):
@@ -1049,6 +1067,7 @@ def _vault_summary(state):
 async def _registry_operation(method, params, state):
     try:
         from keri.acdc import registering, registraring, regeventing, webregbasing
+        from keri.db import subing
     except ImportError as exc:
         raise RuntimeFault("UNSUPPORTED", "This runtime does not support browser registries.") from exc
 
@@ -1065,30 +1084,91 @@ async def _registry_operation(method, params, state):
             manager = registraring.Regery(hby=state["hby"], baser=baser)
         except Exception as exc:
             raise RuntimeFault("BAD_STATE", "Registry storage is invalid or incomplete.") from exc
+        credentials = subing.Suber(db=state["hby"].db, subkey="fwic.")
+        # Opening a new browser substore dirties its metadata even on read.
+        await state["hby"].db.flush()
 
         def validate():
             count = len(manager.names)
-            for key in ("evts.", "ancs.", "tels.", "heds."):
-                if len(baser.db._stores[key].items) != count:
-                    raise RuntimeFault("BAD_STATE", "Registry storage is incomplete or conflicting.")
+            total = len(baser.db._stores["tels."].items)
+            if any(len(baser.db._stores[key].items) != total for key in ("evts.", "ancs.")) or len(baser.db._stores["heds."].items) != count:
+                raise RuntimeFault("BAD_STATE", "Registry storage is incomplete or conflicting.")
             if baser.db._stores["maes."].items or baser.db._stores["ooes."].items:
                 raise RuntimeFault("BAD_STATE", "Registry storage contains unresolved events.")
             if len(manager.regs) != count:
                 raise RuntimeFault("BAD_STATE", "Registry aliases conflict.")
-            for reg in manager.names.values():
-                rip = store.seqEvent(reg.regk, 0)
-                head = store.head(reg.regk)
-                anchor = store.anchor(reg.regk)
-                if rip is None or rip.said != reg.regk or head is None or head.qb64 != reg.regk or anchor is None:
-                    raise RuntimeFault("BAD_STATE", "Registry inception evidence is incomplete.")
-                try:
-                    verified = regeventing.vet(rip, db=state["hby"].db)
-                except Exception as exc:
-                    raise RuntimeFault("BAD_STATE", "Registry anchoring evidence is invalid.") from exc
-                if verified.issuer != reg.hab.pre or verified.regid != reg.regk or verified.anchors[0] != (anchor[0].sn, anchor[1].qb64):
-                    raise RuntimeFault("BAD_STATE", "Registry anchoring evidence conflicts.")
+            try:
+                records = {keys[0]: json.loads(value) for keys, value in credentials.getTopItemIter() if len(keys) == 1}
+                if len(records) != credentials.cnt():
+                    raise ValueError("Invalid credential keys")
+                claimed = set()
+                visited = 0
+                for reg in manager.names.values():
+                    events = []
+                    while len(events) < total:
+                        event = store.seqEvent(reg.regk, len(events))
+                        if event is None:
+                            break
+                        events.append(event)
+                    if not events or events[0].said != reg.regk:
+                        raise ValueError("Missing registry inception")
+                    verified = regeventing.vet(events[0], events[1:], db=state["hby"].db)
+                    head = store.head(reg.regk)
+                    if verified.issuer != reg.hab.pre or verified.regid != reg.regk or head is None or head.qb64 != events[-1].said:
+                        raise ValueError("Conflicting registry head")
+                    for event, anchor in zip(events, verified.anchors):
+                        saved = store.anchor(event.said)
+                        if saved is None or anchor != (saved[0].sn, saved[1].qb64):
+                            raise ValueError("Conflicting registry anchor")
+                    for request_id, record in records.items():
+                        if record["registryId"] != reg.regk:
+                            continue
+                        sequence = record["sequence"]
+                        if not isinstance(sequence, int) or isinstance(sequence, bool) or not 0 < sequence < len(events) or (reg.regk, sequence) in claimed:
+                            raise ValueError("Invalid issuance sequence")
+                        stream = bytearray(base64.b64decode(record["cesr"], validate=True))
+                        parser = state["modules"]["parsing"].Parser(version=state["modules"]["kering"].Vrsn_2_0)
+                        extraction = parser.groupParsator(ims=stream, framed=True, version=state["modules"]["kering"].Vrsn_2_0, processive=False)
+                        try:
+                            next(extraction)
+                        except StopIteration as done:
+                            messages = done.value
+                        else:
+                            raise ValueError("Incomplete credential proof")
+                        if stream or len(messages) != 1 or len(messages[0].tsgs) != 1:
+                            raise ValueError("Invalid credential proof")
+                        message = messages[0]
+                        if (message.serder.said != record["said"] or message.serder.israid != record["issuerAid"] or
+                                message.serder.iseaid != record["recipientAid"] or message.serder.sad["s"] != record["schemaId"] or
+                                record["registry"] != reg.regk or record["authentication"] != "signature"):
+                            raise ValueError("Conflicting credential metadata")
+                        if record["requestHash"] != _issuance_fingerprint(record["issuerAid"], record["recipientAid"],
+                                record["schemaId"], reg.regk, message.serder.sad["a"]):
+                            raise ValueError("Conflicting issuance request")
+                        prefix, number, diger, sigers = message.tsgs[0]
+                        tholder, verfers = state["hby"].db.resolveVerifiers(pre=prefix.qb64, sn=number.sn, dig=diger.qb64)
+                        _, indices = state["modules"]["eventing"].verifySigs(message.serder.raw, sigers, verfers)
+                        if prefix.qb64 != reg.hab.pre or not tholder.satisfy(indices):
+                            raise ValueError("Invalid credential signature")
+                        schema = state["hby"].db.schema.get(keys=(message.serder.sad["s"],))
+                        if schema is None or schema.said != record["schemaId"]:
+                            raise ValueError("Missing or conflicting credential schema")
+                        schema.typ.resolver = state["modules"]["scheming"].CacheResolver(state["hby"].db)
+                        if not schema.verify(raw=json.dumps(message.serder.sad).encode("utf-8")):
+                            raise ValueError("Invalid credential schema")
+                        issuance = regeventing.vet(events[0], events[1:sequence + 1], db=state["hby"].db,
+                                                   acdc=message.serder, blinder=record["blinder"])
+                        if issuance.state != "issued" or issuance.binding != "mutual" or issuance.said != events[sequence].said:
+                            raise ValueError("Credential issuance is not verified")
+                        claimed.add((reg.regk, sequence))
+                    visited += len(events)
+                if visited != total or len(claimed) != total - count or len(claimed) != len(records):
+                    raise ValueError("Incomplete issuance evidence")
+                return records
+            except Exception as exc:
+                raise RuntimeFault("BAD_STATE", "Registry storage or issuance evidence is invalid or incomplete.") from exc
 
-        validate()
+        records = validate()
         if method == "registries.create":
             if name in manager.names:
                 raise RuntimeFault("CONFLICT", "Registry name already exists.")
@@ -1117,6 +1197,60 @@ async def _registry_operation(method, params, state):
             except BaseException:
                 state["persistence_failed"] = True
                 raise
+        elif method in ("credentials.issueRegistered", "credentials.getIssued"):
+            request_id = require_text(params.get("requestId"), field="Issuance request ID")
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", request_id):
+                raise RuntimeFault("VALIDATION", "Issuance request ID must contain only letters, numbers, hyphens, and underscores.")
+            reg = manager.registryByName(name)
+            if reg is None:
+                raise RuntimeFault("NOT_FOUND", "Registry was not found.")
+            record = records.get(request_id)
+            if method == "credentials.issueRegistered":
+                try:
+                    fingerprint = _issuance_fingerprint(params.get("issuerAid"), params.get("recipientAid"),
+                                                        params.get("schemaId"), reg.regk, params.get("attributes"))
+                except (TypeError, ValueError) as exc:
+                    raise RuntimeFault("VALIDATION", "Credential attributes are invalid.") from exc
+                if record is not None:
+                    if record["registryId"] != reg.regk or record["requestHash"] != fingerprint:
+                        raise RuntimeFault("CONFLICT", "Issuance request ID is already in use.")
+                else:
+                    if params.get("issuerAid") != reg.hab.pre:
+                        raise RuntimeFault("VALIDATION", "Registry issuer does not match the requested issuer.")
+                    organizer = state["modules"]["organizing"].Organizer(hby=state["hby"])
+                    acdc, record = _signed_credential(state["hby"], organizer, state["modules"], params, registry_id=reg.regk)
+                    if not store.records.pin(keys="_fortweb_pending", val=registering.RegistryRecord(registryKey="pending")):
+                        raise RuntimeFault("BAD_STATE", "Unable to record the pending registry operation.")
+                    try:
+                        await baser.db.flush()
+                        blinder, update = registraring.Registrar(rgy=manager).issue(reg, acdc=acdc)
+                        reg.hab.interact(data=[dict(i=reg.regk, s=update.sad["n"], d=update.said)],
+                                         version=state["modules"]["kering"].Vrsn_2_0,
+                                         gvrsn=state["modules"]["kering"].Vrsn_2_0)
+                        if not reg.anchorMsg(update.said):
+                            raise RuntimeFault("BAD_STATE", "Registry issuance was not accepted.")
+                        record.update(registryId=reg.regk, sequence=reg.sn, blinder=blinder.qb64,
+                                      requestHash=fingerprint)
+                        if not credentials.put(keys=request_id, val=_json_bytes(record)):
+                            raise RuntimeFault("CONFLICT", "Issuance request ID is already in use.")
+                        await flush_open_state()
+                        await _validate_open_kels(state["hby"].db, state["modules"], keeper=state["hby"].ks)
+                        await baser.db.flush()
+                        records = validate()
+                        if not store.records.rem(keys="_fortweb_pending"):
+                            raise RuntimeFault("BAD_STATE", "Unable to complete the pending registry operation.")
+                        await baser.db.flush()
+                    except BaseException:
+                        state["persistence_failed"] = True
+                        raise
+            elif record is None or record["registryId"] != reg.regk:
+                raise RuntimeFault("NOT_FOUND", "Issued credential was not found.")
+            evidence = [store.seqEvent(reg.regk, sn) for sn in range(reg.sn + 1)]
+            return {"credential": {**{key: record[key] for key in ("said", "issuerAid", "recipientAid", "schemaId", "cesr")},
+                                   "registryId": reg.regk, "sequence": record["sequence"], "head": evidence[-1].said,
+                                   "blinder": record["blinder"],
+                                   "tel": [base64.b64encode(event.raw).decode("ascii") for event in evidence],
+                                   "kel": base64.b64encode(_identifier_introduction(reg.hab, state["modules"])).decode("ascii")}}
         else:
             reg = manager.registryByName(name)
             if reg is None:
@@ -1190,7 +1324,7 @@ async def dispatch(method: str, params: dict):
             }
 
     state = require_open_state(_require_vault_id(params))
-    if method.startswith("registries."):
+    if method.startswith("registries.") or method in ("credentials.issueRegistered", "credentials.getIssued"):
         return await _registry_operation(method, params, state)
     if method == "settings.get":
         return {

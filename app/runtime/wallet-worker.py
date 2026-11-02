@@ -52,6 +52,8 @@ ALLOWED_METHODS = {
     "schemas.import",
     "schemas.get",
     "credentials.issueSigned",
+    "credentials.issueRegistered",
+    "credentials.getIssued",
     "remotes.list",
     "remotes.get",
     "remotes.import",

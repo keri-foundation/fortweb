@@ -13,6 +13,8 @@ export const METHODS = Object.freeze({
     schemasImport: "schemas.import",
     schemasGet: "schemas.get",
     credentialsIssueSigned: "credentials.issueSigned",
+    credentialsIssueRegistered: "credentials.issueRegistered",
+    credentialsGetIssued: "credentials.getIssued",
     remotesList: "remotes.list",
     remotesGet: "remotes.get",
     remotesImport: "remotes.import",
