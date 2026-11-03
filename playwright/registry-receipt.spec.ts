@@ -146,6 +146,72 @@ test("synthetic recipient verifies and retains independent issuance evidence", a
     await closed;
 });
 
+test("synthetic IPEX grant and admit retain the verified credential exchange", async ({ page, baseURL }) => {
+    test.setTimeout(240_000);
+    await page.route("**/pyscript-ci.toml", async (route) => {
+        const response = await route.fetch();
+        await route.fulfill({ response, body: `fort_synthetic_recipient_testing = true\n${await response.text()}` });
+    });
+    await page.goto(new URL("/_runtime-test/ci/fixtures/webbaser-lifecycle/production.html", baseURL).toString());
+    await page.waitForFunction(() => (window as any).webbaserProductionHarnessReady === true);
+    const request = (method: string, params: Record<string, unknown> = {}) => page.evaluate(
+        ({ method, params }) => (window as any).webbaserProductionHarness.request(method, params), { method, params },
+    );
+    const schema = readFileSync("playwright/fixtures/default-acdc-schema.json", "utf8");
+    const schemaId = JSON.parse(schema).$id;
+    const sourceId = (await request("vaults.create", { name: `ipex-issuer-${Date.now()}`, passcode: "test-issuer-passcode" })).vault.id;
+    await request("vaults.open", { vaultId: sourceId, passcode: "test-issuer-passcode" });
+    const issuerAid = (await request("identifiers.create", { vaultId: sourceId, alias: "issuer" })).identifier.aid;
+    const issuer = await request("identifiers.export", { vaultId: sourceId, aid: issuerAid });
+    await request("vaults.close", { vaultId: sourceId });
+    const recipientId = (await request("vaults.create", { name: `ipex-recipient-${Date.now()}`, passcode: "test-recipient-passcode" })).vault.id;
+    await request("vaults.open", { vaultId: recipientId, passcode: "test-recipient-passcode" });
+    const recipientAid = (await request("identifiers.create", { vaultId: recipientId, alias: "recipient" })).identifier.aid;
+    const recipient = await request("identifiers.export", { vaultId: recipientId, aid: recipientAid });
+    await request("schemas.import", { vaultId: recipientId, schemaId, schema });
+    await request("remotes.import", { vaultId: recipientId, alias: "issuer", cesr: issuer.cesr });
+    await request("vaults.close", { vaultId: recipientId });
+    await request("vaults.open", { vaultId: sourceId, passcode: "test-issuer-passcode" });
+    await request("remotes.import", { vaultId: sourceId, alias: "recipient", cesr: recipient.cesr });
+    await request("schemas.import", { vaultId: sourceId, schemaId, schema });
+    await request("registries.create", { vaultId: sourceId, issuerAid, name: "registry" });
+    await request("credentials.issueRegistered", {
+        vaultId: sourceId, name: "registry", requestId: "credential", issuerAid, recipientAid, schemaId,
+        attributes: { name: "Synthetic IPEX Example" },
+    });
+    const grant = await request("ipex.grant", {
+        vaultId: sourceId, name: "registry", requestId: "credential", syntheticOnly: true, message: "Credential grant",
+    });
+    expect(grant.exchange).toEqual(expect.objectContaining({ route: "/ipex/grant", senderAid: issuerAid, recipientAid }));
+    await request("vaults.close", { vaultId: sourceId });
+    await request("vaults.open", { vaultId: recipientId, passcode: "test-recipient-passcode" });
+    const received = await request("ipex.receive", {
+        vaultId: recipientId, syntheticOnly: true, cesr: grant.exchange.cesr, evidence: grant.evidence,
+    });
+    expect(received).toEqual(expect.objectContaining({
+        exchange: expect.objectContaining({ said: grant.exchange.said, route: "/ipex/grant" }),
+        credential: expect.objectContaining({ said: grant.evidence.said, issuance: "verified" }),
+    }));
+    await expect(request("ipex.receive", { vaultId: recipientId, syntheticOnly: true, cesr: "e30=" })).rejects.toThrow();
+    expect((await request("ipex.get", { vaultId: recipientId, syntheticOnly: true, said: grant.exchange.said })).exchange)
+        .toEqual(expect.objectContaining({ route: "/ipex/grant" }));
+    const admit = await request("ipex.admit", {
+        vaultId: recipientId, syntheticOnly: true, grantSaid: grant.exchange.said, message: "Credential admitted",
+    });
+    expect(admit.exchange).toEqual(expect.objectContaining({ route: "/ipex/admit", prior: grant.exchange.said }));
+    await request("vaults.close", { vaultId: recipientId });
+    await request("vaults.open", { vaultId: sourceId, passcode: "test-issuer-passcode" });
+    const admitted = await request("ipex.receive", { vaultId: sourceId, syntheticOnly: true, cesr: admit.exchange.cesr });
+    expect(admitted.exchange).toEqual(expect.objectContaining({ said: admit.exchange.said, route: "/ipex/admit" }));
+    expect((await request("ipex.get", { vaultId: sourceId, syntheticOnly: true, said: grant.exchange.said })).exchange)
+        .toEqual(expect.objectContaining({ response: admit.exchange.said }));
+    await request("vaults.close", { vaultId: sourceId });
+    await request("vaults.open", { vaultId: recipientId, passcode: "test-recipient-passcode" });
+    expect((await request("ipex.get", { vaultId: recipientId, syntheticOnly: true, said: grant.exchange.said })).exchange)
+        .toEqual(expect.objectContaining({ route: "/ipex/grant", response: admit.exchange.said }));
+    await request("vaults.close", { vaultId: recipientId });
+});
+
 for (const [stage, needle, setup, retryable] of [
     ["before marker", '    if not records.put(keys="_pending", val="pending"):', "", true],
     ["before ciphertext", "        cipher = manager.encrypter.encrypt(ser=_json_bytes(record)).qb64", "", false],

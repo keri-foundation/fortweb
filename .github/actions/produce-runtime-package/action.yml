@@ -78,9 +78,9 @@ runs:
         # The reviewed runtime source pin is declared here and nowhere else, so no
         # consuming workflow can silently build the package from a different
         # runtime. A caller may still override it for a deliberate dispatch run.
-        DEFAULT_SOURCE_URL='https://github.com/keri-foundation/fortweb/releases/download/runtime-source-pyodide-314-hio-0.7.20-20260910/runtime-source.tar.gz'
-        DEFAULT_SOURCE_ARCHIVE_SHA256='394db70ecbed6e5718e6ec0afbcb43eaf6384e2ab78218e55067ec9e5d83fb34'
-        DEFAULT_SOURCE_MANIFEST_SHA256='371ef8cb8c6641b68afe6799931678435e2a629dcf4aa7ba2e344efab5a10f32'
+        DEFAULT_SOURCE_URL='https://github.com/keri-foundation/fortweb/releases/download/runtime-source-pyodide-314-hio-0.7.20-20261102/runtime-source.tar.gz'
+        DEFAULT_SOURCE_ARCHIVE_SHA256='c0f975accd8be662ba2d31e46800bef34b8c0b7651154b64dfec28d9453ffccd'
+        DEFAULT_SOURCE_MANIFEST_SHA256='d00ad7c4dc2fcce08904562bb50dd2ace53cf226027d376b41e42cbb69410023'
         SOURCE_URL="${SOURCE_URL:-$DEFAULT_SOURCE_URL}"
         SOURCE_ARCHIVE_SHA256="${SOURCE_ARCHIVE_SHA256:-$DEFAULT_SOURCE_ARCHIVE_SHA256}"
         SOURCE_MANIFEST_SHA256="${SOURCE_MANIFEST_SHA256:-$DEFAULT_SOURCE_MANIFEST_SHA256}"

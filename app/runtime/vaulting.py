@@ -956,6 +956,222 @@ async def _received_credential_operation(method, params, state):
     return {"credential": result, "evidence": evidence}
 
 
+def _require_synthetic_ipex(params):
+    if not _CONFIG.get("allow_synthetic_receipt") or params.get("syntheticOnly") is not True:
+        raise RuntimeFault("UNSUPPORTED", "IPEX testing is restricted to synthetic credentials.")
+
+
+def _ipex_message(params):
+    message = str(params.get("message") or "")
+    if len(message.encode("utf-8")) > 4096:
+        raise RuntimeFault("VALIDATION", "IPEX message must be at most 4 KiB.")
+    return message
+
+
+class _IpexNotifier:
+    def add(self, attrs):
+        return None
+
+
+def _decode_ipex_stream(encoded):
+    if not isinstance(encoded, str) or len(encoded) > 8 * 1024 * 1024:
+        raise RuntimeFault("VALIDATION", "IPEX message is missing or too large.")
+    try:
+        return bytearray(base64.b64decode(encoded, validate=True))
+    except Exception as exc:
+        raise RuntimeFault("VALIDATION", "IPEX message is not valid base64 CESR.") from exc
+
+
+def _parse_ipex_stream(state, stream, rgy=None):
+    from keri.acdc import ipexing
+
+    modules, hby = state["modules"], state["hby"]
+    try:
+        if modules["serdering"].SerderKERI(raw=bytes(stream)).ilk != modules["kering"].Ilks.exn:
+            raise ValueError("IPEX messages must be exchanges")
+    except Exception as exc:
+        raise RuntimeFault("VALIDATION", "IPEX message is incomplete or unsupported.") from exc
+    exchanger = modules["exchanging"].Exchanger(hby=hby, handlers=[])
+    ipexing.loadHandlers(hby=hby, exc=exchanger, notifier=_IpexNotifier(), rgy=rgy)
+    parser = modules["parsing"].Parser(version=modules["kering"].Vrsn_2_0)
+    parsed = parser.parse(
+        ims=bytearray(stream), framed=False, local=False, processive=False
+    )
+    if not isinstance(parsed, list) or len(parsed) != 1:
+        raise RuntimeFault("VALIDATION", "IPEX message is incomplete or unsupported.")
+    exchange = parsed[0].serder
+    if exchange.route not in ("/ipex/grant", "/ipex/admit"):
+        raise RuntimeFault("VALIDATION", "IPEX message is incomplete or unsupported.")
+    parser.parse(ims=stream, framed=False, local=False, exc=exchanger)
+    if stream:
+        raise RuntimeFault("VALIDATION", "IPEX message is incomplete or unsupported.")
+    if hby.db.exns.get(keys=(exchange.said,)) is None:
+        raise RuntimeFault("VALIDATION", "IPEX message was not accepted by the protocol handler.")
+    return exchange
+
+
+def _ipex_view(state, said):
+    exchange = state["hby"].db.exns.get(keys=(said,))
+    if exchange is None or exchange.route not in ("/ipex/grant", "/ipex/admit"):
+        raise RuntimeFault("NOT_FOUND", "IPEX exchange was not found.")
+    try:
+        state["modules"]["exchanging"].verify(state["hby"], exchange)
+    except Exception as exc:
+        raise RuntimeFault("BAD_STATE", "Stored IPEX exchange is invalid.") from exc
+    reply = state["hby"].db.erpy.get(keys=(exchange.said,))
+    return {
+        "said": exchange.said,
+        "route": exchange.route,
+        "senderAid": exchange.pre,
+        "recipientAid": exchange.ked["ri"],
+        "prior": exchange.ked["p"],
+        "response": reply.qb64 if reply is not None else "",
+    }, exchange
+
+
+def _grant_proof(state, evidence):
+    from keri.core import BlindState, Blinder
+
+    try:
+        stream = bytearray(base64.b64decode(evidence["cesr"], validate=True))
+        parser = state["modules"]["parsing"].Parser(version=state["modules"]["kering"].Vrsn_2_0)
+        parsed = parser.parse(ims=stream, framed=True, local=False, processive=False)
+        if stream or len(parsed) != 1 or parsed[0].serder.said != evidence["said"]:
+            raise ValueError("Invalid credential stream")
+        blinder = Blinder(clan=BlindState, qb64=evidence["blinder"])
+        return state["modules"]["eventing"].messagize(
+            serder=parsed[0].serder, bonds=[blinder.data], framed=False,
+            gvrsn=state["modules"]["kering"].Vrsn_2_0,
+        )
+    except Exception as exc:
+        raise RuntimeFault("VALIDATION", "Credential IPEX proof is invalid or incomplete.") from exc
+
+
+async def _temporary_ipex_registry(state, evidence):
+    from keri.acdc import registraring, webregbasing
+
+    baser = webregbasing.WebRegBaser(name="ipex-validation", temp=True)
+    try:
+        await baser.reopen(storageOpener=_open_transient_storage)
+        rgy = registraring.Regery(hby=state["hby"], baser=baser)
+        events = []
+        for sequence, encoded in enumerate(evidence["tel"]):
+            raw = base64.b64decode(encoded, validate=True)
+            event = state["modules"]["serdering"].SerderACDC(raw=raw)
+            if event.raw != raw or event.sad["n"] != f"{sequence:x}":
+                raise ValueError("Invalid registry event")
+            events.append(event)
+        if not events or events[0].said != evidence["registryId"]:
+            raise ValueError("Invalid registry evidence")
+        for sequence, event in enumerate(events):
+            rgy.store.accept(evidence["registryId"], sequence, event)
+        return baser, rgy
+    except Exception as exc:
+        await baser.aclose(clear=True)
+        raise RuntimeFault("VALIDATION", "Credential registry evidence is invalid or incomplete.") from exc
+
+
+async def _import_ipex_issuer_history(state, evidence):
+    hby, modules = state["hby"], state["modules"]
+    organizer = modules["organizing"].Organizer(hby=hby)
+    remote = _get_remote_record(hby, organizer, evidence["issuerAid"])
+    await _import_identifier(hby, organizer, modules, evidence["kel"], remote["alias"])
+
+
+async def _ipex_operation(method, params, state):
+    from keri.acdc import ipexing
+
+    _require_synthetic_ipex(params)
+    vault_id = _require_vault_id(params)
+    if method == "ipex.get":
+        view, _ = _ipex_view(state, require_text(params.get("said"), field="IPEX SAID"))
+        return {"exchange": view}
+
+    if method == "ipex.grant":
+        issued = await _registry_operation("credentials.getIssued", params, state)
+        evidence = issued["credential"]
+        issuer = evidence["issuerAid"]
+        recipient = evidence["recipientAid"]
+        if not _is_local_identifier(state["hby"], issuer) or issuer == recipient:
+            raise RuntimeFault("VALIDATION", "Credential issuer and recipient are invalid for IPEX.")
+        proof = _grant_proof(state, evidence)
+        baser, rgy = await _temporary_ipex_registry(state, evidence)
+        exchange, attachments = ipexing.grant(
+            state["hby"].habByPre(issuer), recipient, _ipex_message(params),
+            origin=proof,
+            kind=state["modules"]["kering"].Kinds.json,
+        )
+        stream = bytearray(exchange.raw)
+        stream.extend(attachments)
+        encoded = base64.b64encode(stream).decode("ascii")
+        try:
+            _parse_ipex_stream(state, stream, rgy=rgy)
+        finally:
+            await baser.aclose(clear=True)
+        view, _ = _ipex_view(state, exchange.said)
+        return {"exchange": {**view, "cesr": encoded}, "evidence": evidence}
+
+    if method == "ipex.receive":
+        stream = _decode_ipex_stream(params.get("cesr"))
+        evidence = params.get("evidence")
+        if not isinstance(evidence, dict):
+            exchange = _parse_ipex_stream(state, stream)
+            if exchange.route != "/ipex/admit":
+                raise RuntimeFault("VALIDATION", "IPEX grant requires credential evidence.")
+            view, _ = _ipex_view(state, exchange.said)
+            if not _is_local_identifier(state["hby"], exchange.ked["ri"]):
+                raise RuntimeFault("VALIDATION", "IPEX admission is not addressed to this wallet.")
+            return {"exchange": view}
+
+        receipt_params = {
+            "vaultId": vault_id,
+            "issuerAid": evidence.get("issuerAid"),
+            "recipientAid": evidence.get("recipientAid"),
+            "schemaId": evidence.get("schemaId"),
+            "evidence": evidence,
+            "syntheticOnly": True,
+        }
+        receipt, _, _ = await _verify_received_evidence(state, {
+            "issuerAid": receipt_params["issuerAid"],
+            "recipientAid": receipt_params["recipientAid"],
+            "schemaId": receipt_params["schemaId"],
+            "evidence": evidence,
+        })
+        await _import_ipex_issuer_history(state, evidence)
+        baser, rgy = await _temporary_ipex_registry(state, evidence)
+        try:
+            exchange = _parse_ipex_stream(state, stream, rgy=rgy)
+        finally:
+            await baser.aclose(clear=True)
+        view, stored = _ipex_view(state, exchange.said)
+        nested = state["modules"]["exchanging"].loadParsedNestedSubstreams(state["hby"], stored.said)
+        if (exchange.pre != receipt["issuerAid"] or exchange.ked["ri"] != receipt["recipientAid"] or
+                exchange.ked["a"].get("o") != [receipt["said"]] or
+                [item.serder.said for item in nested] != [receipt["said"]]):
+            raise RuntimeFault("VALIDATION", "IPEX grant does not match the verified credential evidence.")
+        received = await _received_credential_operation("credentials.receive", receipt_params, state)
+        return {"exchange": view, "credential": received["credential"]}
+
+    grant_view, grant = _ipex_view(state, require_text(params.get("grantSaid"), field="IPEX grant SAID"))
+    if grant.route != "/ipex/grant" or not _is_local_identifier(state["hby"], grant.ked["ri"]):
+        raise RuntimeFault("VALIDATION", "IPEX grant is not addressed to this wallet.")
+    await _received_credential_operation("credentials.getReceived", {
+        "vaultId": vault_id,
+        "said": grant.ked["a"]["o"][0],
+        "syntheticOnly": True,
+    }, state)
+    exchange, attachments = ipexing.admit(
+        state["hby"].habByPre(grant.ked["ri"]), _ipex_message(params), grant,
+        kind=state["modules"]["kering"].Kinds.json,
+    )
+    stream = bytearray(exchange.raw)
+    stream.extend(attachments)
+    encoded = base64.b64encode(stream).decode("ascii")
+    _parse_ipex_stream(state, stream)
+    view, _ = _ipex_view(state, exchange.said)
+    return {"exchange": {**view, "cesr": encoded}, "grant": grant_view}
+
+
 def _dedupe(values):
     seen = set()
     ordered = []
@@ -1500,6 +1716,8 @@ async def dispatch(method: str, params: dict):
     state = require_open_state(_require_vault_id(params))
     if method in ("credentials.receive", "credentials.getReceived"):
         return await _received_credential_operation(method, params, state)
+    if method.startswith("ipex."):
+        return await _ipex_operation(method, params, state)
     if method.startswith("registries.") or method in ("credentials.issueRegistered", "credentials.getIssued"):
         return await _registry_operation(method, params, state)
     if method == "settings.get":
