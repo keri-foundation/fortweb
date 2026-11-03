@@ -20,6 +20,8 @@ export const METHODS = Object.freeze({
     ipexGrant: "ipex.grant",
     ipexReceive: "ipex.receive",
     ipexAdmit: "ipex.admit",
+    ipexPresent: "ipex.present",
+    ipexVerifyPresentation: "ipex.verifyPresentation",
     ipexGet: "ipex.get",
     remotesList: "remotes.list",
     remotesGet: "remotes.get",

@@ -59,6 +59,8 @@ ALLOWED_METHODS = {
     "ipex.grant",
     "ipex.receive",
     "ipex.admit",
+    "ipex.present",
+    "ipex.verifyPresentation",
     "ipex.get",
     "remotes.list",
     "remotes.get",

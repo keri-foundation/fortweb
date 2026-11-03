@@ -185,6 +185,9 @@ test("synthetic IPEX grant and admit retain the verified credential exchange", a
     expect(grant.exchange).toEqual(expect.objectContaining({ route: "/ipex/grant", senderAid: issuerAid, recipientAid }));
     await request("vaults.close", { vaultId: sourceId });
     await request("vaults.open", { vaultId: recipientId, passcode: "test-recipient-passcode" });
+    await expect(request("ipex.receive", {
+        vaultId: recipientId, syntheticOnly: true, cesr: "e30=", evidence: grant.evidence,
+    })).rejects.toThrow(/incomplete or unsupported/i);
     const received = await request("ipex.receive", {
         vaultId: recipientId, syntheticOnly: true, cesr: grant.exchange.cesr, evidence: grant.evidence,
     });
@@ -210,6 +213,44 @@ test("synthetic IPEX grant and admit retain the verified credential exchange", a
     expect((await request("ipex.get", { vaultId: recipientId, syntheticOnly: true, said: grant.exchange.said })).exchange)
         .toEqual(expect.objectContaining({ route: "/ipex/grant", response: admit.exchange.said }));
     await request("vaults.close", { vaultId: recipientId });
+    const verifierId = (await request("vaults.create", { name: `ipex-verifier-${Date.now()}`, passcode: "test-verifier-passcode" })).vault.id;
+    await request("vaults.open", { vaultId: verifierId, passcode: "test-verifier-passcode" });
+    const verifierAid = (await request("identifiers.create", { vaultId: verifierId, alias: "verifier" })).identifier.aid;
+    const verifier = await request("identifiers.export", { vaultId: verifierId, aid: verifierAid });
+    await request("schemas.import", { vaultId: verifierId, schemaId, schema });
+    await request("remotes.import", { vaultId: verifierId, alias: "issuer", cesr: issuer.cesr });
+    await request("remotes.import", { vaultId: verifierId, alias: "recipient", cesr: recipient.cesr });
+    await request("vaults.close", { vaultId: verifierId });
+    await request("vaults.open", { vaultId: recipientId, passcode: "test-recipient-passcode" });
+    await request("remotes.import", { vaultId: recipientId, alias: "verifier", cesr: verifier.cesr });
+    const presentation = await request("ipex.present", {
+        vaultId: recipientId, syntheticOnly: true, credentialSaid: grant.evidence.said,
+        presenterAid: recipientAid, verifierAid, message: "Credential presentation",
+    });
+    expect(presentation.exchange).toEqual(expect.objectContaining({ route: "/ipex/grant", senderAid: recipientAid, recipientAid: verifierAid }));
+    await request("vaults.close", { vaultId: recipientId });
+    await request("vaults.open", { vaultId: verifierId, passcode: "test-verifier-passcode" });
+    await expect(request("ipex.verifyPresentation", {
+        vaultId: verifierId, syntheticOnly: true, cesr: presentation.exchange.cesr,
+        evidence: presentation.evidence, presenterAid: issuerAid, verifierAid,
+    })).rejects.toThrow(/holder and presentation parties/i);
+    await expect(request("ipex.verifyPresentation", {
+        vaultId: verifierId, syntheticOnly: true, cesr: "e30=",
+        evidence: presentation.evidence, presenterAid: recipientAid, verifierAid,
+    })).rejects.toThrow(/incomplete or unsupported/i);
+    const verifiedPresentation = await request("ipex.verifyPresentation", {
+        vaultId: verifierId, syntheticOnly: true, cesr: presentation.exchange.cesr,
+        evidence: presentation.evidence, presenterAid: recipientAid, verifierAid,
+    });
+    expect(verifiedPresentation).toEqual(expect.objectContaining({
+        exchange: expect.objectContaining({ said: presentation.exchange.said, route: "/ipex/grant" }),
+        credential: expect.objectContaining({ said: grant.evidence.said, issuerAid, recipientAid }),
+    }));
+    await request("vaults.close", { vaultId: verifierId });
+    await request("vaults.open", { vaultId: verifierId, passcode: "test-verifier-passcode" });
+    expect((await request("ipex.get", { vaultId: verifierId, syntheticOnly: true, said: presentation.exchange.said })).exchange)
+        .toEqual(expect.objectContaining({ route: "/ipex/grant", senderAid: recipientAid, recipientAid: verifierAid }));
+    await request("vaults.close", { vaultId: verifierId });
 });
 
 for (const [stage, needle, setup, retryable] of [
