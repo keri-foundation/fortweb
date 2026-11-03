@@ -108,7 +108,7 @@ test("synthetic recipient verifies and retains independent issuance evidence", a
     await expect(request("credentials.receive", { ...params, schemaId: "missing" })).rejects.toThrow();
     const accepted = await request("credentials.receive", params);
     expect(accepted.credential).toEqual(expect.objectContaining({ said: early.said, issuerAid, recipientAid, schemaId, registryId,
-        integrity: "verified", issuerSignature: "verified", issuance: "verified", headSequence: 2, headState: "blinded", currentStatus: "unknown" }));
+        integrity: "verified", issuerSignature: "verified", issuance: "verified", headSequence: 2, headState: "blinded", currentStatus: "issued" }));
     expect((await request("credentials.receive", { ...params, evidence: early })).credential.headSequence).toBe(2);
     expect((await request("credentials.receive", params)).credential).toEqual(accepted.credential);
     expect(await request("test.receiptStorage", { vaultId, blinder: latest.blinder })).toEqual({ containsName: false, containsBlinder: false, hasData: true, wrongKeyRejected: true });
@@ -130,7 +130,40 @@ test("synthetic recipient verifies and retains independent issuance evidence", a
     const recovered = await request("credentials.getReceived", { vaultId, said: early.said, syntheticOnly: true });
     expect(recovered.credential).toEqual(accepted.credential);
     writeFileSync(testInfo.outputPath("issuance-restored.json"), JSON.stringify(recovered.evidence));
-    writeFileSync(testInfo.outputPath("issuance-later.json"), JSON.stringify(recovered.evidence));
+    await request("vaults.close", { vaultId });
+    await request("vaults.open", { vaultId: sourceId, passcode: "test-issuer-passcode" });
+    const revoked = (await request("credentials.revokeRegistered", {
+        vaultId: sourceId, name: "registry", requestId: "first",
+    })).credential;
+    expect(revoked).toEqual(expect.objectContaining({ said: early.said, status: "revoked", statusSequence: 3 }));
+    expect((await request("credentials.revokeRegistered", {
+        vaultId: sourceId, name: "registry", requestId: "first",
+    })).credential).toEqual(revoked);
+    await expect(request("ipex.grant", {
+        vaultId: sourceId, name: "registry", requestId: "first", syntheticOnly: true, message: "Revoked credential",
+    })).rejects.toThrow(/not currently issued/i);
+    await request("vaults.close", { vaultId: sourceId });
+    await request("vaults.open", { vaultId: sourceId, passcode: "test-issuer-passcode" });
+    expect((await request("credentials.getIssued", {
+        vaultId: sourceId, name: "registry", requestId: "first",
+    })).credential).toEqual(revoked);
+    await request("vaults.close", { vaultId: sourceId });
+    await request("vaults.open", { vaultId, passcode: "test-recipient-passcode" });
+    const revokedReceipt = await request("credentials.receive", { ...params, evidence: revoked });
+    expect(revokedReceipt.credential).toEqual(expect.objectContaining({ said: early.said, headSequence: 3, currentStatus: "revoked" }));
+    expect((await request("credentials.getReceived", { vaultId, said: early.said, syntheticOnly: true })).credential)
+        .toEqual(revokedReceipt.credential);
+    writeFileSync(testInfo.outputPath("issuance-later.json"), JSON.stringify(revokedReceipt.evidence));
+    const stoppedAfterRevocation = worker.waitForEvent("close");
+    await page.evaluate(() => (window as any).webbaserProductionHarness.destroy());
+    await stoppedAfterRevocation;
+    started = page.waitForEvent("worker");
+    await page.reload();
+    await page.waitForFunction(() => (window as any).webbaserProductionHarnessReady === true);
+    worker = await started;
+    await request("vaults.open", { vaultId, passcode: "test-recipient-passcode" });
+    expect((await request("credentials.getReceived", { vaultId, said: early.said, syntheticOnly: true })).credential)
+        .toEqual(revokedReceipt.credential);
     await request("test.corruptReceipt", { vaultId, said: early.said });
     await expect(request("credentials.getReceived", { vaultId, said: early.said, syntheticOnly: true })).rejects.toThrow(/invalid or incomplete/);
     await request("vaults.close", { vaultId });

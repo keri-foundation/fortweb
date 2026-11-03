@@ -15,6 +15,7 @@ export const METHODS = Object.freeze({
     credentialsIssueSigned: "credentials.issueSigned",
     credentialsIssueRegistered: "credentials.issueRegistered",
     credentialsGetIssued: "credentials.getIssued",
+    credentialsRevokeRegistered: "credentials.revokeRegistered",
     credentialsReceive: "credentials.receive",
     credentialsGetReceived: "credentials.getReceived",
     ipexGrant: "ipex.grant",

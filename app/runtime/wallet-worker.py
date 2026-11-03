@@ -54,6 +54,7 @@ ALLOWED_METHODS = {
     "credentials.issueSigned",
     "credentials.issueRegistered",
     "credentials.getIssued",
+    "credentials.revokeRegistered",
     "credentials.receive",
     "credentials.getReceived",
     "ipex.grant",

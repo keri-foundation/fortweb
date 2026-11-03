@@ -43,7 +43,7 @@ _CONFIG: dict = {}
 _STATE = None
 _REGISTRY = None
 _RECEIVED_EVIDENCE_KEYS = frozenset({"said", "issuerAid", "recipientAid", "schemaId", "cesr", "registryId",
-                                     "sequence", "head", "blinder", "tel", "kel"})
+                                     "sequence", "head", "blinder", "status", "statusSequence", "statusBlinder", "tel", "kel"})
 
 
 def configure_runtime(
@@ -873,16 +873,26 @@ async def _verify_received_evidence(state, record, *, require_local_recipient=Tr
         sequence = evidence["sequence"]
         if not isinstance(sequence, int) or isinstance(sequence, bool) or not 0 < sequence < len(events):
             raise ValueError("Invalid issuance sequence")
+        status_sequence = evidence["statusSequence"]
+        if (not isinstance(status_sequence, int) or isinstance(status_sequence, bool) or
+                not sequence <= status_sequence < len(events)):
+            raise ValueError("Invalid credential status sequence")
         full = regeventing.vet(events[0], events[1:], db=staging)
         issued = regeventing.vet(events[0], events[1:sequence + 1], db=staging,
                                  acdc=credential, blinder=evidence["blinder"])
+        status = regeventing.vet(events[0], events[1:status_sequence + 1], db=staging,
+                                 acdc=credential, blinder=evidence["statusBlinder"])
         if (full.regid != credential.regid or full.issuer != issuer or full.said != evidence["head"] or
-                issued.acdc != credential.said or issued.state != "issued" or issued.binding != "mutual"):
+                issued.acdc != credential.said or issued.state != "issued" or issued.binding != "mutual" or
+                status.acdc != credential.said or status.state not in ("issued", "revoked") or
+                status.binding != "mutual" or evidence["status"] != status.state):
             raise ValueError("Registry issuance is not verified")
         return {"said": credential.said, "issuerAid": issuer, "recipientAid": recipient, "schemaId": schema_id,
-                "registryId": full.regid, "issuanceSequence": sequence, "headSequence": full.sn,
+                "registryId": full.regid, "issuanceSequence": sequence, "statusSequence": status_sequence,
+                "headSequence": full.sn,
                 "integrity": "verified", "issuerSignature": "verified", "issuance": "verified",
-                "headState": "issued" if full.sn == sequence else "blinded", "currentStatus": "unknown"}, history, [event.said for event in events]
+                "headState": status.state if full.sn == status_sequence else "blinded",
+                "currentStatus": status.state}, history, [event.said for event in events]
     finally:
         await staging.aclose(clear=True)
 
@@ -1097,6 +1107,8 @@ async def _ipex_operation(method, params, state):
     if method == "ipex.grant":
         issued = await _registry_operation("credentials.getIssued", params, state)
         evidence = issued["credential"]
+        if evidence["status"] != "issued":
+            raise RuntimeFault("VALIDATION", "Credential is not currently issued.")
         issuer = evidence["issuerAid"]
         recipient = evidence["recipientAid"]
         if not _is_local_identifier(state["hby"], issuer) or issuer == recipient:
@@ -1125,6 +1137,8 @@ async def _ipex_operation(method, params, state):
             "syntheticOnly": True,
         }, state)
         credential = presented["credential"]
+        if credential["currentStatus"] != "issued":
+            raise RuntimeFault("VALIDATION", "Credential is not currently issued.")
         presenter = require_text(params.get("presenterAid"), field="Presenter")
         verifier = require_text(params.get("verifierAid"), field="Verifier")
         if (credential["recipientAid"] != presenter or not _is_local_identifier(state["hby"], presenter)
@@ -1177,6 +1191,8 @@ async def _ipex_operation(method, params, state):
             "schemaId": receipt_params["schemaId"],
             "evidence": evidence,
         })
+        if receipt["currentStatus"] != "issued":
+            raise RuntimeFault("VALIDATION", "Credential is not currently issued.")
         await _import_ipex_issuer_history(state, evidence)
         baser, rgy = await _temporary_ipex_registry(state, evidence)
         try:
@@ -1209,6 +1225,8 @@ async def _ipex_operation(method, params, state):
             "schemaId": evidence.get("schemaId"),
             "evidence": evidence,
         }, require_local_recipient=False)
+        if receipt["currentStatus"] != "issued":
+            raise RuntimeFault("VALIDATION", "Credential is not currently issued.")
         organizer = state["modules"]["organizing"].Organizer(hby=state["hby"])
         _get_remote_record(state["hby"], organizer, presenter)
         await _import_ipex_issuer_history(state, evidence)
@@ -1228,11 +1246,13 @@ async def _ipex_operation(method, params, state):
     grant_view, grant = _ipex_view(state, require_text(params.get("grantSaid"), field="IPEX grant SAID"))
     if grant.route != "/ipex/grant" or not _is_local_identifier(state["hby"], grant.ked["ri"]):
         raise RuntimeFault("VALIDATION", "IPEX grant is not addressed to this wallet.")
-    await _received_credential_operation("credentials.getReceived", {
+    received = await _received_credential_operation("credentials.getReceived", {
         "vaultId": vault_id,
         "said": grant.ked["a"]["o"][0],
         "syntheticOnly": True,
     }, state)
+    if received["credential"]["currentStatus"] != "issued":
+        raise RuntimeFault("VALIDATION", "Credential is not currently issued.")
     exchange, attachments = ipexing.admit(
         state["hby"].habByPre(grant.ked["ri"]), _ipex_message(params), grant,
         kind=state["modules"]["kering"].Kinds.json,
@@ -1551,6 +1571,39 @@ async def _registry_operation(method, params, state):
         # Opening a new browser substore dirties its metadata even on read.
         await state["hby"].db.flush()
 
+        def parse_credential(record):
+            stream = bytearray(base64.b64decode(record["cesr"], validate=True))
+            parser = state["modules"]["parsing"].Parser(version=state["modules"]["kering"].Vrsn_2_0)
+            extraction = parser.groupParsator(ims=stream, framed=True,
+                                               version=state["modules"]["kering"].Vrsn_2_0,
+                                               processive=False)
+            try:
+                next(extraction)
+            except StopIteration as done:
+                messages = done.value
+            else:
+                raise ValueError("Incomplete credential proof")
+            if stream or len(messages) != 1 or len(messages[0].tsgs) != 1:
+                raise ValueError("Invalid credential proof")
+            return messages[0]
+
+        def credential_updates(record):
+            updates = record.get("updates")
+            if updates is None:
+                updates = [{"sequence": record["sequence"], "blinder": record["blinder"], "state": "issued"}]
+            if not isinstance(updates, list) or not updates:
+                raise ValueError("Invalid credential updates")
+            first = updates[0]
+            if (not isinstance(first, dict) or first.get("sequence") != record["sequence"] or
+                    first.get("blinder") != record["blinder"] or first.get("state") != "issued"):
+                raise ValueError("Invalid credential issuance update")
+            for update in updates:
+                if (not isinstance(update, dict) or set(update) != {"sequence", "blinder", "state"} or
+                        not isinstance(update["sequence"], int) or isinstance(update["sequence"], bool) or
+                        not isinstance(update["blinder"], str) or update["state"] not in ("issued", "revoked")):
+                    raise ValueError("Invalid credential status update")
+            return updates
+
         def validate():
             count = len(manager.names)
             total = len(baser.db._stores["tels."].items)
@@ -1589,18 +1642,7 @@ async def _registry_operation(method, params, state):
                         sequence = record["sequence"]
                         if not isinstance(sequence, int) or isinstance(sequence, bool) or not 0 < sequence < len(events) or (reg.regk, sequence) in claimed:
                             raise ValueError("Invalid issuance sequence")
-                        stream = bytearray(base64.b64decode(record["cesr"], validate=True))
-                        parser = state["modules"]["parsing"].Parser(version=state["modules"]["kering"].Vrsn_2_0)
-                        extraction = parser.groupParsator(ims=stream, framed=True, version=state["modules"]["kering"].Vrsn_2_0, processive=False)
-                        try:
-                            next(extraction)
-                        except StopIteration as done:
-                            messages = done.value
-                        else:
-                            raise ValueError("Incomplete credential proof")
-                        if stream or len(messages) != 1 or len(messages[0].tsgs) != 1:
-                            raise ValueError("Invalid credential proof")
-                        message = messages[0]
+                        message = parse_credential(record)
                         if (message.serder.said != record["said"] or message.serder.israid != record["issuerAid"] or
                                 message.serder.iseaid != record["recipientAid"] or message.serder.sad["s"] != record["schemaId"] or
                                 record["registry"] != reg.regk or record["authentication"] != "signature"):
@@ -1619,13 +1661,18 @@ async def _registry_operation(method, params, state):
                         schema.typ.resolver = state["modules"]["scheming"].CacheResolver(state["hby"].db)
                         if not schema.verify(raw=json.dumps(message.serder.sad).encode("utf-8")):
                             raise ValueError("Invalid credential schema")
-                        issuance = regeventing.vet(events[0], events[1:sequence + 1], db=state["hby"].db,
-                                                   acdc=message.serder, blinder=record["blinder"])
-                        if issuance.state != "issued" or issuance.binding != "mutual" or issuance.said != events[sequence].said:
-                            raise ValueError("Credential issuance is not verified")
-                        claimed.add((reg.regk, sequence))
+                        for update in credential_updates(record):
+                            sequence = update["sequence"]
+                            if not 0 < sequence < len(events) or (reg.regk, sequence) in claimed:
+                                raise ValueError("Invalid credential status sequence")
+                            status = regeventing.vet(events[0], events[1:sequence + 1], db=state["hby"].db,
+                                                     acdc=message.serder, blinder=update["blinder"])
+                            if (status.state != update["state"] or status.binding != "mutual" or
+                                    status.said != events[sequence].said):
+                                raise ValueError("Credential status is not verified")
+                            claimed.add((reg.regk, sequence))
                     visited += len(events)
-                if visited != total or len(claimed) != total - count or len(claimed) != len(records):
+                if visited != total or len(claimed) != total - count:
                     raise ValueError("Incomplete issuance evidence")
                 return records
             except Exception as exc:
@@ -1660,7 +1707,7 @@ async def _registry_operation(method, params, state):
             except BaseException:
                 state["persistence_failed"] = True
                 raise
-        elif method in ("credentials.issueRegistered", "credentials.getIssued"):
+        elif method in ("credentials.issueRegistered", "credentials.getIssued", "credentials.revokeRegistered"):
             request_id = require_text(params.get("requestId"), field="Issuance request ID")
             if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", request_id):
                 raise RuntimeFault("VALIDATION", "Issuance request ID must contain only letters, numbers, hyphens, and underscores.")
@@ -1693,7 +1740,8 @@ async def _registry_operation(method, params, state):
                         if not reg.anchorMsg(update.said):
                             raise RuntimeFault("BAD_STATE", "Registry issuance was not accepted.")
                         record.update(registryId=reg.regk, sequence=reg.sn, blinder=blinder.qb64,
-                                      requestHash=fingerprint)
+                                      requestHash=fingerprint,
+                                      updates=[{"sequence": reg.sn, "blinder": blinder.qb64, "state": "issued"}])
                         if not credentials.put(keys=request_id, val=_json_bytes(record)):
                             raise RuntimeFault("CONFLICT", "Issuance request ID is already in use.")
                         await flush_open_state()
@@ -1708,10 +1756,42 @@ async def _registry_operation(method, params, state):
                         raise
             elif record is None or record["registryId"] != reg.regk:
                 raise RuntimeFault("NOT_FOUND", "Issued credential was not found.")
+            elif method == "credentials.revokeRegistered":
+                updates = credential_updates(record)
+                if updates[-1]["state"] == "issued":
+                    if not store.records.pin(keys="_fortweb_pending", val=registering.RegistryRecord(registryKey="pending")):
+                        raise RuntimeFault("BAD_STATE", "Unable to record the pending registry operation.")
+                    try:
+                        await baser.db.flush()
+                        blinder, update = registraring.Registrar(rgy=manager).issue(
+                            reg, acdc=parse_credential(record).serder, state="revoked")
+                        reg.hab.interact(data=[dict(i=reg.regk, s=update.sad["n"], d=update.said)],
+                                         version=state["modules"]["kering"].Vrsn_2_0,
+                                         gvrsn=state["modules"]["kering"].Vrsn_2_0)
+                        if not reg.anchorMsg(update.said):
+                            raise RuntimeFault("BAD_STATE", "Registry revocation was not accepted.")
+                        updates.append({"sequence": reg.sn, "blinder": blinder.qb64, "state": "revoked"})
+                        record["updates"] = updates
+                        if not credentials.pin(keys=request_id, val=_json_bytes(record)):
+                            raise RuntimeFault("BAD_STATE", "Unable to persist credential revocation.")
+                        await flush_open_state()
+                        await _validate_open_kels(state["hby"].db, state["modules"], keeper=state["hby"].ks)
+                        await baser.db.flush()
+                        records = validate()
+                        if not store.records.rem(keys="_fortweb_pending"):
+                            raise RuntimeFault("BAD_STATE", "Unable to complete the pending registry operation.")
+                        await baser.db.flush()
+                    except BaseException:
+                        state["persistence_failed"] = True
+                        raise
+                elif updates[-1]["state"] != "revoked":
+                    raise RuntimeFault("BAD_STATE", "Credential status is invalid.")
             evidence = [store.seqEvent(reg.regk, sn) for sn in range(reg.sn + 1)]
+            status = credential_updates(record)[-1]
             return {"credential": {**{key: record[key] for key in ("said", "issuerAid", "recipientAid", "schemaId", "cesr")},
                                    "registryId": reg.regk, "sequence": record["sequence"], "head": evidence[-1].said,
-                                   "blinder": record["blinder"],
+                                   "blinder": record["blinder"], "status": status["state"],
+                                   "statusSequence": status["sequence"], "statusBlinder": status["blinder"],
                                    "tel": [base64.b64encode(event.raw).decode("ascii") for event in evidence],
                                    "kel": base64.b64encode(_identifier_introduction(reg.hab, state["modules"])).decode("ascii")}}
         else:
@@ -1791,7 +1871,7 @@ async def dispatch(method: str, params: dict):
         return await _received_credential_operation(method, params, state)
     if method.startswith("ipex."):
         return await _ipex_operation(method, params, state)
-    if method.startswith("registries.") or method in ("credentials.issueRegistered", "credentials.getIssued"):
+    if method.startswith("registries.") or method in ("credentials.issueRegistered", "credentials.getIssued", "credentials.revokeRegistered"):
         return await _registry_operation(method, params, state)
     if method == "settings.get":
         return {
