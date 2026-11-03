@@ -135,8 +135,11 @@ for (const [stage, needle, setup, retryable] of [
                             def __init__(self, handle): self.handle = handle
                             def get(self, key, default=None): return self.handle.get(key, default)
                             def __setitem__(self, key, value): self.handle[key] = value
-                            async def sync(self): raise RuntimeError("injected credential sync failure")
-                        state["hby"].db.db._stores["fwic."].handle = FailingHandle(state["hby"].db.db._stores["fwic."].handle)
+                            async def sync(self):
+                                import js
+                                js.self.postMessage(json.dumps({"kind": "fortweb.runtime.diagnostic", "event": "issuance_credential_sync_failed"}))
+                                raise RuntimeError("injected credential sync failure")
+                        state["hby"].db._stores["fwic."].handle = FailingHandle(state["hby"].db._stores["fwic."].handle)
 `, false],
     ["after vault flush", "                        await baser.db.flush()\n                        records = validate()", "", false],
     ["after TEL flush", '                        if not store.records.rem(keys="_fortweb_pending"):', "", false],
@@ -200,6 +203,10 @@ for (const [stage, needle, setup, retryable] of [
                 .some((message: { message: string }) => message.message.includes("issuance_test_paused")));
         } else {
             await expect(request("credentials.issueRegistered", params)).rejects.toThrow();
+            if (stage === "during credential sync") {
+                await page.waitForFunction(() => (window as any).webbaserProductionHarness.diagnostics()
+                    .some((message: { message: string }) => message.message.includes("issuance_credential_sync_failed")));
+            }
         }
         const stopped = worker.waitForEvent("close");
         await page.evaluate(() => (window as any).webbaserProductionHarness.destroy());

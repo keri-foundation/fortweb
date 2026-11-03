@@ -42,6 +42,8 @@ async def _open_transient_storage(_namespace):
 _CONFIG: dict = {}
 _STATE = None
 _REGISTRY = None
+_RECEIVED_EVIDENCE_KEYS = frozenset({"said", "issuerAid", "recipientAid", "schemaId", "cesr", "registryId",
+                                     "sequence", "head", "blinder", "tel", "kel"})
 
 
 def configure_runtime(
@@ -56,6 +58,7 @@ def configure_runtime(
     passcode_kdf_defaults: dict,
     default_settings: dict,
     kf_state_subdb: str,
+    allow_synthetic_receipt: bool = False,
 ):
     _CONFIG.clear()
     _CONFIG.update(
@@ -69,6 +72,7 @@ def configure_runtime(
         passcode_kdf_defaults=dict(passcode_kdf_defaults),
         default_settings=dict(default_settings),
         kf_state_subdb=kf_state_subdb,
+        allow_synthetic_receipt=allow_synthetic_receipt,
     )
 
 
@@ -398,7 +402,7 @@ async def _build_vault_state(record, *, bran: str = ""):
     keeper = modules["webkeeping"].WebKeeper(name=record["storageName"])
     baser = modules["webbasing"].WebBaser(name=record["storageName"])
     kf_state_subdb = _CONFIG["kf_state_subdb"]
-    for subdb in (kf_state_subdb, "fwic."):
+    for subdb in (kf_state_subdb, "fwic.", "fwrc."):
         if subdb not in baser.SubDbNames:
             baser.SubDbNames = [*baser.SubDbNames, subdb]
     cf = NullConfiger()
@@ -780,6 +784,176 @@ def _issuance_fingerprint(issuer, recipient, schema, registry, attributes):
     request = {"issuerAid": issuer, "recipientAid": recipient, "schemaId": schema, "registryId": registry,
                "attributes": {key: value for key, value in attributes.items() if key not in ("d", "i")}}
     return hashlib.sha256(_json_bytes(request)).hexdigest()
+
+
+async def _verify_received_evidence(state, record):
+    from keri.acdc import regeventing
+
+    modules, hby = state["modules"], state["hby"]
+    evidence = record["evidence"]
+    if not isinstance(evidence, dict) or set(evidence) != _RECEIVED_EVIDENCE_KEYS:
+        raise ValueError("Unsupported evidence fields")
+    version = modules["kering"].Vrsn_2_0
+    parser = modules["parsing"].Parser(local=False, version=version)
+
+    def parse(encoded):
+        if not isinstance(encoded, str) or len(encoded) > 4 * 1024 * 1024:
+            raise ValueError("Missing or oversized CESR")
+        stream = bytearray(base64.b64decode(encoded, validate=True))
+        extraction = parser.groupParsator(ims=stream, framed=True, local=False, version=version, processive=False)
+        try:
+            next(extraction)
+        except StopIteration as done:
+            messages = done.value
+        else:
+            raise ValueError("Incomplete CESR")
+        if stream or not messages:
+            raise ValueError("Incomplete CESR")
+        return messages
+
+    proof, = parse(evidence["cesr"])
+    credential = proof.serder
+    issuer, recipient, schema_id = record["issuerAid"], record["recipientAid"], record["schemaId"]
+    _get_identifier_record(hby, recipient)
+    if (credential.pvrsn != version or not credential.verify() or credential.israid != issuer or
+            credential.iseaid != recipient or credential.sad["s"] != schema_id or
+            credential.said != evidence["said"] or credential.regid != evidence["registryId"] or
+            issuer != evidence["issuerAid"] or recipient != evidence["recipientAid"] or schema_id != evidence["schemaId"]):
+        raise ValueError("Credential identifiers conflict")
+    if _is_local_identifier(hby, issuer):
+        raise ValueError("Issuer must be independent of this wallet")
+    schema = hby.db.schema.get(keys=(schema_id,))
+    if schema is None or schema.said != schema_id:
+        raise ValueError("Schema is missing or conflicts")
+    schema.typ.resolver = modules["scheming"].CacheResolver(hby.db)
+    if not schema.verify(raw=json.dumps(credential.sad).encode("utf-8")):
+        raise ValueError("Credential schema is invalid")
+    kel = parse(evidence["kel"])
+    ilks = modules["kering"].Ilks
+    if any(item.serder.pre != issuer or item.serder.pvrsn != version or
+           item.serder.ilk not in (ilks.icp, ilks.rot, ilks.ixn) for item in kel):
+        raise ValueError("Unsupported issuer history")
+    if kel[0].serder.ilk != ilks.icp:
+        raise ValueError("Missing issuer inception")
+    staging = modules["webbasing"].WebBaser(name="received-credential-verification", temp=True)
+    try:
+        await staging.reopen(storageOpener=_open_transient_storage)
+        kevery = modules["eventing"].Kevery(db=staging, lax=False, local=False)
+        history = []
+        for sn, item in enumerate(kel):
+            event = item.serder
+            if event.sn != sn:
+                raise ValueError("Incomplete issuer history")
+            parser.msgProcess(asdict(item), kvy=kevery, rvy=None, tvy=None, exc=None, vry=None)
+            if issuer not in staging.kevers or staging.kevers[issuer].serder.said != event.said:
+                raise ValueError("Unverified issuer event")
+            prior = hby.db.kels.getLast(keys=issuer, on=sn)
+            if isinstance(prior, (bytes, bytearray, memoryview)):
+                prior = bytes(prior).decode("utf-8")
+            if prior is not None and prior != event.said:
+                raise ValueError("Issuer history conflicts with this vault")
+            history.append(event.said)
+        if len(proof.tsgs) != 1:
+            raise ValueError("Unsupported issuer signature")
+        prefix, number, diger, sigers = proof.tsgs[0]
+        tholder, verfers = staging.resolveVerifiers(pre=prefix.qb64, sn=number.sn, dig=diger.qb64)
+        _, indices = modules["eventing"].verifySigs(credential.raw, sigers, verfers)
+        if prefix.qb64 != issuer or not tholder.satisfy(indices):
+            raise ValueError("Invalid credential signature")
+        if not isinstance(evidence["tel"], list) or not 1 <= len(evidence["tel"]) <= 256:
+            raise ValueError("Unsupported registry history")
+        events = []
+        for encoded in evidence["tel"]:
+            raw = base64.b64decode(encoded, validate=True)
+            event = modules["serdering"].SerderACDC(raw=raw)
+            if event.raw != raw:
+                raise ValueError("Registry event has trailing data")
+            events.append(event)
+        sequence = evidence["sequence"]
+        if not isinstance(sequence, int) or isinstance(sequence, bool) or not 0 < sequence < len(events):
+            raise ValueError("Invalid issuance sequence")
+        full = regeventing.vet(events[0], events[1:], db=staging)
+        issued = regeventing.vet(events[0], events[1:sequence + 1], db=staging,
+                                 acdc=credential, blinder=evidence["blinder"])
+        if (full.regid != credential.regid or full.issuer != issuer or full.said != evidence["head"] or
+                issued.acdc != credential.said or issued.state != "issued" or issued.binding != "mutual"):
+            raise ValueError("Registry issuance is not verified")
+        return {"said": credential.said, "issuerAid": issuer, "recipientAid": recipient, "schemaId": schema_id,
+                "registryId": full.regid, "issuanceSequence": sequence, "headSequence": full.sn,
+                "integrity": "verified", "issuerSignature": "verified", "issuance": "verified",
+                "headState": "issued" if full.sn == sequence else "blinded", "currentStatus": "unknown"}, history, [event.said for event in events]
+    finally:
+        await staging.aclose(clear=True)
+
+
+async def _received_credential_operation(method, params, state):
+    from keri.db import subing
+
+    if not _CONFIG.get("allow_synthetic_receipt") or params.get("syntheticOnly") is not True:
+        raise RuntimeFault("UNSUPPORTED", "Recipient verification is restricted to synthetic test credentials.")
+    manager = state["hby"].mgr
+    if not state["vault"]["encrypted"] or manager.encrypter is None or manager.decrypter is None:
+        raise RuntimeFault("UNSUPPORTED", "A passcode-protected vault is required for received credentials.")
+    records = subing.Suber(db=state["hby"].db, subkey="fwrc.")
+    await state["hby"].db.flush()
+    if records.get(keys="_pending") is not None:
+        raise RuntimeFault("BAD_STATE", "Received credential storage is incomplete and requires recovery.")
+    try:
+        saved = {}
+        for (key,), cipher in records.getTopItemIter():
+            record = json.loads(manager.decrypter.decrypt(qb64=cipher, bare=True))
+            result, kel, tel = await _verify_received_evidence(state, record)
+            if key != result["said"]:
+                raise ValueError("Credential storage key conflicts")
+            saved[key] = (record, result, kel, tel)
+    except Exception as exc:
+        raise RuntimeFault("BAD_STATE", "Received credential evidence is invalid or incomplete.") from exc
+    if method == "credentials.getReceived":
+        said = require_text(params.get("said"), field="Credential SAID")
+        if said not in saved:
+            raise RuntimeFault("NOT_FOUND", "Received credential was not found.")
+        record, result, _, _ = saved[said]
+        return {"credential": result, "evidence": record["evidence"]}
+    evidence = params.get("evidence")
+    if not isinstance(evidence, dict) or set(evidence) != _RECEIVED_EVIDENCE_KEYS or len(_json_bytes(evidence)) > 8 * 1024 * 1024:
+        raise RuntimeFault("VALIDATION", "Credential evidence must be an object of at most 8 MiB.")
+    record = {"issuerAid": require_text(params.get("issuerAid"), field="Issuer"),
+              "recipientAid": require_text(params.get("recipientAid"), field="Recipient"),
+              "schemaId": require_text(params.get("schemaId"), field="Schema ID"), "evidence": evidence}
+    try:
+        result, kel, tel = await _verify_received_evidence(state, record)
+        for old, old_result, old_kel, old_tel in saved.values():
+            if old_result["issuerAid"] != result["issuerAid"]:
+                continue
+            if kel[:min(len(kel), len(old_kel))] != old_kel[:min(len(kel), len(old_kel))]:
+                raise RuntimeFault("CONFLICT", "Issuer history conflicts with retained evidence.")
+            if old_result["registryId"] == result["registryId"] and tel[:min(len(tel), len(old_tel))] != old_tel[:min(len(tel), len(old_tel))]:
+                raise RuntimeFault("CONFLICT", "Registry history conflicts with retained evidence.")
+        if result["said"] in saved:
+            old, old_result, old_kel, old_tel = saved[result["said"]]
+            if len(tel) <= len(old_tel):
+                return {"credential": old_result, "evidence": old["evidence"]}
+            if len(kel) < len(old_kel):
+                raise RuntimeFault("CONFLICT", "New registry evidence has an older issuer history.")
+    except RuntimeFault:
+        raise
+    except Exception as exc:
+        raise RuntimeFault("VALIDATION", "Received credential evidence is invalid or unsupported.") from exc
+    if not records.put(keys="_pending", val="pending"):
+        raise RuntimeFault("BAD_STATE", "Unable to record the pending receipt.")
+    try:
+        await flush_open_state()
+        cipher = manager.encrypter.encrypt(ser=_json_bytes(record)).qb64
+        if not records.pin(keys=result["said"], val=cipher):
+            raise RuntimeFault("BAD_STATE", "Unable to persist received credential evidence.")
+        await flush_open_state()
+        if not records.rem(keys="_pending"):
+            raise RuntimeFault("BAD_STATE", "Unable to complete the pending receipt.")
+        await flush_open_state()
+    except BaseException:
+        state["persistence_failed"] = True
+        raise
+    return {"credential": result, "evidence": evidence}
 
 
 def _dedupe(values):
@@ -1324,6 +1498,8 @@ async def dispatch(method: str, params: dict):
             }
 
     state = require_open_state(_require_vault_id(params))
+    if method in ("credentials.receive", "credentials.getReceived"):
+        return await _received_credential_operation(method, params, state)
     if method.startswith("registries.") or method in ("credentials.issueRegistered", "credentials.getIssued"):
         return await _registry_operation(method, params, state)
     if method == "settings.get":

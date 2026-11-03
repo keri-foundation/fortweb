@@ -155,6 +155,34 @@ chain; later blinded events do not by themselves reveal the credential's current
 status. Revocation, credential delivery, and automatic recovery of interrupted
 operations are not implemented.
 
+The experimental `credentials.receive` and `credentials.getReceived` methods
+are disabled unless the local runtime configuration explicitly sets
+`fort_synthetic_recipient_testing` to `true`. Both require `syntheticOnly: true`
+and a passcode-protected recipient vault. This is an explicit test-data
+acknowledgment, not a way to detect whether supplied data is actually synthetic.
+Do not use real personal data with this experimental path.
+
+Receipt accepts the existing issuance result as an evidence object, alongside
+the expected issuer, local recipient, and an already imported schema ID. It
+verifies the signed KEL, signature, schema, TEL chain, anchors and blinded
+issuance binding in temporary KERI storage. It reports the verified supplied
+head separately from current status, which is always unknown without fresh
+authoritative evidence. The local object wraps CESR and TEL events; it is not
+an IPEX message. The current verifier supports non-delegated issuer histories
+without endpoint reply messages and rejects unsupported evidence.
+
+Received evidence is encrypted using the existing passcode-backed KERI key
+manager before storage in the recipient vault; the storage key still reveals
+the credential SAID and that a record exists. An interrupted write can leave a
+pending marker that blocks receipt operations; automatic recovery is not
+implemented. The issuer's existing issuance records remain plaintext.
+More seriously, current vault registry records also contain a plaintext root
+used for deterministic signing-key derivation. A party able to read that
+browser storage can reconstruct signing authority even while a passcode vault
+is closed. Recipient-record encryption does not fix this signing-root exposure,
+protect the unlocked vault against same-origin code, or establish that any
+existing identity is safe for sensitive use.
+
 The browser registry test writes initial and recovered public evidence to its
 Playwright output directory. Set `FORTWEB_REGISTRY_INTEROP_DIR` to that
 directory and run `python -m unittest python.test_registry_interop` with a
