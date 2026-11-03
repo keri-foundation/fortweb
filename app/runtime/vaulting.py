@@ -44,6 +44,8 @@ _STATE = None
 _REGISTRY = None
 _RECEIVED_EVIDENCE_KEYS = frozenset({"said", "issuerAid", "recipientAid", "schemaId", "cesr", "registryId",
                                      "sequence", "head", "blinder", "status", "statusSequence", "statusBlinder", "tel", "kel"})
+_LEGACY_RECEIVED_EVIDENCE_KEYS = frozenset({"said", "issuerAid", "recipientAid", "schemaId", "cesr", "registryId",
+                                            "sequence", "head", "blinder", "tel", "kel"})
 
 
 def configure_runtime(
@@ -791,8 +793,12 @@ async def _verify_received_evidence(state, record, *, require_local_recipient=Tr
 
     modules, hby = state["modules"], state["hby"]
     evidence = record["evidence"]
-    if not isinstance(evidence, dict) or set(evidence) != _RECEIVED_EVIDENCE_KEYS:
+    legacy = isinstance(evidence, dict) and set(evidence) == _LEGACY_RECEIVED_EVIDENCE_KEYS
+    if not isinstance(evidence, dict) or (set(evidence) != _RECEIVED_EVIDENCE_KEYS and not legacy):
         raise ValueError("Unsupported evidence fields")
+    if legacy:
+        evidence = {**evidence, "status": "issued", "statusSequence": evidence["sequence"],
+                    "statusBlinder": evidence["blinder"]}
     version = modules["kering"].Vrsn_2_0
     parser = modules["parsing"].Parser(local=False, version=version)
 
@@ -887,12 +893,13 @@ async def _verify_received_evidence(state, record, *, require_local_recipient=Tr
                 status.acdc != credential.said or status.state not in ("issued", "revoked") or
                 status.binding != "mutual" or evidence["status"] != status.state):
             raise ValueError("Registry issuance is not verified")
+        current_status = status.state if not legacy or full.sn == sequence else "unknown"
         return {"said": credential.said, "issuerAid": issuer, "recipientAid": recipient, "schemaId": schema_id,
                 "registryId": full.regid, "issuanceSequence": sequence, "statusSequence": status_sequence,
                 "headSequence": full.sn,
                 "integrity": "verified", "issuerSignature": "verified", "issuance": "verified",
                 "headState": status.state if full.sn == status_sequence else "blinded",
-                "currentStatus": status.state}, history, [event.said for event in events]
+                "currentStatus": current_status}, history, [event.said for event in events]
     finally:
         await staging.aclose(clear=True)
 
@@ -926,7 +933,8 @@ async def _received_credential_operation(method, params, state):
         record, result, _, _ = saved[said]
         return {"credential": result, "evidence": record["evidence"]}
     evidence = params.get("evidence")
-    if not isinstance(evidence, dict) or set(evidence) != _RECEIVED_EVIDENCE_KEYS or len(_json_bytes(evidence)) > 8 * 1024 * 1024:
+    if (not isinstance(evidence, dict) or set(evidence) not in (_RECEIVED_EVIDENCE_KEYS, _LEGACY_RECEIVED_EVIDENCE_KEYS) or
+            len(_json_bytes(evidence)) > 8 * 1024 * 1024):
         raise RuntimeFault("VALIDATION", "Credential evidence must be an object of at most 8 MiB.")
     record = {"issuerAid": require_text(params.get("issuerAid"), field="Issuer"),
               "recipientAid": require_text(params.get("recipientAid"), field="Recipient"),

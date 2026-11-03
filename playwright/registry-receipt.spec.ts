@@ -106,6 +106,12 @@ test("synthetic recipient verifies and retains independent issuance evidence", a
     await expect(request("credentials.receive", { ...params, recipientAid: issuerAid })).rejects.toThrow();
     await expect(request("credentials.receive", { ...params, issuerAid: recipientAid })).rejects.toThrow();
     await expect(request("credentials.receive", { ...params, schemaId: "missing" })).rejects.toThrow();
+    const legacy = { ...early } as Record<string, unknown>;
+    delete legacy.status;
+    delete legacy.statusSequence;
+    delete legacy.statusBlinder;
+    expect((await request("credentials.receive", { ...params, evidence: legacy })).credential)
+        .toEqual(expect.objectContaining({ said: early.said, currentStatus: "issued" }));
     const accepted = await request("credentials.receive", params);
     expect(accepted.credential).toEqual(expect.objectContaining({ said: early.said, issuerAid, recipientAid, schemaId, registryId,
         integrity: "verified", issuerSignature: "verified", issuance: "verified", headSequence: 2, headState: "blinded", currentStatus: "issued" }));
