@@ -11,13 +11,22 @@ from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 
 
+_KRAM_CONFIG = {
+    "kram": {
+        "enabled": True,
+        "denials": [],
+        "caches": {"~": [1000, 5000, 60000, 300000, 5000, 60000, 300000]},
+    },
+}
+
+
 class NullConfiger:
     def __init__(self):
         self.opened = True
         self.temp = False
 
     def get(self, human=None):
-        return {}
+        return _KRAM_CONFIG
 
     def close(self, clear=False):
         self.opened = False
@@ -404,7 +413,7 @@ async def _build_vault_state(record, *, bran: str = ""):
     keeper = modules["webkeeping"].WebKeeper(name=record["storageName"])
     baser = modules["webbasing"].WebBaser(name=record["storageName"])
     kf_state_subdb = _CONFIG["kf_state_subdb"]
-    for subdb in (kf_state_subdb, "fwic.", "fwrc."):
+    for subdb in (kf_state_subdb, "fwic.", "fwpn.", "fwrc."):
         if subdb not in baser.SubDbNames:
             baser.SubDbNames = [*baser.SubDbNames, subdb]
     cf = NullConfiger()
@@ -747,8 +756,14 @@ def _signed_credential(hby, organizer, modules, params, *, registry_id=None):
     _require_remote_contact(hby, organizer, recipient, require_oobi=True)
     if recipient not in hby.kevers:
         raise RuntimeFault("VALIDATION", "Recipient key state is unavailable.")
-    if attributes.get("i", recipient) != recipient or attributes.get("d", "") != "" or attributes.get("rd"):
-        raise RuntimeFault("VALIDATION", "Attributes must match the recipient and cannot declare a registry.")
+    if attributes.get("i", recipient) != recipient or attributes.get("d", "") != "":
+        raise RuntimeFault("VALIDATION", "Attributes must match the recipient.")
+    if "rd" in attributes:
+        try:
+            if modules["coring"].Diger(qb64=attributes["rd"]).qb64 != attributes["rd"]:
+                raise ValueError("registry identifier mismatch")
+        except Exception as exc:
+            raise RuntimeFault("VALIDATION", "Presentation registry identifier is invalid.") from exc
     schemer = hby.db.schema.get(keys=(schema_id,))
     if schemer is None:
         raise RuntimeFault("NOT_FOUND", "Schema was not found in this vault.")
@@ -781,7 +796,7 @@ def _issue_signed_credential(hby, organizer, modules, params):
 
 def _issuance_fingerprint(issuer, recipient, schema, registry, attributes):
     if (not isinstance(attributes, dict) or len(_json_bytes(attributes)) > 1024 * 1024 or
-            attributes.get("i", recipient) != recipient or attributes.get("d", "") != "" or attributes.get("rd")):
+            attributes.get("i", recipient) != recipient or attributes.get("d", "") != ""):
         raise ValueError("Invalid credential attributes")
     request = {"issuerAid": issuer, "recipientAid": recipient, "schemaId": schema, "registryId": registry,
                "attributes": {key: value for key, value in attributes.items() if key not in ("d", "i")}}
@@ -1018,6 +1033,9 @@ def _parse_ipex_stream(state, stream, rgy=None):
     envelope = _ipex_envelope(state, stream)
     exchanger = modules["exchanging"].Exchanger(hby=hby, handlers=[])
     ipexing.loadHandlers(hby=hby, exc=exchanger, notifier=_IpexNotifier(), rgy=rgy)
+    kevery = modules["eventing"].Kevery(
+        db=hby.db, cf=hby.cf, exc=exchanger, enableKram=True, lax=False, local=False,
+    )
     parser = modules["parsing"].Parser(version=modules["kering"].Vrsn_2_0)
     parsed = parser.parse(
         ims=bytearray(stream), framed=False, local=False, processive=False
@@ -1027,7 +1045,16 @@ def _parse_ipex_stream(state, stream, rgy=None):
     exchange = parsed[0].serder
     if exchange.said != envelope.said or exchange.route not in ("/ipex/grant", "/ipex/admit"):
         raise RuntimeFault("VALIDATION", "IPEX message is incomplete or unsupported.")
-    parser.parse(ims=stream, framed=False, local=False, exc=exchanger)
+    parser.parse(ims=stream, framed=False, local=False, kvy=kevery, exc=exchanger)
+    cache = hby.db.kramTMSC.get(keys=(exchange.pre, exchange.ked.get("x", ""), exchange.said))
+    if hby.db.exns.get(keys=(exchange.said,)) is None and cache is not None and cache.rdt:
+        # KRAM accepted this browser message but did not dispatch it for persistence.
+        message = parsed[0]
+        exchanger.processEvent(
+            serder=exchange, tsgs=message.tsgs, cigars=message.cigars,
+            ptds=message.ptds, essrs=message.essrs, nests=message.nests,
+            lsgs=message.lsgs, sscs=message.sscs, ssts=message.ssts,
+        )
     if stream:
         raise RuntimeFault("VALIDATION", "IPEX message is incomplete or unsupported.")
     if hby.db.exns.get(keys=(exchange.said,)) is None:
@@ -1054,42 +1081,86 @@ def _ipex_view(state, said):
     }, exchange
 
 
-def _grant_proof(state, evidence):
-    from keri.core import BlindState, Blinder
-
+def _credential_serder(state, evidence):
     try:
         stream = bytearray(base64.b64decode(evidence["cesr"], validate=True))
         parser = state["modules"]["parsing"].Parser(version=state["modules"]["kering"].Vrsn_2_0)
         parsed = parser.parse(ims=stream, framed=True, local=False, processive=False)
         if stream or len(parsed) != 1 or parsed[0].serder.said != evidence["said"]:
             raise ValueError("Invalid credential stream")
-        blinder = Blinder(clan=BlindState, qb64=evidence["blinder"])
-        return state["modules"]["eventing"].messagize(
-            serder=parsed[0].serder, bonds=[blinder.data], framed=False,
-            gvrsn=state["modules"]["kering"].Vrsn_2_0,
-        )
+        return parsed[0].serder
     except Exception as exc:
         raise RuntimeFault("VALIDATION", "Credential IPEX proof is invalid or incomplete.") from exc
 
 
-async def _temporary_ipex_registry(state, evidence):
+def _grant_proof(state, evidence):
+    from keri.core import BlindState, Blinder
+
+    blinder = Blinder(clan=BlindState, qb64=evidence["blinder"])
+    return state["modules"]["eventing"].messagize(
+        serder=_credential_serder(state, evidence), bonds=[blinder.data], framed=False,
+        gvrsn=state["modules"]["kering"].Vrsn_2_0,
+    )
+
+
+def _presentation_registry(state, evidence):
+    credential = _credential_serder(state, evidence)
+    try:
+        attributes = credential.sad.get("a")
+        if not isinstance(attributes, dict):
+            raise ValueError("compact attributes")
+        registry = attributes.get("rd")
+        if state["modules"]["coring"].Diger(qb64=registry).qb64 != registry:
+            raise ValueError("registry identifier mismatch")
+    except Exception as exc:
+        raise RuntimeFault("VALIDATION", "Credential does not declare a valid presentation registry.") from exc
+    return credential, registry
+
+
+def _presentation_proof(state, evidence, presentation, anchor):
+    from keri.core import BlindState, Blinder, SealEvent
+
+    issuer = Blinder(clan=BlindState, qb64=evidence["blinder"])
+    holder = Blinder(clan=BlindState, qb64=presentation["blinder"])
+    seal = SealEvent(i=evidence["recipientAid"], s=anchor.snh, d=anchor.said)
+    return state["modules"]["eventing"].messagize(
+        serder=_credential_serder(state, evidence), bonds=[issuer.data, holder.data, seal],
+        framed=False, gvrsn=state["modules"]["kering"].Vrsn_2_0,
+    )
+
+
+async def _temporary_ipex_registry(state, evidence, presentation=None):
     from keri.acdc import registraring, webregbasing
 
     baser = webregbasing.WebRegBaser(name="ipex-validation", temp=True)
     try:
         await baser.reopen(storageOpener=_open_transient_storage)
         rgy = registraring.Regery(hby=state["hby"], baser=baser)
-        events = []
-        for sequence, encoded in enumerate(evidence["tel"]):
-            raw = base64.b64decode(encoded, validate=True)
-            event = state["modules"]["serdering"].SerderACDC(raw=raw)
-            if event.raw != raw or event.sad["n"] != f"{sequence:x}":
-                raise ValueError("Invalid registry event")
-            events.append(event)
-        if not events or events[0].said != evidence["registryId"]:
-            raise ValueError("Invalid registry evidence")
-        for sequence, event in enumerate(events):
-            rgy.store.accept(evidence["registryId"], sequence, event)
+
+        def add(registry, history):
+            events = []
+            for sequence, encoded in enumerate(history):
+                raw = base64.b64decode(encoded, validate=True)
+                event = state["modules"]["serdering"].SerderACDC(raw=raw)
+                if event.raw != raw or event.sad["n"] != f"{sequence:x}":
+                    raise ValueError("Invalid registry event")
+                events.append(event)
+            if not events or events[0].said != registry:
+                raise ValueError("Invalid registry evidence")
+            for sequence, event in enumerate(events):
+                rgy.store.accept(registry, sequence, event)
+            return events
+
+        add(evidence["registryId"], evidence["tel"])
+        if presentation is not None:
+            if (not isinstance(presentation, dict) or
+                    set(presentation) != {"grantSaid", "registryId", "sequence", "blinder", "event", "head", "tel", "kel"}):
+                raise ValueError("Invalid presentation evidence")
+            events = add(presentation["registryId"], presentation["tel"])
+            sequence = presentation["sequence"]
+            if (not isinstance(sequence, int) or isinstance(sequence, bool) or
+                    not 0 < sequence < len(events) or events[sequence].said != presentation["event"]):
+                raise ValueError("Invalid presentation binding")
         return baser, rgy
     except Exception as exc:
         await baser.aclose(clear=True)
@@ -1101,6 +1172,13 @@ async def _import_ipex_issuer_history(state, evidence):
     organizer = modules["organizing"].Organizer(hby=hby)
     remote = _get_remote_record(hby, organizer, evidence["issuerAid"])
     await _import_identifier(hby, organizer, modules, evidence["kel"], remote["alias"])
+
+
+async def _import_ipex_presenter_history(state, presentation, presenter):
+    hby, modules = state["hby"], state["modules"]
+    organizer = modules["organizing"].Organizer(hby=hby)
+    remote = _get_remote_record(hby, organizer, presenter)
+    await _import_identifier(hby, organizer, modules, presentation["kel"], remote["alias"])
 
 
 async def _ipex_operation(method, params, state):
@@ -1154,23 +1232,66 @@ async def _ipex_operation(method, params, state):
             raise RuntimeFault("VALIDATION", "Credential holder and presentation parties are invalid.")
         organizer = state["modules"]["organizing"].Organizer(hby=state["hby"])
         _get_remote_record(state["hby"], organizer, verifier)
-        proof = _grant_proof(state, presented["evidence"])
-        baser, rgy = await _temporary_ipex_registry(state, presented["evidence"])
-        exchange, attachments = ipexing.grant(
-            state["hby"].habByPre(presenter), verifier, _ipex_message(params),
-            origin=proof,
+        await _import_ipex_issuer_history(state, presented["evidence"])
+        if "presentationRegistry" not in params:
+            proof = _grant_proof(state, presented["evidence"])
+            baser, rgy = await _temporary_ipex_registry(state, presented["evidence"])
+            exchange, attachments = ipexing.grant(
+                state["hby"].habByPre(presenter), verifier, _ipex_message(params),
+                origin=proof, kind=state["modules"]["kering"].Kinds.json,
+            )
+            stream = bytearray(exchange.raw)
+            stream.extend(attachments)
+            encoded = base64.b64encode(stream).decode("ascii")
+            try:
+                _parse_ipex_stream(state, stream, rgy=rgy)
+            finally:
+                await baser.aclose(clear=True)
+            view, _ = _ipex_view(state, exchange.said)
+            return {"exchange": {**view, "cesr": encoded}, "evidence": presented["evidence"],
+                    "credential": credential}
+        presentation_name = require_text(params.get("presentationRegistry"), field="Presentation registry")
+        registry = await _registry_operation("registries.get", {
+            "vaultId": vault_id, "name": presentation_name,
+        }, state)
+        origin, registry_id = _presentation_registry(state, presented["evidence"])
+        if registry["registry"]["registryId"] != registry_id:
+            raise RuntimeFault("VALIDATION", "Presentation registry does not match the credential declaration.")
+        hab = state["hby"].habByPre(presenter)
+        stamp = now_iso()
+        exchange, _ = ipexing.grant(
+            hab, verifier, _ipex_message(params), origin=origin, dt=stamp, ax=[True], anchorers=[],
             kind=state["modules"]["kering"].Kinds.json,
         )
-        stream = bytearray(exchange.raw)
-        stream.extend(attachments)
+        hab.interact(data=[dict(d=exchange.said)], version=state["modules"]["kering"].Vrsn_2_0,
+                     gvrsn=state["modules"]["kering"].Vrsn_2_0)
+        grant_anchor = hab.kever.serder
+        await flush_open_state()
+        await _validate_open_kels(state["hby"].db, state["modules"], keeper=state["hby"].ks)
+        bound = await _registry_operation("registries.present", {
+            "vaultId": vault_id, "name": presentation_name, "grantSaid": exchange.said,
+        }, state)
+        presentation = bound["presentation"]
+        proof = _presentation_proof(state, presented["evidence"], presentation, hab.kever.serder)
+        from keri.core import Diger, Number, SealSource
+        stream = state["modules"]["eventing"].messagize(
+            serder=exchange,
+            tsgs=[(hab.kever.prefixer, Number(sn=hab.kever.lastEst.s),
+                   Diger(qb64=hab.kever.lastEst.d), hab.sign(ser=exchange.raw, indexed=True))],
+            bonds=[SealSource(s=grant_anchor.snh, d=grant_anchor.said)],
+            nests=[ipexing._normalizeNodeStream(proof)], framed=False,
+            gvrsn=state["modules"]["kering"].Vrsn_2_0,
+        )
         encoded = base64.b64encode(stream).decode("ascii")
+        presentation["kel"] = base64.b64encode(_identifier_introduction(hab, state["modules"])).decode("ascii")
+        baser, rgy = await _temporary_ipex_registry(state, presented["evidence"], presentation)
         try:
             _parse_ipex_stream(state, stream, rgy=rgy)
         finally:
             await baser.aclose(clear=True)
         view, _ = _ipex_view(state, exchange.said)
         return {"exchange": {**view, "cesr": encoded}, "evidence": presented["evidence"],
-                "credential": credential}
+                "credential": credential, "presentation": presentation}
 
     if method == "ipex.receive":
         stream = _decode_ipex_stream(params.get("cesr"))
@@ -1218,12 +1339,15 @@ async def _ipex_operation(method, params, state):
 
     if method == "ipex.verifyPresentation":
         evidence = params.get("evidence")
+        presentation = params.get("presentation")
         presenter = require_text(params.get("presenterAid"), field="Presenter")
         verifier = require_text(params.get("verifierAid"), field="Verifier")
-        if not isinstance(evidence, dict):
-            raise RuntimeFault("VALIDATION", "Presentation requires credential evidence.")
+        if not isinstance(evidence, dict) or (presentation is not None and not isinstance(presentation, dict)):
+            raise RuntimeFault("VALIDATION", "Presentation evidence is invalid.")
         stream = _decode_ipex_stream(params.get("cesr"))
-        _ipex_envelope(state, stream, route="/ipex/grant")
+        envelope = _ipex_envelope(state, stream, route="/ipex/grant")
+        if presentation is not None and presentation.get("grantSaid") != envelope.said:
+            raise RuntimeFault("VALIDATION", "Presentation evidence does not bind this Grant.")
         if (evidence.get("recipientAid") != presenter or not _is_local_identifier(state["hby"], verifier)
                 or presenter == verifier):
             raise RuntimeFault("VALIDATION", "Credential holder and presentation parties are invalid.")
@@ -1238,7 +1362,9 @@ async def _ipex_operation(method, params, state):
         organizer = state["modules"]["organizing"].Organizer(hby=state["hby"])
         _get_remote_record(state["hby"], organizer, presenter)
         await _import_ipex_issuer_history(state, evidence)
-        baser, rgy = await _temporary_ipex_registry(state, evidence)
+        if presentation is not None:
+            await _import_ipex_presenter_history(state, presentation, presenter)
+        baser, rgy = await _temporary_ipex_registry(state, evidence, presentation)
         try:
             exchange = _parse_ipex_stream(state, stream, rgy=rgy)
         finally:
@@ -1576,6 +1702,7 @@ async def _registry_operation(method, params, state):
         except Exception as exc:
             raise RuntimeFault("BAD_STATE", "Registry storage is invalid or incomplete.") from exc
         credentials = subing.Suber(db=state["hby"].db, subkey="fwic.")
+        presentations = subing.Suber(db=state["hby"].db, subkey="fwpn.")
         # Opening a new browser substore dirties its metadata even on read.
         await state["hby"].db.flush()
 
@@ -1625,6 +1752,19 @@ async def _registry_operation(method, params, state):
                 records = {keys[0]: json.loads(value) for keys, value in credentials.getTopItemIter() if len(keys) == 1}
                 if len(records) != credentials.cnt():
                     raise ValueError("Invalid credential keys")
+                presentation_records = {keys[0]: json.loads(value) for keys, value in presentations.getTopItemIter()
+                                        if len(keys) == 1}
+                if len(presentation_records) != presentations.cnt():
+                    raise ValueError("Invalid presentation keys")
+                registry_ids = {reg.regk for reg in manager.names.values()}
+                for grant_said, record in presentation_records.items():
+                    if (not isinstance(grant_said, str) or not isinstance(record, dict)
+                            or set(record) != {"registryId", "sequence", "blinder", "event"}
+                            or not isinstance(record["registryId"], str) or record["registryId"] not in registry_ids
+                            or not isinstance(record["sequence"], int) or isinstance(record["sequence"], bool)
+                            or not isinstance(record["blinder"], str) or not isinstance(record["event"], str)):
+                        raise ValueError("Invalid presentation record")
+                    state["modules"]["coring"].Diger(qb64=grant_said)
                 claimed = set()
                 visited = 0
                 for reg in manager.names.values():
@@ -1679,14 +1819,27 @@ async def _registry_operation(method, params, state):
                                     status.said != events[sequence].said):
                                 raise ValueError("Credential status is not verified")
                             claimed.add((reg.regk, sequence))
+                    for grant_said, record in presentation_records.items():
+                        if record["registryId"] != reg.regk:
+                            continue
+                        sequence = record["sequence"]
+                        if (not isinstance(sequence, int) or isinstance(sequence, bool) or not 0 < sequence < len(events)
+                                or (reg.regk, sequence) in claimed or not isinstance(record["blinder"], str)
+                                or events[sequence].said != record["event"]):
+                            raise ValueError("Invalid presentation binding")
+                        status = regeventing.vet(events[0], events[1:sequence + 1], db=state["hby"].db,
+                                                  blinder=record["blinder"])
+                        if status.acdc != grant_said or status.state != "presented" or status.said != record["event"]:
+                            raise ValueError("Presentation binding is not verified")
+                        claimed.add((reg.regk, sequence))
                     visited += len(events)
                 if visited != total or len(claimed) != total - count:
                     raise ValueError("Incomplete issuance evidence")
-                return records
+                return records, presentation_records
             except Exception as exc:
                 raise RuntimeFault("BAD_STATE", "Registry storage or issuance evidence is invalid or incomplete.") from exc
 
-        records = validate()
+        records, presentation_records = validate()
         if method == "registries.create":
             if name in manager.names:
                 raise RuntimeFault("CONFLICT", "Registry name already exists.")
@@ -1708,7 +1861,7 @@ async def _registry_operation(method, params, state):
                 await flush_open_state()
                 await _validate_open_kels(state["hby"].db, state["modules"], keeper=state["hby"].ks)
                 await baser.db.flush()
-                validate()
+                records, presentation_records = validate()
                 if not store.records.rem(keys="_fortweb_pending"):
                     raise RuntimeFault("BAD_STATE", "Unable to complete the pending registry operation.")
                 await baser.db.flush()
@@ -1755,7 +1908,7 @@ async def _registry_operation(method, params, state):
                         await flush_open_state()
                         await _validate_open_kels(state["hby"].db, state["modules"], keeper=state["hby"].ks)
                         await baser.db.flush()
-                        records = validate()
+                        records, presentation_records = validate()
                         if not store.records.rem(keys="_fortweb_pending"):
                             raise RuntimeFault("BAD_STATE", "Unable to complete the pending registry operation.")
                         await baser.db.flush()
@@ -1785,7 +1938,7 @@ async def _registry_operation(method, params, state):
                         await flush_open_state()
                         await _validate_open_kels(state["hby"].db, state["modules"], keeper=state["hby"].ks)
                         await baser.db.flush()
-                        records = validate()
+                        records, presentation_records = validate()
                         if not store.records.rem(keys="_fortweb_pending"):
                             raise RuntimeFault("BAD_STATE", "Unable to complete the pending registry operation.")
                         await baser.db.flush()
@@ -1802,6 +1955,51 @@ async def _registry_operation(method, params, state):
                                    "statusSequence": status["sequence"], "statusBlinder": status["blinder"],
                                    "tel": [base64.b64encode(event.raw).decode("ascii") for event in evidence],
                                    "kel": base64.b64encode(_identifier_introduction(reg.hab, state["modules"])).decode("ascii")}}
+        elif method == "registries.present":
+            grant_said = require_text(params.get("grantSaid"), field="Presentation Grant SAID")
+            try:
+                state["modules"]["coring"].Diger(qb64=grant_said)
+            except Exception as exc:
+                raise RuntimeFault("VALIDATION", "Presentation Grant SAID is invalid.") from exc
+            reg = manager.registryByName(name)
+            if reg is None:
+                raise RuntimeFault("NOT_FOUND", "Registry was not found.")
+            record = presentation_records.get(grant_said)
+            if record is None:
+                present = getattr(registraring.Registrar(rgy=manager), "present", None)
+                if present is None:
+                    raise RuntimeFault("UNSUPPORTED", "This runtime does not support presentation registries.")
+                # shortcut: incomplete operations stay blocked until verified recovery exists.
+                if not store.records.pin(keys="_fortweb_pending", val=registering.RegistryRecord(registryKey="pending")):
+                    raise RuntimeFault("BAD_STATE", "Unable to record the pending registry operation.")
+                try:
+                    await baser.db.flush()
+                    blinder, update = present(reg, grant=grant_said)
+                    reg.hab.interact(data=[dict(i=reg.regk, s=update.sad["n"], d=update.said)],
+                                     version=state["modules"]["kering"].Vrsn_2_0,
+                                     gvrsn=state["modules"]["kering"].Vrsn_2_0)
+                    if not reg.anchorMsg(update.said):
+                        raise RuntimeFault("BAD_STATE", "Registry presentation was not accepted.")
+                    record = {"registryId": reg.regk, "sequence": reg.sn, "blinder": blinder.qb64, "event": update.said}
+                    if not presentations.put(keys=grant_said, val=_json_bytes(record)):
+                        raise RuntimeFault("CONFLICT", "Presentation Grant is already bound.")
+                    await flush_open_state()
+                    await _validate_open_kels(state["hby"].db, state["modules"], keeper=state["hby"].ks)
+                    await baser.db.flush()
+                    records, presentation_records = validate()
+                    if not store.records.rem(keys="_fortweb_pending"):
+                        raise RuntimeFault("BAD_STATE", "Unable to complete the pending registry operation.")
+                    await baser.db.flush()
+                except BaseException:
+                    state["persistence_failed"] = True
+                    raise
+            elif record["registryId"] != reg.regk:
+                raise RuntimeFault("CONFLICT", "Presentation Grant is already bound in another registry.")
+            record = presentation_records[grant_said]
+            evidence = [store.seqEvent(reg.regk, sn) for sn in range(reg.sn + 1)]
+            return {"presentation": {"grantSaid": grant_said, **record, "head": evidence[-1].said,
+                                     "tel": [base64.b64encode(event.raw).decode("ascii") for event in evidence],
+                                     "kel": base64.b64encode(_identifier_introduction(reg.hab, state["modules"])).decode("ascii")}}
         else:
             reg = manager.registryByName(name)
             if reg is None:

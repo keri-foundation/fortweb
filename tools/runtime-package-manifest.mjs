@@ -249,6 +249,11 @@ const PACKAGE_KEYS = {
     pysodium: ['conversion_patch_sha256', 'libsodium_source_sha256', 'libsodium_version', 'source_archive_sha256', 'source_commit', 'source_project', 'version', 'wheel_filename', 'wheel_sha256'],
 };
 
+const OPTIONAL_PACKAGE_KEYS = {
+    hio: ['source_archive_sha256'],
+    keripy: ['metadata_patch_sha256', 'source_archive_sha256', 'patches'],
+};
+
 export function validateProvenance(provenance) {
     requireExactKeys(provenance, ['schema', 'source', 'runtime', 'toolchain', 'packages', 'packaging', 'consumers'], 'Provenance');
     if (provenance.schema !== 'fortweb.runtime-package-provenance.v2') {
@@ -289,11 +294,22 @@ export function validateProvenance(provenance) {
     }
     requireExactKeys(provenance.packages, Object.keys(PACKAGE_KEYS), 'Provenance packages');
     for (const [name, keys] of Object.entries(PACKAGE_KEYS)) {
-        const expectedKeys = name === 'keripy' && Object.hasOwn(provenance.packages[name], 'metadata_patch_sha256')
-            ? [...keys, 'metadata_patch_sha256']
-            : keys;
-        requireExactKeys(provenance.packages[name], expectedKeys, `Provenance package ${name}`);
-        for (const [key, value] of Object.entries(provenance.packages[name])) {
+        const packageProvenance = provenance.packages[name];
+        const expectedKeys = [...keys, ...(OPTIONAL_PACKAGE_KEYS[name] ?? [])
+            .filter((key) => Object.hasOwn(packageProvenance, key))];
+        requireExactKeys(packageProvenance, expectedKeys, `Provenance package ${name}`);
+        if (Object.hasOwn(packageProvenance, 'patches')) {
+            if (!Array.isArray(packageProvenance.patches)) {
+                throw new Error(`Provenance package ${name} patches must be an array.`);
+            }
+            for (const patch of packageProvenance.patches) {
+                requireExactKeys(patch, ['path', 'sha256'], `Provenance package ${name} patch`);
+                validatePackagePath(patch.path, { allowMetadata: true });
+                requireDigest(patch.sha256, `Provenance package ${name} patch digest`);
+            }
+        }
+        for (const [key, value] of Object.entries(packageProvenance)) {
+            if (key === 'patches') continue;
             if (key.endsWith('_sha256')) requireDigest(value, `Provenance package ${name} ${key}`);
             if (key === 'commit' || key === 'source_commit') requireCommit(value, `Provenance package ${name} ${key}`);
             if (typeof value !== 'string') throw new Error(`Provenance package ${name} ${key} must be a string.`);

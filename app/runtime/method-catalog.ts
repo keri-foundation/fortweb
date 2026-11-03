@@ -10,6 +10,7 @@ export const METHODS = Object.freeze({
     identifiersExport: "identifiers.export",
     registriesCreate: "registries.create",
     registriesGet: "registries.get",
+    registriesPresent: "registries.present",
     schemasImport: "schemas.import",
     schemasGet: "schemas.get",
     credentialsIssueSigned: "credentials.issueSigned",

@@ -134,6 +134,14 @@ async function main() {
         if (!wheel || wheel.sha256 !== item.wheel_sha256 || wheel.version !== item.version) {
             throw new Error(`package provenance does not match the source wheel: ${name}`);
         }
+        if (Object.hasOwn(item, 'source_archive_sha256') && Object.hasOwn(wheel.origin ?? {}, 'source_archive_sha256')
+                && item.source_archive_sha256 !== wheel.origin?.source_archive_sha256) {
+            throw new Error(`package source archive provenance does not match the selected wheel: ${name}`);
+        }
+        if (Object.hasOwn(item, 'patches')
+                && canonicalJson(item.patches) !== canonicalJson(wheel.origin?.patches ?? [])) {
+            throw new Error(`package patch provenance does not match the selected wheel: ${name}`);
+        }
     }
     const source = await captureSource();
     const sourceIdentity = Buffer.from(canonicalJson(source));

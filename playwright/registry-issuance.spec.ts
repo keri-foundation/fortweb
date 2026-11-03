@@ -141,7 +141,7 @@ for (const [stage, needle, setup, retryable] of [
                                 raise RuntimeError("injected credential sync failure")
                         state["hby"].db._stores["fwic."].handle = FailingHandle(state["hby"].db._stores["fwic."].handle)
 `, false],
-    ["after vault flush", "                        await baser.db.flush()\n                        records = validate()", "", false],
+    ["after vault flush", "                        await baser.db.flush()\n                        records, presentation_records = validate()", "", false],
     ["after TEL flush", '                        if not store.records.rem(keys="_fortweb_pending"):', "", false],
     ["worker termination", '                        await _validate_open_kels(state["hby"].db, state["modules"], keeper=state["hby"].ks)', `                        import js
                         js.self.postMessage(json.dumps({"kind": "fortweb.runtime.diagnostic", "event": "issuance_test_paused"}))

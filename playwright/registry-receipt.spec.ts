@@ -209,6 +209,13 @@ test("synthetic IPEX grant and admit retain the verified credential exchange", a
     const recipient = await request("identifiers.export", { vaultId: recipientId, aid: recipientAid });
     await request("schemas.import", { vaultId: recipientId, schemaId, schema });
     await request("remotes.import", { vaultId: recipientId, alias: "issuer", cesr: issuer.cesr });
+    const expectsPresentationRegistry = process.env.FORTWEB_EXPECT_PRESENTATION_REGISTRY === "1";
+    const presentationRegistry = expectsPresentationRegistry
+        ? (await request("registries.create", { vaultId: recipientId, issuerAid: recipientAid, name: "presentations" })).registry
+        : undefined;
+    if (presentationRegistry) {
+        expect(presentationRegistry).toEqual(expect.objectContaining({ registryId: expect.any(String) }));
+    }
     await request("vaults.close", { vaultId: recipientId });
     await request("vaults.open", { vaultId: sourceId, passcode: "test-issuer-passcode" });
     await request("remotes.import", { vaultId: sourceId, alias: "recipient", cesr: recipient.cesr });
@@ -218,6 +225,7 @@ test("synthetic IPEX grant and admit retain the verified credential exchange", a
         vaultId: sourceId, name: "registry", requestId: "credential", issuerAid, recipientAid, schemaId,
         attributes: { name: "Synthetic IPEX Example" },
     });
+    let presentationCredential: any;
     const grant = await request("ipex.grant", {
         vaultId: sourceId, name: "registry", requestId: "credential", syntheticOnly: true, message: "Credential grant",
     });
@@ -252,6 +260,20 @@ test("synthetic IPEX grant and admit retain the verified credential exchange", a
     expect((await request("ipex.get", { vaultId: recipientId, syntheticOnly: true, said: grant.exchange.said })).exchange)
         .toEqual(expect.objectContaining({ route: "/ipex/grant", response: admit.exchange.said }));
     await request("vaults.close", { vaultId: recipientId });
+    if (expectsPresentationRegistry) {
+        await request("vaults.open", { vaultId: sourceId, passcode: "test-issuer-passcode" });
+        presentationCredential = (await request("credentials.issueRegistered", {
+            vaultId: sourceId, name: "registry", requestId: "presentation", issuerAid, recipientAid, schemaId,
+            attributes: { name: "Synthetic Presentation Example", rd: presentationRegistry.registryId },
+        })).credential;
+        await request("vaults.close", { vaultId: sourceId });
+        await request("vaults.open", { vaultId: recipientId, passcode: "test-recipient-passcode" });
+        await request("credentials.receive", {
+            vaultId: recipientId, syntheticOnly: true, issuerAid, recipientAid, schemaId,
+            evidence: presentationCredential,
+        });
+        await request("vaults.close", { vaultId: recipientId });
+    }
     const verifierId = (await request("vaults.create", { name: `ipex-verifier-${Date.now()}`, passcode: "test-verifier-passcode" })).vault.id;
     await request("vaults.open", { vaultId: verifierId, passcode: "test-verifier-passcode" });
     const verifierAid = (await request("identifiers.create", { vaultId: verifierId, alias: "verifier" })).identifier.aid;
@@ -262,29 +284,81 @@ test("synthetic IPEX grant and admit retain the verified credential exchange", a
     await request("vaults.close", { vaultId: verifierId });
     await request("vaults.open", { vaultId: recipientId, passcode: "test-recipient-passcode" });
     await request("remotes.import", { vaultId: recipientId, alias: "verifier", cesr: verifier.cesr });
-    const presentation = await request("ipex.present", {
+    const presentation = await request("ipex.present", expectsPresentationRegistry ? {
+        vaultId: recipientId, syntheticOnly: true, credentialSaid: presentationCredential.said,
+        presenterAid: recipientAid, verifierAid, message: "Credential presentation", presentationRegistry: "presentations",
+    } : {
         vaultId: recipientId, syntheticOnly: true, credentialSaid: grant.evidence.said,
         presenterAid: recipientAid, verifierAid, message: "Credential presentation",
     });
     expect(presentation.exchange).toEqual(expect.objectContaining({ route: "/ipex/grant", senderAid: recipientAid, recipientAid: verifierAid }));
+    if (expectsPresentationRegistry) {
+        expect(presentation.presentation).toEqual(expect.objectContaining({
+            grantSaid: presentation.exchange.said, registryId: presentationRegistry.registryId,
+            sequence: 1, event: expect.any(String), blinder: expect.any(String),
+        }));
+        expect(presentation.presentation.tel).toHaveLength(2);
+        await expect(request("registries.present", {
+            vaultId: recipientId, name: "presentations", grantSaid: "not-a-grant",
+        })).rejects.toThrow(/presentation grant said is invalid/i);
+        expect((await request("registries.present", {
+            vaultId: recipientId, name: "presentations", grantSaid: presentation.exchange.said,
+        })).presentation).toEqual(presentation.presentation);
+        await request("vaults.close", { vaultId: recipientId });
+        await request("vaults.open", { vaultId: recipientId, passcode: "test-recipient-passcode" });
+        expect((await request("registries.present", {
+            vaultId: recipientId, name: "presentations", grantSaid: presentation.exchange.said,
+        })).presentation).toEqual(presentation.presentation);
+    }
     await request("vaults.close", { vaultId: recipientId });
     await request("vaults.open", { vaultId: verifierId, passcode: "test-verifier-passcode" });
+    const presentationEvidence = expectsPresentationRegistry ? presentation.presentation : undefined;
     await expect(request("ipex.verifyPresentation", {
         vaultId: verifierId, syntheticOnly: true, cesr: presentation.exchange.cesr,
         evidence: presentation.evidence, presenterAid: issuerAid, verifierAid,
+        ...(presentationEvidence ? { presentation: presentationEvidence } : {}),
     })).rejects.toThrow(/holder and presentation parties/i);
     await expect(request("ipex.verifyPresentation", {
         vaultId: verifierId, syntheticOnly: true, cesr: "e30=",
         evidence: presentation.evidence, presenterAid: recipientAid, verifierAid,
+        ...(presentationEvidence ? { presentation: presentationEvidence } : {}),
     })).rejects.toThrow(/incomplete or unsupported/i);
+    if (presentationEvidence) {
+        await expect(request("ipex.verifyPresentation", {
+            vaultId: verifierId, syntheticOnly: true, cesr: presentation.exchange.cesr,
+            evidence: presentation.evidence, presenterAid: recipientAid, verifierAid,
+            presentation: { ...presentationEvidence, grantSaid: grant.exchange.said },
+        })).rejects.toThrow(/does not bind this Grant/i);
+        const tampered = Buffer.from(presentation.exchange.cesr, "base64");
+        tampered[tampered.length - 1] ^= 1;
+        await expect(request("ipex.verifyPresentation", {
+            vaultId: verifierId, syntheticOnly: true, cesr: tampered.toString("base64"),
+            evidence: presentation.evidence, presenterAid: recipientAid, verifierAid,
+            presentation: presentationEvidence,
+        })).rejects.toThrow();
+        await expect(request("ipex.get", {
+            vaultId: verifierId, syntheticOnly: true, said: presentation.exchange.said,
+        })).rejects.toThrow(/persistence failed/i);
+        await request("vaults.close", { vaultId: verifierId });
+        await request("vaults.open", { vaultId: verifierId, passcode: "test-verifier-passcode" });
+        await expect(request("ipex.get", {
+            vaultId: verifierId, syntheticOnly: true, said: presentation.exchange.said,
+        })).rejects.toThrow(/was not found/i);
+    }
     const verifiedPresentation = await request("ipex.verifyPresentation", {
         vaultId: verifierId, syntheticOnly: true, cesr: presentation.exchange.cesr,
         evidence: presentation.evidence, presenterAid: recipientAid, verifierAid,
+        ...(presentationEvidence ? { presentation: presentationEvidence } : {}),
     });
     expect(verifiedPresentation).toEqual(expect.objectContaining({
         exchange: expect.objectContaining({ said: presentation.exchange.said, route: "/ipex/grant" }),
-        credential: expect.objectContaining({ said: grant.evidence.said, issuerAid, recipientAid }),
+        credential: expect.objectContaining({ said: presentationCredential?.said ?? grant.evidence.said, issuerAid, recipientAid }),
     }));
+    expect(await request("ipex.verifyPresentation", {
+        vaultId: verifierId, syntheticOnly: true, cesr: presentation.exchange.cesr,
+        evidence: presentation.evidence, presenterAid: recipientAid, verifierAid,
+        ...(presentationEvidence ? { presentation: presentationEvidence } : {}),
+    })).toEqual(verifiedPresentation);
     await request("vaults.close", { vaultId: verifierId });
     await request("vaults.open", { vaultId: verifierId, passcode: "test-verifier-passcode" });
     expect((await request("ipex.get", { vaultId: verifierId, syntheticOnly: true, said: presentation.exchange.said })).exchange)

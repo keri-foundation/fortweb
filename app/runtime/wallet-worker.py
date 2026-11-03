@@ -49,6 +49,7 @@ ALLOWED_METHODS = {
     "identifiers.export",
     "registries.create",
     "registries.get",
+    "registries.present",
     "schemas.import",
     "schemas.get",
     "credentials.issueSigned",

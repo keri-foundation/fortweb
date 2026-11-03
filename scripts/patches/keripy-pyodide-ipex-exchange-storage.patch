@@ -1,0 +1,26 @@
+--- a/src/keri/db/webbasing.py
++++ b/src/keri/db/webbasing.py
+@@ -55,8 +55,8 @@
+ 
+         SubDbNames = ["aess.", "bsss.", "bsqs.", "ccigs.", "cdel.", "cfld.", "chas.",
+             "cgms.", "coobi.", "cons.", "ctyp.", "dees.", "dels.", "dpwe.", "dpub.",
+-            "dtss.", "dune.", "eans.", "ecigs.", "ends.", "eoobi.", "epath.", "epse.",
+-            "epsd.", "erpy.", "esigs.", "esrs.", "essrs.", "exns.", "enst.", "evts.", "fels.", "fons.",
++            "dtss.", "dune.", "eans.", "ecigs.", "eidx.", "ends.", "eoobi.", "epath.", "epse.",
++            "epsd.", "erpy.", "esigs.", "esrs.", "essrs.", "ests.", "exns.", "enst.", "evts.", "fels.", "fons.",
+             "frcs.", "gdee.", "gdwe.", "gpse.", "habs.", "hbys.", "iimgs.", "icigs.",
+             "ifld.", "imgs.", "kels.", "kdts.", "knas.", "ksns.", "lans.", "ldes.",
+             "locs.", "maids.", "meids.", "mfes.", "mfa.", "migs.", "moobi.", "msgc.",
+@@ -294,5 +294,12 @@
+ 
+         self.essrs = subing.CesrIoSetSuber(db=self, subkey="essrs.", klas=coring.Texter)
+ 
++        # Resolved exchange source seals indexed by message and sealing AID.
++        self.ests = subing.CatCesrIoSetSuber(db=self, subkey="ests.",
++                                             klas=(coring.Number, coring.Diger))
++
++        # Accepted exchange messages indexed by authenticated endorser AID.
++        self.eidx = subing.CesrIoSetSuber(db=self, subkey="eidx.", klas=coring.Diger)
++
+         # accepted signed 12-word challenge response exn messages keys by prefix of signer
+         self.chas = subing.CesrIoSetSuber(db=self, subkey='chas.', klas=coring.Diger)

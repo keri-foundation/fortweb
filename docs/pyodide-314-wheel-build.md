@@ -193,6 +193,61 @@ Run `playwright/registry-issuance.spec.ts` with
 `python -m unittest python.test_registered_issuance_interop` with compatible
 native KERIpy to verify issuance and disclosure independently.
 
+### Presentation-registry candidate patch
+
+The optional [presentation-registry patch](../scripts/patches/keripy-pyodide-presentation-registry.patch)
+is the minimal candidate that applies after the ACDC import and registry backend
+patches. Its SHA-256 is
+`40df4696a7211c14669b8dcaf7f0d36df46ba1069ec8eac917de63b38c2b573c`.
+It adds browser-runtime `Registry.present` and `Registrar.present` support so
+`registries.present` can bind an already-created Grant SAID, anchor the TEL
+event in the holder KEL, and persist the verified binding. Run the focused
+[registry receipt test](../playwright/registry-receipt.spec.ts) with both
+`FORTWEB_EXPECT_REGISTRY_BACKEND=1` and
+`FORTWEB_EXPECT_PRESENTATION_REGISTRY=1` against a runtime built with this
+patch.
+
+This is a source-build candidate, not part of the published source archive or
+the default runtime pin. Use the full IPEX V2 patch below for final-Grant proof
+assembly and verifier acceptance. This smaller patch proves binding creation,
+persistence, idempotence, and invalid-SAID rejection only.
+
+### Full IPEX V2 candidate patch
+
+The [IPEX V2 patch](../scripts/patches/keripy-pyodide-ipex-v2.patch) backports
+the seven coupled Keripy modules from upstream commit
+`790797bcdef8322adb86eeb762f4610f481a3ce7`; its SHA-256 is
+`73eee9ad3465d4a47ebb84d21ee3231d4aa180026d29a7d86d5e2dd9642f55f2`.
+It includes upstream presentation-registry support, strict exchange evidence
+verification, and KRAM storage. Apply it after the ACDC import and registry
+backend patches, instead of the smaller presentation-registry patch above, and
+then apply the exchange-storage patch below.
+
+The combined candidate has focused Chromium evidence for a synthetic
+registry-bound presentation: the holder creates a Grant, binds its SAID in the
+declared presentation registry, attaches issuer and holder TEL proofs plus the
+holder KEL anchor, and the independent verifier accepts that exact Grant.
+Run [registry receipt](../playwright/registry-receipt.spec.ts) with
+`FORTWEB_EXPECT_REGISTRY_BACKEND=1` and
+`FORTWEB_EXPECT_PRESENTATION_REGISTRY=1` for that route, and without
+`FORTWEB_EXPECT_PRESENTATION_REGISTRY` for the retained evidence-only
+Grant/Admit route.
+
+It remains a synthetic, source-build candidate. This evidence does not make it
+a published runtime or establish SEDI interoperability with external agents,
+real credentials, or mobile clients.
+
+### IPEX exchange-storage candidate patch
+
+The optional [IPEX exchange-storage patch](../scripts/patches/keripy-pyodide-ipex-exchange-storage.patch)
+adds the `ests.` source-seal store and `eidx.` accepted-endorser index required
+by the newer exchange verifier. Its SHA-256 is
+`8e2d4b09a1a822358fa0cfb036cd7efad7b69c912c579dd2bd7441cacba93437`.
+Apply it after the full IPEX V2 patch; the focused presentation verification
+above depends on both patches. This patch only makes the browser store surface
+compatible with the upstream verifier; it does not by itself supply the full
+IPEX V2 backport or prove native verifier acceptance.
+
 ### Promoting a patched source archive
 
 The source archive is a separate release input from the runtime package. After
