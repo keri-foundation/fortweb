@@ -87,3 +87,25 @@ test("bundled worker creates an identifier without JavaScript evaluation", async
     expect(identifier.identifier.aid).toBeTruthy();
     await request("vaults.close", { vaultId });
 });
+
+test("application entrypoint enforces its policy", async ({ page, baseURL }) => {
+    test.setTimeout(120_000);
+    await page.route("**/fortweb/app/csp-entry-probe.js", (route) => route.fulfill({
+        contentType: "text/javascript",
+        body: `window.__entryCspProbe = (async () => {
+            let evaluated = false;
+            try { evaluated = (0, eval)('40+2') === 42; } catch {}
+            const wasm = await WebAssembly.instantiate(new Uint8Array([0,97,115,109,1,0,0,0]));
+            return { evaluated, wasm: !!wasm };
+        })();`,
+    }));
+    await page.goto(new URL("/fortweb/app/index.html", baseURL).toString());
+    await page.waitForFunction(() => (document.querySelector("#app-root")?.children.length ?? 0) > 0);
+    await page.evaluate(() => {
+        const script = document.createElement("script");
+        script.src = "/fortweb/app/csp-entry-probe.js";
+        document.head.append(script);
+    });
+    await page.waitForFunction(() => "__entryCspProbe" in window);
+    expect(await page.evaluate(() => (window as any).__entryCspProbe)).toEqual({ evaluated: false, wasm: true });
+});

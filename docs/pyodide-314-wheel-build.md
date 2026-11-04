@@ -36,10 +36,10 @@ python3 scripts/prepare_csp_runtime_source.py \
 Use the printed digest as `FORTWEB_RUNTIME_SOURCE_MANIFEST_SHA256` and the new
 manifest as `FORTWEB_RUNTIME_SOURCE_MANIFEST` for the normal build and package
 steps below. The vendored PyScript worker-hook change accepts only the pinned
-default hook. These changes do not themselves enforce a content-security policy;
-each host must enforce and test its own policy before declaring v2 compatible.
-Other Pyodide code paths may still require dynamic evaluation and fail under a
-strict policy. The original runtime remains a separate artifact.
+default hook. The application entrypoint carries a strict content-security
+policy; each host must preserve and test that policy before declaring v2
+compatible. Other Pyodide code paths may still require dynamic evaluation and
+fail under the policy. The original runtime remains a separate artifact.
 
 ## Build normal source wheels
 
