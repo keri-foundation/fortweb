@@ -1258,7 +1258,8 @@ async def _ipex_operation(method, params, state):
         if registry["registry"]["registryId"] != registry_id:
             raise RuntimeFault("VALIDATION", "Presentation registry does not match the credential declaration.")
         hab = state["hby"].habByPre(presenter)
-        stamp = now_iso()
+        from keri.help.helping import nowIso8601
+        stamp = nowIso8601()
         exchange, _ = ipexing.grant(
             hab, verifier, _ipex_message(params), origin=origin, dt=stamp, ax=[True], anchorers=[],
             kind=state["modules"]["kering"].Kinds.json,

@@ -308,6 +308,8 @@ test("synthetic IPEX grant and admit retain the verified credential exchange", a
     });
     expect(presentation.exchange).toEqual(expect.objectContaining({ route: "/ipex/grant", senderAid: recipientAid, recipientAid: verifierAid }));
     if (expectsPresentationRegistry) {
+        const stream = Buffer.from(presentation.exchange.cesr, "base64").toString("utf8");
+        expect(stream.match(/"dt":"([^"]*)"/)?.[1]).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}\+00:00$/);
         expect(presentation.presentation).toEqual(expect.objectContaining({
             grantSaid: presentation.exchange.said, registryId: presentationRegistry.registryId,
             sequence: 1, event: expect.any(String), blinder: expect.any(String),
