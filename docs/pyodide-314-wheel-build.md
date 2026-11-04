@@ -17,6 +17,30 @@ wheels are replaced. Building those compiled artifacts from scratch remains a
 separate toolchain procedure. The public source producer below verifies and
 reuses the selected baseline bytes.
 
+## Strict CSP candidate
+
+For the pinned IPEX candidate only, `scripts/prepare_csp_runtime_source.py`
+derives a new source tree from the exact baseline manifest identified in the
+script. It verifies every copied file, the Pyodide loader, and the `pysodium`
+wheel. It replaces one dynamic side-module callback loader with static functions
+generated from the two exact callbacks in that wheel. Other callbacks fail
+closed. The derived manifest records the original manifest, loader, wheel,
+and producer digests; the baseline is not modified.
+
+```sh
+python3 scripts/prepare_csp_runtime_source.py \
+  --baseline build/verified-ipex-runtime-source \
+  --output build/runtime-source-csp
+```
+
+Use the printed digest as `FORTWEB_RUNTIME_SOURCE_MANIFEST_SHA256` and the new
+manifest as `FORTWEB_RUNTIME_SOURCE_MANIFEST` for the normal build and package
+steps below. The vendored PyScript worker-hook change accepts only the pinned
+default hook. These changes do not themselves enforce a content-security policy;
+each host must enforce and test its own policy before declaring v2 compatible.
+Other Pyodide code paths may still require dynamic evaluation and fail under a
+strict policy. The original runtime remains a separate artifact.
+
 ## Build normal source wheels
 
 `scripts/build_runtime_source.py` accepts a verified baseline, a source

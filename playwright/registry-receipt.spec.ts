@@ -1,8 +1,23 @@
 import { expect, test } from "@playwright/test";
 import { readFileSync, writeFileSync } from "node:fs";
 
-test.beforeEach(() => {
+test.beforeEach(async ({ context }) => {
     test.skip(process.env["FORTWEB_EXPECT_REGISTRY_BACKEND"] !== "1", "requires the local registry compatibility patch");
+    if (process.env["FORTWEB_TEST_STRICT_CSP"] === "1") {
+        await context.route("**/_runtime-test/ci/fixtures/webbaser-lifecycle/production.html", async (route) => {
+            const response = await route.fetch();
+            const body = (await response.text()).replace('<script type="module">', '<script nonce="csp-test" type="module">');
+            await route.fulfill({
+                response,
+                headers: {
+                    ...response.headers(),
+                    "content-security-policy": "default-src 'none'; script-src 'self' 'nonce-csp-test' 'wasm-unsafe-eval'; " +
+                        "worker-src 'self' blob:; connect-src 'self' https:; style-src 'unsafe-inline'",
+                },
+                body,
+            });
+        });
+    }
 });
 
 test("recipient API is disabled in the ordinary runtime", async ({ page, baseURL }) => {
