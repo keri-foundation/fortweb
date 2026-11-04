@@ -304,7 +304,8 @@ test("synthetic IPEX grant and admit retain the verified credential exchange", a
         await expect(request("ipex.present", {
             vaultId: recipientId, syntheticOnly: true, credentialSaid: presentationCredential?.said ?? grant.evidence.said,
             presenterAid: recipientAid, verifierAid, ...unsupported,
-        })).rejects.toThrow(/chained credential presentations are not supported/i);
+        })).rejects.toThrow(process.env["FORTWEB_EXPECT_SEDI_COMPAT"] === "1"
+            ? /presentation registry is required/i : /chained credential presentations are not supported/i);
         expect(await request("identifiers.export", { vaultId: recipientId, aid: recipientAid })).toEqual(beforeUnsupportedPlan);
     }
     const presentation = await request("ipex.present", expectsPresentationRegistry ? {

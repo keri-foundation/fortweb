@@ -85,7 +85,9 @@ test("@slow rejects a reference Core presentation without changing signed state"
     console.log(`Synthetic holder KEL head: ${before.holderHead.join(":")}; registry TEL: ${before.tel.join(",")}`);
     for (const extra of [{}, { authorityEvidence: [] }, { authorityEvidence: fixture.supporting },
         { authorityEvidence: [{ malformed: true }], disclosurePlan: [] }]) {
-        await expect(request("ipex.present", { ...params, ...extra })).rejects.toThrow(/chained credential presentations are not supported/i);
+        await expect(request("ipex.present", { ...params, ...extra })).rejects.toThrow(
+            process.env["FORTWEB_EXPECT_SEDI_COMPAT"] === "1"
+                ? /authority evidence or disclosure plan is invalid/i : /chained credential presentations are not supported/i);
         expect(await request("test.signedState", stateParams)).toEqual(before);
         expect(await request("identifiers.export", { vaultId, aid: holder })).toEqual(kel);
     }

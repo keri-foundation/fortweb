@@ -272,6 +272,47 @@ above depends on both patches. This patch only makes the browser store surface
 compatible with the upstream verifier; it does not by itself supply the full
 IPEX V2 backport or prove native verifier acceptance.
 
+### Core SEDI compatibility candidate
+
+The optional [Core SEDI patch](../scripts/patches/keripy-pyodide-sedi-compat.patch)
+extends the preceding patches with disclosure-plan, authority-graph, schema,
+and browser exchange-storage support from KERIpy reference commit
+`84301a9ff4bbb644ce134f9649ad56b49aa130f2`. Its SHA-256 is
+`e71f845949a32cd54c368914788d2e0a413b56847c69140a6a7b97aa38491ac8`.
+Apply it after the exchange-storage patch and record it in the source
+declaration. The default source pin remains unchanged.
+
+For the synthetic Core interoperability and recovery tests, set
+`FORTWEB_EXPECT_REGISTRY_BACKEND=1`, `FORTWEB_EXPECT_SEDI_COMPAT=1`,
+`FORTWEB_SEDI_REFERENCE` to a checkout of that reference commit, and
+`FORTWEB_SEDI_PYTHON` to a Python interpreter with its native dependencies.
+Run `playwright/sedi-core-interop.spec.ts`, `playwright/sedi-core-failure.spec.ts`,
+`playwright/sedi-core-browser-verifier.spec.ts`, and `playwright/sedi-compactor.spec.ts`
+using the prepared runtime browser harness. The tests exchange synthetic CESR
+evidence through local test files; they do not demonstrate delivery over a live
+SEDI network.
+
+With a verified runtime already served, set `FORTWEB_BASE_URL` to that server
+and `FORTWEB_PLAYWRIGHT_OUTPUT_DIR` to an output directory, then run:
+
+```sh
+npx playwright test --config=playwright.runtime.config.ts \
+  playwright/sedi-core-interop.spec.ts playwright/sedi-core-failure.spec.ts \
+  playwright/sedi-core-browser-verifier.spec.ts playwright/sedi-compactor.spec.ts
+```
+
+The holder validates the disclosed graph in transient stores before anchoring
+the Grant and records a pending operation before changing signed history. An
+interrupted presentation remains blocked for manual recovery; do not clear its
+marker or discard signed evidence. The worker can retrieve exchange metadata
+and its presentation binding after reopening, but complete Grant-stream
+outbox recovery is not yet exposed. A requested partial disclosure is rejected
+if the supplied evidence does not match the requested disclosure plan. The
+disclosed status for every node must reach its supplied TEL head; a later
+blinded update is treated as unknown. This local check does not establish that
+the supplied TEL head is the latest state on a live network. Missing schemas in
+preflight return a retryable `NOT_FOUND`; import the missing schema and retry.
+
 ### Promoting a patched source archive
 
 The source archive is a separate release input from the runtime package. After

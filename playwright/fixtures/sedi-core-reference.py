@@ -50,6 +50,11 @@ with _openSediHaberies('fortweb-core-fixture') as actors:
                                    statusBlinder=authority_blinder.qb64,
                                    tel=[encoded(authority_rip.raw), encoded(authority_issued.raw)],
                                    kel=encoded(authority_kel)))
+        _, revoked = root_registrar.issue(unit_reg, acdc=unit, state='revoked')
+        _anchor(root, unit_reg, revoked)
+        stale_unit = {**supporting[0], 'head': revoked.said,
+                      'tel': [*supporting[0]['tel'], encoded(revoked.raw)],
+                      'kel': encoded(b''.join(bytes(message) for message in root.db.clonePreIter(pre=root.pre)))}
         blinder, issued = issuer_registrar.issue(core_reg, acdc=core)
         _anchor(issuer, core_reg, issued)
         kel = b''.join(bytes(message) for message in issuer.db.clonePreIter(pre=issuer.pre))
@@ -65,7 +70,7 @@ with _openSediHaberies('fortweb-core-fixture') as actors:
             verifier_kel = b''.join(bytes(message) for message in verifier.db.clonePreIter(pre=verifier.pre))
             print(json.dumps(dict(schema=CoreSchema, evidence=evidence, issuer=encoded(kel),
                                   authority_schemas=[AgentSchema, UnitSchema], supporting=list(reversed(supporting)),
-                                  verifierAid=verifier.pre, verifierKel=encoded(verifier_kel))))
+                                  stale_unit=stale_unit, verifierAid=verifier.pre, verifierKel=encoded(verifier_kel))))
     finally:
         for rgy in registries:
             rgy.close()

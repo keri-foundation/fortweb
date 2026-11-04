@@ -930,7 +930,7 @@ async def _received_credential_operation(method, params, state):
     records = subing.Suber(db=state["hby"].db, subkey="fwrc.")
     await state["hby"].db.flush()
     if records.get(keys="_pending") is not None:
-        raise RuntimeFault("BAD_STATE", "Received credential storage is incomplete and requires recovery.")
+        raise RuntimeFault("BAD_STATE", "Received credential or presentation operation is incomplete and requires recovery.")
     try:
         saved = {}
         for (key,), cipher in records.getTopItemIter():
@@ -1129,7 +1129,7 @@ def _presentation_proof(state, evidence, presentation, anchor):
     )
 
 
-async def _temporary_ipex_registry(state, evidence, presentation=None):
+async def _temporary_ipex_registry(state, evidence, presentation=None, supporting=()):
     from keri.acdc import registraring, webregbasing
 
     baser = webregbasing.WebRegBaser(name="ipex-validation", temp=True)
@@ -1152,6 +1152,8 @@ async def _temporary_ipex_registry(state, evidence, presentation=None):
             return events
 
         add(evidence["registryId"], evidence["tel"])
+        for item in supporting:
+            add(item["registryId"], item["tel"])
         if presentation is not None:
             if (not isinstance(presentation, dict) or
                     set(presentation) != {"grantSaid", "registryId", "sequence", "blinder", "event", "head", "tel", "kel"}):
@@ -1179,6 +1181,68 @@ async def _import_ipex_presenter_history(state, presentation, presenter):
     organizer = modules["organizing"].Organizer(hby=hby)
     remote = _get_remote_record(hby, organizer, presenter)
     await _import_identifier(hby, organizer, modules, presentation["kel"], remote["alias"])
+
+
+async def _sedi_graph_preflight(state, evidence, supporting, plan):
+    from types import SimpleNamespace
+    from keri.acdc import chaining, ipexing, scheming
+    from keri.kering import MissingSchemaError
+
+    if (not isinstance(supporting, list) or len(supporting) > 8 or
+            len(_json_bytes(supporting)) > 8 * 1024 * 1024 or
+            not isinstance(plan, list) or not 1 <= len(plan) <= 9 or
+            len(_json_bytes(plan)) > 8 * 1024 * 1024 or not ipexing._validDisclosurePath(plan)):
+        raise RuntimeFault("VALIDATION", "Authority evidence or disclosure plan is invalid.")
+    modules = state["modules"]
+    staging = modules["webbasing"].WebBaser(name="sedi-preflight", temp=True)
+    await staging.reopen(storageOpener=_open_transient_storage)
+    baser = None
+    try:
+        parser = modules["parsing"].Parser(version=modules["kering"].Vrsn_2_0)
+        kvy = modules["eventing"].Kevery(db=staging, lax=False, local=False)
+        for keys, schema in state["hby"].db.schema.getTopItemIter():
+            staging.schema.pin(keys=keys, val=schema)
+        nodes = []
+        for item in (evidence, *supporting):
+            scheming.validateSchema(acdc=_credential_serder(state, item), db=staging)
+            verified, history, _ = await _verify_received_evidence(state, {
+                "issuerAid": item["issuerAid"], "recipientAid": item["recipientAid"],
+                "schemaId": item["schemaId"], "evidence": item,
+            }, require_local_recipient=False)
+            if (verified["currentStatus"] != "issued" or
+                    verified["statusSequence"] != verified["headSequence"]):
+                raise ValueError("Authority credential status is not current at the supplied registry head")
+            stream = bytearray(base64.b64decode(item["kel"], validate=True))
+            parser.parse(ims=stream, kvy=kvy, local=False)
+            if stream or staging.kevers[item["issuerAid"]].serder.said != history[-1]:
+                raise ValueError("Issuer history did not reach its verified head")
+            stream = bytearray(_grant_proof(state, item))
+            parsed = parser.parse(ims=stream, framed=False, local=False, processive=False)
+            if stream or len(parsed) != 1:
+                raise ValueError("Invalid authority proof")
+            nodes.append(parsed[0])
+        baser, rgy = await _temporary_ipex_registry(state, evidence, supporting=supporting)
+        handler = ipexing.IpexHandler(resource="/ipex/grant", hby=SimpleNamespace(db=staging), notifier=None, rgy=rgy)
+        walked = handler._walkGraph(origin=evidence["said"], nests=nodes, closed=True)
+        if walked is None:
+            raise ValueError("Authority graph is incomplete")
+        graph, order = walked
+        if (not handler._verifyDisclosurePlan(plan=plan, origin=evidence["said"], nodes=graph, order=order) or
+                not handler._verifyNodeSchemas(nodes=graph, order=order)):
+            raise ValueError("Disclosure plan or authority schema is invalid")
+        verdict = handler._evaluateNode(evidence["said"], nodes=graph, memo={}, records={})
+        if verdict is None or verdict.verdict != chaining.Verdicts.valid:
+            raise ValueError("Authority graph is invalid")
+    except MissingSchemaError as exc:
+        raise RuntimeFault("NOT_FOUND", "An authority schema is missing; import it and retry.") from exc
+    except RuntimeFault:
+        raise
+    except Exception as exc:
+        raise RuntimeFault("VALIDATION", "Authority evidence or disclosure plan is invalid.") from exc
+    finally:
+        if baser is not None:
+            await baser.aclose(clear=True)
+        await staging.aclose(clear=True)
 
 
 async def _ipex_operation(method, params, state):
@@ -1230,13 +1294,25 @@ async def _ipex_operation(method, params, state):
         if (credential["recipientAid"] != presenter or not _is_local_identifier(state["hby"], presenter)
                 or presenter == verifier):
             raise RuntimeFault("VALIDATION", "Credential holder and presentation parties are invalid.")
-        # shortcut: chained presentations require validated disclosure support before enabling.
-        if ("e" in _credential_serder(state, presented["evidence"]).sad or
-                "authorityEvidence" in params or "disclosurePlan" in params):
-            raise RuntimeFault("UNSUPPORTED", "Chained credential presentations are not supported.")
+        graph = ("e" in _credential_serder(state, presented["evidence"]).sad or
+                 "authorityEvidence" in params or "disclosurePlan" in params)
+        supporting = params.get("authorityEvidence", []) if graph else []
+        if graph:
+            if not hasattr(ipexing.IpexHandler, "_verifyDisclosurePlan"):
+                raise RuntimeFault("UNSUPPORTED", "Chained credential presentations are not supported.")
+            presentation_name = require_text(params.get("presentationRegistry"), field="Presentation registry")
+            registry = await _registry_operation("registries.get", {"vaultId": vault_id, "name": presentation_name}, state)
+            _, registry_id = _presentation_registry(state, presented["evidence"])
+            if registry["registry"]["registryId"] != registry_id:
+                raise RuntimeFault("VALIDATION", "Presentation registry does not match the credential declaration.")
+            await _sedi_graph_preflight(state, presented["evidence"], supporting, params.get("disclosurePlan"))
         organizer = state["modules"]["organizing"].Organizer(hby=state["hby"])
         _get_remote_record(state["hby"], organizer, verifier)
+        for item in (presented["evidence"], *supporting):
+            _get_remote_record(state["hby"], organizer, item["issuerAid"])
         await _import_ipex_issuer_history(state, presented["evidence"])
+        for item in supporting:
+            await _import_ipex_issuer_history(state, item)
         if "presentationRegistry" not in params:
             proof = _grant_proof(state, presented["evidence"])
             baser, rgy = await _temporary_ipex_registry(state, presented["evidence"])
@@ -1264,39 +1340,63 @@ async def _ipex_operation(method, params, state):
         hab = state["hby"].habByPre(presenter)
         from keri.help.helping import nowIso8601
         stamp = nowIso8601()
-        exchange, _ = ipexing.grant(
-            hab, verifier, _ipex_message(params), origin=origin, dt=stamp, ax=[True], anchorers=[],
-            kind=state["modules"]["kering"].Kinds.json,
-        )
-        hab.interact(data=[dict(d=exchange.said)], version=state["modules"]["kering"].Vrsn_2_0,
-                     gvrsn=state["modules"]["kering"].Vrsn_2_0)
-        grant_anchor = hab.kever.serder
-        await flush_open_state()
-        await _validate_open_kels(state["hby"].db, state["modules"], keeper=state["hby"].ks)
-        bound = await _registry_operation("registries.present", {
-            "vaultId": vault_id, "name": presentation_name, "grantSaid": exchange.said,
-        }, state)
-        presentation = bound["presentation"]
-        proof = _presentation_proof(state, presented["evidence"], presentation, hab.kever.serder)
-        from keri.core import Diger, Number, SealSource
-        stream = state["modules"]["eventing"].messagize(
-            serder=exchange,
-            tsgs=[(hab.kever.prefixer, Number(sn=hab.kever.lastEst.s),
-                   Diger(qb64=hab.kever.lastEst.d), hab.sign(ser=exchange.raw, indexed=True))],
-            bonds=[SealSource(s=grant_anchor.snh, d=grant_anchor.said)],
-            nests=[ipexing._normalizeNodeStream(proof)], framed=False,
-            gvrsn=state["modules"]["kering"].Vrsn_2_0,
-        )
-        encoded = base64.b64encode(stream).decode("ascii")
-        presentation["kel"] = base64.b64encode(_identifier_introduction(hab, state["modules"])).decode("ascii")
-        baser, rgy = await _temporary_ipex_registry(state, presented["evidence"], presentation)
+        if graph:
+            exchange, draft_attachments = ipexing.grant(
+                hab, verifier, _ipex_message(params), origin=origin,
+                artifacts=[_credential_serder(state, item) for item in supporting],
+                modifiers={"dp": [params["disclosurePlan"]]}, dt=stamp, ax=[True], anchorers=[],
+                kind=state["modules"]["kering"].Kinds.json,
+            )
+        else:
+            exchange, draft_attachments = ipexing.grant(
+                hab, verifier, _ipex_message(params), origin=origin, dt=stamp, ax=[True], anchorers=[],
+                kind=state["modules"]["kering"].Kinds.json,
+            )
+        from keri.db import subing
+        pending = subing.Suber(db=state["hby"].db, subkey="fwrc.")
+        draft = {"operation": "ipex.present", "grantSaid": exchange.said,
+                 "cesr": base64.b64encode(exchange.raw + draft_attachments).decode("ascii")}
+        cipher = state["hby"].mgr.encrypter.encrypt(ser=_json_bytes(draft)).qb64
+        if not pending.put(keys="_pending", val=cipher):
+            raise RuntimeFault("BAD_STATE", "Unable to record the pending presentation.")
         try:
-            _parse_ipex_stream(state, stream, rgy=rgy)
-        finally:
-            await baser.aclose(clear=True)
-        view, _ = _ipex_view(state, exchange.said)
-        return {"exchange": {**view, "cesr": encoded}, "evidence": presented["evidence"],
-                "credential": credential, "presentation": presentation}
+            await flush_open_state()
+            hab.interact(data=[dict(d=exchange.said)], version=state["modules"]["kering"].Vrsn_2_0,
+                         gvrsn=state["modules"]["kering"].Vrsn_2_0)
+            grant_anchor = hab.kever.serder
+            await flush_open_state()
+            await _validate_open_kels(state["hby"].db, state["modules"], keeper=state["hby"].ks)
+            bound = await _registry_operation("registries.present", {
+                "vaultId": vault_id, "name": presentation_name, "grantSaid": exchange.said,
+            }, state, allow_presentation_pending=True)
+            presentation = bound["presentation"]
+            proof = _presentation_proof(state, presented["evidence"], presentation, hab.kever.serder)
+            from keri.core import Diger, Number, SealSource
+            stream = state["modules"]["eventing"].messagize(
+                serder=exchange,
+                tsgs=[(hab.kever.prefixer, Number(sn=hab.kever.lastEst.s),
+                       Diger(qb64=hab.kever.lastEst.d), hab.sign(ser=exchange.raw, indexed=True))],
+                bonds=[SealSource(s=grant_anchor.snh, d=grant_anchor.said)],
+                nests=[ipexing._normalizeNodeStream(proof),
+                       *[ipexing._normalizeNodeStream(_grant_proof(state, item)) for item in supporting]], framed=False,
+                gvrsn=state["modules"]["kering"].Vrsn_2_0,
+            )
+            encoded = base64.b64encode(stream).decode("ascii")
+            presentation["kel"] = base64.b64encode(_identifier_introduction(hab, state["modules"])).decode("ascii")
+            baser, rgy = await _temporary_ipex_registry(state, presented["evidence"], presentation, supporting)
+            try:
+                _parse_ipex_stream(state, stream, rgy=rgy)
+            finally:
+                await baser.aclose(clear=True)
+            view, _ = _ipex_view(state, exchange.said)
+            if not pending.rem(keys="_pending"):
+                raise RuntimeFault("BAD_STATE", "Unable to complete the pending presentation.")
+            await flush_open_state()
+            return {"exchange": {**view, "cesr": encoded}, "evidence": presented["evidence"],
+                    "credential": credential, "presentation": presentation}
+        except BaseException:
+            state["persistence_failed"] = True
+            raise
 
     if method == "ipex.receive":
         stream = _decode_ipex_stream(params.get("cesr"))
@@ -1356,6 +1456,14 @@ async def _ipex_operation(method, params, state):
         if (evidence.get("recipientAid") != presenter or not _is_local_identifier(state["hby"], verifier)
                 or presenter == verifier):
             raise RuntimeFault("VALIDATION", "Credential holder and presentation parties are invalid.")
+        try:
+            schema_id = evidence.get("schemaId")
+            if state["modules"]["coring"].Diger(qb64=schema_id).qb64 != schema_id:
+                raise ValueError("schema identifier mismatch")
+        except Exception as exc:
+            raise RuntimeFault("VALIDATION", "Credential schema identifier is invalid.") from exc
+        if state["hby"].db.schema.get(keys=(schema_id,)) is None:
+            raise RuntimeFault("NOT_FOUND", "The credential schema is missing; import it and retry.")
         receipt, _, _ = await _verify_received_evidence(state, {
             "issuerAid": evidence.get("issuerAid"),
             "recipientAid": evidence.get("recipientAid"),
@@ -1364,12 +1472,25 @@ async def _ipex_operation(method, params, state):
         }, require_local_recipient=False)
         if receipt["currentStatus"] != "issued":
             raise RuntimeFault("VALIDATION", "Credential is not currently issued.")
+        graph = ("e" in _credential_serder(state, evidence).sad or "authorityEvidence" in params)
+        supporting = params.get("authorityEvidence", []) if graph else []
+        if graph:
+            if not hasattr(ipexing.IpexHandler, "_verifyDisclosurePlan"):
+                raise RuntimeFault("UNSUPPORTED", "Chained credential presentations are not supported.")
+            plans = envelope.ked.get("q", {}).get("dp")
+            if presentation is None or not isinstance(plans, list) or len(plans) != 1:
+                raise RuntimeFault("VALIDATION", "Presentation disclosure plan is invalid.")
+            await _sedi_graph_preflight(state, evidence, supporting, plans[0])
         organizer = state["modules"]["organizing"].Organizer(hby=state["hby"])
         _get_remote_record(state["hby"], organizer, presenter)
+        for item in (evidence, *supporting):
+            _get_remote_record(state["hby"], organizer, item["issuerAid"])
         await _import_ipex_issuer_history(state, evidence)
+        for item in supporting:
+            await _import_ipex_issuer_history(state, item)
         if presentation is not None:
             await _import_ipex_presenter_history(state, presentation, presenter)
-        baser, rgy = await _temporary_ipex_registry(state, evidence, presentation)
+        baser, rgy = await _temporary_ipex_registry(state, evidence, presentation, supporting)
         try:
             exchange = _parse_ipex_stream(state, stream, rgy=rgy)
         finally:
@@ -1378,7 +1499,7 @@ async def _ipex_operation(method, params, state):
         nested = state["modules"]["exchanging"].loadParsedNestedSubstreams(state["hby"], stored.said)
         if (exchange.pre != presenter or exchange.ked["ri"] != verifier or
                 exchange.ked["a"].get("o") != [receipt["said"]] or
-                [item.serder.said for item in nested] != [receipt["said"]]):
+                [item.serder.said for item in nested] != [receipt["said"], *[item["said"] for item in supporting]]):
             raise RuntimeFault("VALIDATION", "IPEX presentation does not match the verified credential evidence.")
         return {"exchange": view, "credential": receipt}
 
@@ -1686,12 +1807,19 @@ def _vault_summary(state):
     }
 
 
-async def _registry_operation(method, params, state):
+async def _registry_operation(method, params, state, *, allow_presentation_pending=False):
     try:
         from keri.acdc import registering, registraring, regeventing, webregbasing
         from keri.db import subing
     except ImportError as exc:
         raise RuntimeFault("UNSUPPORTED", "This runtime does not support browser registries.") from exc
+
+    if (method in ("registries.create", "registries.present", "credentials.issueRegistered", "credentials.revokeRegistered")
+            and not allow_presentation_pending):
+        pending = subing.Suber(db=state["hby"].db, subkey="fwrc.")
+        await state["hby"].db.flush()
+        if pending.get(keys="_pending") is not None:
+            raise RuntimeFault("BAD_STATE", "Received credential or presentation operation is incomplete and requires recovery.")
 
     name = require_text(params.get("name"), field="Registry name")
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", name) or name == "_fortweb_pending":
