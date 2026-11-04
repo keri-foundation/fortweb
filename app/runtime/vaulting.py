@@ -1230,6 +1230,10 @@ async def _ipex_operation(method, params, state):
         if (credential["recipientAid"] != presenter or not _is_local_identifier(state["hby"], presenter)
                 or presenter == verifier):
             raise RuntimeFault("VALIDATION", "Credential holder and presentation parties are invalid.")
+        # shortcut: chained presentations require validated disclosure support before enabling.
+        if ("e" in _credential_serder(state, presented["evidence"]).sad or
+                "authorityEvidence" in params or "disclosurePlan" in params):
+            raise RuntimeFault("UNSUPPORTED", "Chained credential presentations are not supported.")
         organizer = state["modules"]["organizing"].Organizer(hby=state["hby"])
         _get_remote_record(state["hby"], organizer, verifier)
         await _import_ipex_issuer_history(state, presented["evidence"])

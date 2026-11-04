@@ -299,6 +299,14 @@ test("synthetic IPEX grant and admit retain the verified credential exchange", a
     await request("vaults.close", { vaultId: verifierId });
     await request("vaults.open", { vaultId: recipientId, passcode: "test-recipient-passcode" });
     await request("remotes.import", { vaultId: recipientId, alias: "verifier", cesr: verifier.cesr });
+    const beforeUnsupportedPlan = await request("identifiers.export", { vaultId: recipientId, aid: recipientAid });
+    for (const unsupported of [{ authorityEvidence: [] }, { disclosurePlan: [] }]) {
+        await expect(request("ipex.present", {
+            vaultId: recipientId, syntheticOnly: true, credentialSaid: presentationCredential?.said ?? grant.evidence.said,
+            presenterAid: recipientAid, verifierAid, ...unsupported,
+        })).rejects.toThrow(/chained credential presentations are not supported/i);
+        expect(await request("identifiers.export", { vaultId: recipientId, aid: recipientAid })).toEqual(beforeUnsupportedPlan);
+    }
     const presentation = await request("ipex.present", expectsPresentationRegistry ? {
         vaultId: recipientId, syntheticOnly: true, credentialSaid: presentationCredential.said,
         presenterAid: recipientAid, verifierAid, message: "Credential presentation", presentationRegistry: "presentations",
