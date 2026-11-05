@@ -182,7 +182,8 @@ test("@slow Core SEDI presentation interoperates with independent native KERIpy"
         void done.catch(() => {});
         return { child, ready, accepted, done };
     };
-    const verifiers = [native("valid"), native("wrong"), native("missing"), native("missing-agent"), native("missing-proof")];
+    const verifiers = [native("valid"), native("wrong"), native("missing"), native("missing-agent"), native("missing-proof"),
+        ...(process.env["FORTWEB_NATIVE_MAILBOX"] === "1" ? [native("stale")] : [])];
     try {
         await Promise.all(verifiers.map(verifier => verifier.ready));
         const result = await request("ipex.present", params);
@@ -193,11 +194,14 @@ test("@slow Core SEDI presentation interoperates with independent native KERIpy"
         verifiers[0].child.stdin.write("go\n");
         for (const verifier of verifiers.slice(1)) verifier.child.stdin.end("go\n");
         await verifiers[0].accepted;
-        const [wrong, missing, missingAgent, missingProof] = await Promise.all(verifiers.slice(1).map(verifier => verifier.done));
+        const [wrong, missing, missingAgent, missingProof, stale] = await Promise.all(verifiers.slice(1).map(verifier => verifier.done));
         expect(wrong).toContain("Native verifier rejected wrong evidence after KRAM authentication.");
         expect(missing).toContain("Native verifier rejected missing evidence after KRAM authentication.");
         expect(missingAgent).toContain("Native verifier rejected missing-agent evidence after KRAM authentication.");
         expect(missingProof).toContain("Native verifier rejected missing-proof evidence after KRAM authentication.");
+        if (process.env["FORTWEB_NATIVE_MAILBOX"] === "1") {
+            expect(stale).toContain("Native verifier rejected stale mailbox Grant under normal KRAM.");
+        }
         await request("vaults.close", { vaultId: holder });
         await page.evaluate(() => (window as any).webbaserProductionHarness.destroy());
         await page.reload();
@@ -216,6 +220,20 @@ test("@slow Core SEDI presentation interoperates with independent native KERIpy"
         const verified = await verifiers[0].done;
         expect(verified).toContain("Native verifier accepted Core Grant and all three authority nodes.");
         expect(verified).toContain("Native verifier rechecked the original accepted Core Grant after holder restart.");
+        if (process.env["FORTWEB_NATIVE_MAILBOX"] === "1") {
+            for (const mode of ["valid", "wrong", "missing", "missing-agent", "missing-proof", "stale"]) {
+                const delivered = JSON.parse(readFileSync(testInfo.outputPath(`mailbox-${mode}.json`), "utf8"));
+                expect(delivered.authenticated_components_match).toBe(true);
+                expect(delivered.kram_authenticated).toBe(mode !== "stale");
+                expect(delivered.original_sha256).toMatch(/^[a-f0-9]{64}$/);
+                expect(delivered.received_sha256).toMatch(/^[a-f0-9]{64}$/);
+            }
+            const valid = JSON.parse(readFileSync(testInfo.outputPath("mailbox-valid.json"), "utf8"));
+            const stale = JSON.parse(readFileSync(testInfo.outputPath("mailbox-stale.json"), "utf8"));
+            expect(valid.nested_sha256).toHaveLength(3);
+            expect(stale.original_sha256).toBe(valid.original_sha256);
+            expect(stale.received_sha256).toBe(valid.received_sha256);
+        }
         await request("vaults.close", { vaultId: holder });
         await page.evaluate(() => (window as any).webbaserProductionHarness.destroy());
     } finally {

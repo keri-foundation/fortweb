@@ -1,8 +1,11 @@
 import base64
+import hashlib
 import json
 import os
 import sys
+from contextlib import ExitStack
 from pathlib import Path
+from time import monotonic, sleep
 
 from keri import Vrsn_2_0
 from keri.acdc import Regery, loadHandlers, regeventing
@@ -20,13 +23,80 @@ mode = sys.argv[2] if len(sys.argv) > 2 else 'valid'
 fixture = json.loads((root / 'core-public-fixture.json').read_text())
 decode = lambda text: base64.b64decode(text, validate=True)
 
+def mailbox_setup(stack):
+    import falcon
+    from hio.base import doing
+    from hio.core import http, tcp
+    from keri import kering
+    from keri.app import forwarding, habbing, indirecting, storing
+    from keri.db import openLMDB
+
+    sender_hby, sender = stack.enter_context(habbing.openHab(
+        name='http-adapter', temp=True, transferable=True, version=Vrsn_2_0))
+    witness_hby, witness = stack.enter_context(habbing.openHab(
+        name='http-witness', temp=True, transferable=False, version=Vrsn_2_0))
+    mailbox = stack.enter_context(openLMDB(cls=storing.Mailboxer, name='http-witness', temp=True))
+    receiver = Parser(kvy=witness_hby.kvy, framed=True, version=Vrsn_2_0,
+                      exc=Exchanger(hby=witness_hby, handlers=[forwarding.ForwardHandler(hby=witness_hby, mbx=mailbox)]))
+    app = falcon.App()
+    app.add_route('/', indirecting.HttpEnd(rxbs=receiver.ims, mbx=mailbox))
+    servant = tcp.Server(ha=('127.0.0.1', 0))
+    assert servant.reopen()
+    stack.callback(servant.close)
+    servant.eha = servant.ha
+    server = http.Server(servant=servant, ha=servant.ha, app=app)
+    sender.endsFor = lambda pre: {kering.Roles.witness: {witness.pre: {'http': f'http://127.0.0.1:{servant.ha[1]}'}}}
+
+    def forward(stream):
+        from keri.core import SerderKERI
+        envelope = SerderKERI(raw=stream)
+        submitted = helping.nowIso8601()
+        poster = forwarding.StreamPoster(hby=sender_hby, hab=sender, recp=envelope.ked['ri'],
+                                         topic='credential', version=Vrsn_2_0)
+        poster.send(serder=envelope, attachment=stream[envelope.size:])
+        scheduler = doing.Doist(doers=[http.ServerDoer(server=server), doing.DoDoer(doers=poster.deliver())],
+                                tock=0.03125)
+        scheduler.enter()
+        try:
+            deadline = monotonic() + 10
+            rows = []
+            while not rows and monotonic() < deadline:
+                scheduler.recur()
+                receiver.parse(local=False)
+                witness_hby.kvy.processEscrows()
+                receiver.exc.processEscrow()
+                rows = list(mailbox.cloneTopicIter(topic=f'{envelope.ked["ri"]}/credential'))
+                sleep(0.001)
+            assert len(rows) == 1, f'expected one mailbox message, got {len(rows)}'
+            return bytes(rows[0][2]), submitted, helping.nowIso8601()
+        finally:
+            scheduler.exit()
+    return forward
+
+def authenticated_components(hby, stream):
+    from keri.core import Prefixer
+    from keri.peer import exchanging
+    raw = bytearray(stream)
+    message, = Parser(version=Vrsn_2_0).parse(ims=raw, framed=True, processive=False)
+    assert not raw
+    seals = [(Prefixer(qb64=message.serder.pre), num, dig) for num, dig in message.sscs] + message.ssts
+    tsgs, cigars, seals, invalid, missing = exchanging.verifyAttachments(
+        hby, message.serder, tsgs=message.tsgs, cigars=message.cigars, sourceSeals=seals)
+    assert not invalid and not missing and len(tsgs) == 1 and len(seals) == 1
+    return {'body': hashlib.sha256(message.serder.raw).hexdigest(),
+            'tsgs': [(p.qb64, n.sn, d.qb64, [s.qb64 for s in sigs]) for p, n, d, sigs in tsgs],
+            'seals': [(p.qb64, n.sn, d.qb64) for p, n, d in seals],
+            'nests': [hashlib.sha256(exchanging.serializeParsedSubstream(n, gvrsn=Vrsn_2_0)).hexdigest()
+                      for n in message.nests]}
+
 with openHby(name='fortweb-native-verifier', temp=True,
-             salt=Salter(raw=b'fort-native-demo').qb64, version=Vrsn_2_0) as hby:
+             salt=Salter(raw=b'fort-native-demo').qb64, version=Vrsn_2_0) as hby, ExitStack() as mailbox_stack:
     hab = hby.makeHab(name='verifier')
     assert hab.pre == fixture['verifierAid']
     _cacheSediSchemas(hby.db)
     rgy = Regery(hby=hby, name='fortweb-core-independent', temp=True)
     try:
+        forward = mailbox_setup(mailbox_stack) if os.environ.get('FORTWEB_NATIVE_MAILBOX') == '1' else None
         recorder = Recorder()
         exchanger = Exchanger(hby=hby, handlers=[])
         loadHandlers(hby=hby, exc=exchanger, notifier=recorder, rgy=rgy)
@@ -71,7 +141,7 @@ with openHby(name='fortweb-native-verifier', temp=True,
             for sn, raw in enumerate(presentation['presentation']['tel']):
                 rgy.store.accept(presentation['presentation']['registryId'], sn, SerderACDC(raw=decode(raw)))
             grant = bytearray(decode(presentation['exchange']['cesr']))
-            if mode != 'valid':
+            if mode not in ('valid', 'stale'):
                 parsed, = parser.parse(ims=bytearray(grant), framed=False, processive=False)
                 nests = []
                 for index, node in enumerate(parsed.nests):
@@ -96,6 +166,26 @@ with openHby(name='fortweb-native-verifier', temp=True,
                 seals = [SealSource(s=num.snh, d=dig.qb64) for num, dig in parsed.sscs]
                 grant = eventing.messagize(serder=parsed.serder, tsgs=parsed.tsgs, bonds=seals,
                                            nests=nests, framed=False, gvrsn=Vrsn_2_0)
+            if forward:
+                original = bytes(grant)
+                received, submitted, received_at = forward(original)
+                original_components = authenticated_components(hby, original)
+                assert authenticated_components(hby, received) == original_components
+                (root / f'mailbox-{mode}.json').write_text(json.dumps({
+                    'original_bytes': len(original), 'received_bytes': len(received),
+                    'original_sha256': hashlib.sha256(original).hexdigest(),
+                    'received_sha256': hashlib.sha256(received).hexdigest(),
+                    'authenticated_components_match': True,
+                    'nested_sha256': original_components['nests'],
+                    'submitted_at': submitted, 'mailbox_received_at': received_at,
+                }, indent=2) + '\n')
+                (root / f'mailbox-{mode}.cesr').write_bytes(received)
+                grant = bytearray(received)
+                if mode == 'stale':
+                    from keri.core import SerderKERI
+                    stamp = helping.fromIso8601(SerderKERI(raw=original).stamp)
+                    while (helping.fromIso8601(helping.nowIso8601()) - stamp).total_seconds() < 7:
+                        sleep(0.05)
             original_intake = kvy.kramer.intake
             def traced_intake(serder, kwa=None):
                 try:
@@ -112,6 +202,22 @@ with openHby(name='fortweb-native-verifier', temp=True,
             parser.parse(ims=grant, kvy=kvy, exc=exchanger)
             assert not grant
             said = presentation['exchange']['said']
+            if forward:
+                from keri.core import SerderKERI
+                envelope = SerderKERI(raw=decode(presentation['exchange']['cesr']))
+                cache = hby.db.kramTMSC.get(keys=(envelope.pre, envelope.ked['x'], said))
+                result_path = root / f'mailbox-{mode}.json'
+                result = json.loads(result_path.read_text())
+                result.update({'grant_created_at': envelope.stamp, 'kram_processed_at': helping.nowIso8601(),
+                               'kram_authenticated': bool(cache and cache.rdt), 'grant_said': said,
+                               'recipient': envelope.ked['ri'], 'transaction': envelope.ked['x'],
+                               'prior': envelope.ked['p'], 'disclosure_plan': envelope.ked['q']['dp']})
+                result_path.write_text(json.dumps(result, indent=2) + '\n')
+                if mode == 'stale':
+                    assert not (cache and cache.rdt) and hby.db.exns.get(keys=(said,)) is None
+                    print('Native verifier rejected stale mailbox Grant under normal KRAM.')
+                    sys.exit(0)
+                assert cache is not None and cache.rdt, 'mailbox Grant did not pass KRAM authentication'
             stored = hby.db.exns.get(keys=(said,))
             if mode != 'valid':
                 from keri.core import SerderKERI
