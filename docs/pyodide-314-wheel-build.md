@@ -280,7 +280,7 @@ and browser exchange-storage support from KERIpy reference commit
 `84301a9ff4bbb644ce134f9649ad56b49aa130f2`. Its SHA-256 is
 `e71f845949a32cd54c368914788d2e0a413b56847c69140a6a7b97aa38491ac8`.
 Apply it after the exchange-storage patch and record it in the source
-declaration. The default source pin remains unchanged.
+declaration. The default source pin selects the qualified Core SEDI source.
 
 For the synthetic Core interoperability and recovery tests, set
 `FORTWEB_EXPECT_REGISTRY_BACKEND=1`, `FORTWEB_EXPECT_SEDI_COMPAT=1`,
@@ -324,12 +324,18 @@ pin at an unpublished archive. Retain the prior three values for rollback.
 The shared browser acceptance action runs the lifecycle suite without
 `FORTWEB_EXPECT_BROWSER_ACDC`. When promoting this patch, set that variable to
 `1` for its lifecycle step in the same reviewed pin change; otherwise the suite
-expects the unpatched runtime to reject credential construction. Supporting
-both patched and unpatched branch overrides requires passing the matching
-expectation through the workflow; the current workflow has no such input.
+expects the unpatched runtime to reject credential construction. The shared
+acceptance action selects this expectation for the pinned SEDI manifest and
+retains the unpatched expectation for other source overrides.
 Verify the produced runtime and its complete browser acceptance sequence before
 using it as a release candidate. Tag-based releases reject source overrides and
 consume the reviewed default pin.
+
+The previous source pin for rollback is:
+
+- URL: `https://github.com/keri-foundation/fortweb/releases/download/runtime-source-pyodide-314-hio-0.7.20-20261102/runtime-source.tar.gz`
+- Archive SHA-256: `c0f975accd8be662ba2d31e46800bef34b8c0b7651154b64dfec28d9453ffccd`
+- Manifest SHA-256: `d00ad7c4dc2fcce08904562bb50dd2ace53cf226027d376b41e42cbb69410023`
 
 ## Acquire, build, and verify
 
