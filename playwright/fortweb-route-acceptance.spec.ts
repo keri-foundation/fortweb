@@ -1,4 +1,5 @@
-import { expect, test, type BrowserContext, type Page } from '@playwright/test';
+import { expect, test, type BrowserContext } from '@playwright/test';
+import { collectBrowserErrors, collectPageErrors, expectNoBrowserErrors } from './utils/error-collector.js';
 
 const applicationOrigin = new URL(process.env['FORTWEB_BASE_URL'] ?? '').origin;
 const rejectedExternalRequests = new WeakMap<BrowserContext, string[]>();
@@ -28,53 +29,9 @@ test.afterEach(async ({ context }) => {
     }
 });
 
-function isKnownRuntimeNoise(text: string): boolean {
-    return (
-        text.includes('SyntaxWarning: invalid escape sequence') ||
-        text.includes("b'(?P<kind2>") ||
-        text.includes('MapDom is a subclass of IceMapDom') ||
-        text.includes('RawDom is subclass of MapDom')
-    );
-}
-
-function collectUnexpectedPageErrors(page: Page): string[] {
-    const pageErrors: string[] = [];
-    page.on('pageerror', (error) => {
-        pageErrors.push(error.message);
-    });
-    return pageErrors;
-}
-
-function collectUnexpectedConsoleErrors(page: Page): string[] {
-    const consoleErrors: string[] = [];
-    page.on('console', (message) => {
-        if (message.type() !== 'error') {
-            return;
-        }
-
-        const text = message.text();
-        if (text.includes('favicon.ico')) {
-            return;
-        }
-        if (isKnownRuntimeNoise(text)) {
-            return;
-        }
-
-        consoleErrors.push(text);
-    });
-    return consoleErrors;
-}
-
-async function expectNoUnexpectedErrors(page: Page, pageErrors: string[], consoleErrors: string[]): Promise<void> {
-    await page.waitForTimeout(250);
-    expect(pageErrors).toEqual([]);
-    expect(consoleErrors).toEqual([]);
-}
-
 test.describe('FortWeb route acceptance', () => {
     test('fixture index route renders correctly', async ({ page }) => {
-        const pageErrors = collectUnexpectedPageErrors(page);
-        const consoleErrors = collectUnexpectedConsoleErrors(page);
+        const browserErrors = collectBrowserErrors(page);
 
         await page.goto('/fortweb/app/index.html#/_fixtures');
 
@@ -82,83 +39,77 @@ test.describe('FortWeb route acceptance', () => {
         await expect(page.getByRole('link', { name: 'vaults/populated' })).toBeVisible();
         await expect(page.getByRole('link', { name: 'watchers/populated' })).toBeVisible();
 
-        await expectNoUnexpectedErrors(page, pageErrors, consoleErrors);
+        await expectNoBrowserErrors(page, browserErrors);
     });
 
     test('identifiers empty fixture renders correctly', async ({ page }) => {
-        const pageErrors = collectUnexpectedPageErrors(page);
-        const consoleErrors = collectUnexpectedConsoleErrors(page);
+        const browserErrors = collectBrowserErrors(page);
 
         await page.goto('/fortweb/app/index.html#/_fixtures/identifiers/empty');
 
         await expect(page.getByRole('heading', { name: 'Local Identifiers', exact: true })).toBeVisible();
         await expect(page.getByRole('heading', { name: 'No Local Identifiers Yet' })).toBeVisible();
 
-        await expectNoUnexpectedErrors(page, pageErrors, consoleErrors);
+        await expectNoBrowserErrors(page, browserErrors);
     });
 
     test('remotes empty fixture renders correctly', async ({ page }) => {
-        const pageErrors = collectUnexpectedPageErrors(page);
-        const consoleErrors = collectUnexpectedConsoleErrors(page);
+        const browserErrors = collectBrowserErrors(page);
 
         await page.goto('/fortweb/app/index.html#/_fixtures/remotes/empty');
 
         await expect(page.getByRole('heading', { name: 'Remote Identifiers', exact: true })).toBeVisible();
         await expect(page.getByRole('heading', { name: 'No Remote Identifiers Yet' })).toBeVisible();
 
-        await expectNoUnexpectedErrors(page, pageErrors, consoleErrors);
+        await expectNoBrowserErrors(page, browserErrors);
     });
 
     test('settings fixture renders correctly', async ({ page }) => {
-        const pageErrors = collectUnexpectedPageErrors(page);
-        const consoleErrors = collectUnexpectedConsoleErrors(page);
+        const browserErrors = collectBrowserErrors(page);
 
         await page.goto('/fortweb/app/index.html#/_fixtures/settings');
 
         await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
 
-        await expectNoUnexpectedErrors(page, pageErrors, consoleErrors);
+        await expectNoBrowserErrors(page, browserErrors);
     });
 
     test('witnesses disconnected fixture renders correctly', async ({ page }) => {
-        const pageErrors = collectUnexpectedPageErrors(page);
-        const consoleErrors = collectUnexpectedConsoleErrors(page);
+        const browserErrors = collectBrowserErrors(page);
 
         await page.goto('/fortweb/app/index.html#/_fixtures/witnesses/disconnected');
 
         await expect(page.getByRole('heading', { name: 'Witnesses', level: 1 })).toBeVisible();
         await expect(page.locator('dl').getByText('Disconnected')).toBeVisible();
 
-        await expectNoUnexpectedErrors(page, pageErrors, consoleErrors);
+        await expectNoBrowserErrors(page, browserErrors);
     });
 
     test('watchers placeholder fixture renders correctly', async ({ page }) => {
-        const pageErrors = collectUnexpectedPageErrors(page);
-        const consoleErrors = collectUnexpectedConsoleErrors(page);
+        const browserErrors = collectBrowserErrors(page);
 
         await page.goto('/fortweb/app/index.html#/_fixtures/watchers/placeholder');
 
         await expect(page.getByRole('heading', { name: 'Watchers', level: 1 })).toBeVisible();
 
-        await expectNoUnexpectedErrors(page, pageErrors, consoleErrors);
+        await expectNoBrowserErrors(page, browserErrors);
     });
 
     test('route not found renders correctly for invalid paths', async ({ page }) => {
-        const pageErrors = collectUnexpectedPageErrors(page);
-        const consoleErrors = collectUnexpectedConsoleErrors(page);
+        const browserErrors = collectBrowserErrors(page);
 
         await page.goto('/fortweb/app/index.html#/this-route-should-not-exist');
 
         await expect(page.getByRole('heading', { name: 'Route Not Found' })).toBeVisible();
 
-        await expectNoUnexpectedErrors(page, pageErrors, consoleErrors);
+        await expectNoBrowserErrors(page, browserErrors);
     });
 });
 
 
 for (const outcome of ['saved', 'missing', 'failed'] as const) {
     test(`vault deep route waits for the initial catalog (${outcome})`, async ({ page }) => {
-        const pageErrors = collectUnexpectedPageErrors(page);
+        const browserErrors = collectPageErrors(page);
         let releaseCatalog!: () => void;
         let catalogRequested!: () => void;
         const catalogGate = new Promise<void>((resolve) => { releaseCatalog = resolve; });
@@ -226,7 +177,7 @@ for (const outcome of ['saved', 'missing', 'failed'] as const) {
                 await expect(page.getByText('Unable to load vaults.', { exact: true })).toBeVisible();
                 await expect(page.getByRole('heading', { name: 'Route Not Found' })).toHaveCount(0);
             }
-            expect(pageErrors).toEqual([]);
+            await expectNoBrowserErrors(page, browserErrors);
         } finally {
             releaseCatalog();
         }
