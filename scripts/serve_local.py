@@ -36,6 +36,7 @@ import base64
 import functools
 import http.server
 import os
+import subprocess
 import socketserver
 import sys
 import webbrowser
@@ -347,6 +348,27 @@ def _libs_root(fortweb_root: Path) -> Path:
     return resolved.parent
 
 
+def _verify_source_runtime(fortweb_root: Path) -> None:
+    """Reject missing or stale emitted TypeScript before source-mode serving."""
+    checker = fortweb_root / "tools" / "verify-local-runtime-freshness.mjs"
+    if not checker.is_file():
+        raise SystemExit(
+            f"Missing local runtime freshness checker: {checker}. "
+            "Install project dependencies with `npm ci`."
+        )
+
+    result = subprocess.run(
+        ["node", str(checker), str(fortweb_root / "dist" / "runtime")],
+        cwd=fortweb_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise SystemExit(detail or "FortWeb local runtime freshness check failed.")
+
+
 class FortWebServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
@@ -393,6 +415,7 @@ def main() -> int:
                 parser.error(f"runtime is missing {relative}")
     else:
         doc_root = _libs_root(args.fortweb)
+        _verify_source_runtime(args.fortweb.resolve())
     os.chdir(doc_root)
 
     url = f"http://{args.host}:{args.port}/fortweb/app/"
