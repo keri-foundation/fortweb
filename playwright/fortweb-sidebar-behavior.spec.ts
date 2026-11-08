@@ -1,4 +1,5 @@
-import { expect, test, type BrowserContext, type Page } from '@playwright/test';
+import { expect, test, type BrowserContext } from '@playwright/test';
+import { collectBrowserErrors, collectPageErrors, expectNoBrowserErrors } from './utils/error-collector.js';
 
 const applicationOrigin = new URL(process.env['FORTWEB_BASE_URL'] ?? '').origin;
 const rejectedExternalRequests = new WeakMap<BrowserContext, string[]>();
@@ -28,49 +29,6 @@ test.afterEach(async ({ context }) => {
     }
 });
 
-function isKnownRuntimeNoise(text: string): boolean {
-    return (
-        text.includes('SyntaxWarning: invalid escape sequence') ||
-        text.includes("b'(?P<kind2>") ||
-        text.includes('MapDom is a subclass of IceMapDom') ||
-        text.includes('RawDom is subclass of MapDom')
-    );
-}
-
-function collectUnexpectedPageErrors(page: Page): string[] {
-    const pageErrors: string[] = [];
-    page.on('pageerror', (error) => {
-        pageErrors.push(error.message);
-    });
-    return pageErrors;
-}
-
-function collectUnexpectedConsoleErrors(page: Page): string[] {
-    const consoleErrors: string[] = [];
-    page.on('console', (message) => {
-        if (message.type() !== 'error') {
-            return;
-        }
-
-        const text = message.text();
-        if (text.includes('favicon.ico')) {
-            return;
-        }
-        if (isKnownRuntimeNoise(text)) {
-            return;
-        }
-
-        consoleErrors.push(text);
-    });
-    return consoleErrors;
-}
-
-async function expectNoUnexpectedErrors(page: Page, pageErrors: string[], consoleErrors: string[]): Promise<void> {
-    await page.waitForTimeout(250);
-    expect(pageErrors).toEqual([]);
-    expect(consoleErrors).toEqual([]);
-}
-
 test.describe('FortWeb sidebar behavior', () => {
     test('responsive navigation is accessible only while open', async ({ page }) => {
         await page.setViewportSize({ width: 868, height: 998 });
@@ -86,7 +44,7 @@ test.describe('FortWeb sidebar behavior', () => {
 
     for (const startup of ['delayed', 'failed'] as const) {
         test(`vault drawer works while runtime startup is ${startup}`, async ({ page }) => {
-            const pageErrors = collectUnexpectedPageErrors(page);
+            const browserErrors = collectPageErrors(page);
             let releaseConfig!: () => void;
             const configGate = new Promise<void>((resolve) => { releaseConfig = resolve; });
             let requestedConfig!: () => void;
@@ -113,7 +71,7 @@ test.describe('FortWeb sidebar behavior', () => {
                 await expect(drawer).toBeVisible();
                 await drawer.getByRole('button', { name: 'Close vault switcher' }).click();
                 await expect(drawer).not.toBeVisible();
-                expect(pageErrors).toEqual([]);
+                await expectNoBrowserErrors(page, browserErrors);
             } finally {
                 releaseConfig();
             }
@@ -121,8 +79,7 @@ test.describe('FortWeb sidebar behavior', () => {
     }
 
     test('core route shows main nav with KERI Foundation entry', async ({ page }) => {
-        const pageErrors = collectUnexpectedPageErrors(page);
-        const consoleErrors = collectUnexpectedConsoleErrors(page);
+        const browserErrors = collectBrowserErrors(page);
 
         await page.goto('/fortweb/app/index.html#/_fixtures/identifiers/populated');
 
@@ -148,12 +105,11 @@ test.describe('FortWeb sidebar behavior', () => {
         // Assert plugin child links are NOT present (no inline expansion)
         await expect(page.locator('.lk-sidebar__plugin-links')).not.toBeVisible();
 
-        await expectNoUnexpectedErrors(page, pageErrors, consoleErrors);
+        await expectNoBrowserErrors(page, browserErrors);
     });
 
     test('KF witnesses route shows provider menu with Back button', async ({ page }) => {
-        const pageErrors = collectUnexpectedPageErrors(page);
-        const consoleErrors = collectUnexpectedConsoleErrors(page);
+        const browserErrors = collectBrowserErrors(page);
 
         await page.goto('/fortweb/app/index.html#/_fixtures/witnesses/account');
 
@@ -180,12 +136,11 @@ test.describe('FortWeb sidebar behavior', () => {
         const witnessesLink = page.getByRole('link', { name: 'Witnesses', exact: true });
         await expect(witnessesLink).toHaveClass(/is-active/);
 
-        await expectNoUnexpectedErrors(page, pageErrors, consoleErrors);
+        await expectNoBrowserErrors(page, browserErrors);
     });
 
     test('KF watchers route shows provider menu with active state', async ({ page }) => {
-        const pageErrors = collectUnexpectedPageErrors(page);
-        const consoleErrors = collectUnexpectedConsoleErrors(page);
+        const browserErrors = collectBrowserErrors(page);
 
         await page.goto('/fortweb/app/index.html#/_fixtures/watchers/populated');
 
@@ -202,7 +157,7 @@ test.describe('FortWeb sidebar behavior', () => {
         const watchersLink = page.getByRole('link', { name: 'Watchers', exact: true });
         await expect(watchersLink).toHaveClass(/is-active/);
 
-        await expectNoUnexpectedErrors(page, pageErrors, consoleErrors);
+        await expectNoBrowserErrors(page, browserErrors);
     });
 
 });

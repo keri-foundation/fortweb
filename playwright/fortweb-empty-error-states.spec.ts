@@ -1,4 +1,5 @@
-import { expect, test, type BrowserContext, type Page } from '@playwright/test';
+import { expect, test, type BrowserContext } from '@playwright/test';
+import { collectBrowserErrors, expectNoBrowserErrors } from './utils/error-collector.js';
 
 const applicationOrigin = new URL(process.env['FORTWEB_BASE_URL'] ?? '').origin;
 const rejectedExternalRequests = new WeakMap<BrowserContext, string[]>();
@@ -28,53 +29,9 @@ test.afterEach(async ({ context }) => {
     }
 });
 
-function isKnownRuntimeNoise(text: string): boolean {
-    return (
-        text.includes('SyntaxWarning: invalid escape sequence') ||
-        text.includes("b'(?P<kind2>") ||
-        text.includes('MapDom is a subclass of IceMapDom') ||
-        text.includes('RawDom is subclass of MapDom')
-    );
-}
-
-function collectUnexpectedPageErrors(page: Page): string[] {
-    const pageErrors: string[] = [];
-    page.on('pageerror', (error) => {
-        pageErrors.push(error.message);
-    });
-    return pageErrors;
-}
-
-function collectUnexpectedConsoleErrors(page: Page): string[] {
-    const consoleErrors: string[] = [];
-    page.on('console', (message) => {
-        if (message.type() !== 'error') {
-            return;
-        }
-
-        const text = message.text();
-        if (text.includes('favicon.ico')) {
-            return;
-        }
-        if (isKnownRuntimeNoise(text)) {
-            return;
-        }
-
-        consoleErrors.push(text);
-    });
-    return consoleErrors;
-}
-
-async function expectNoUnexpectedErrors(page: Page, pageErrors: string[], consoleErrors: string[]): Promise<void> {
-    await page.waitForTimeout(250);
-    expect(pageErrors).toEqual([]);
-    expect(consoleErrors).toEqual([]);
-}
-
 test.describe('FortWeb empty and error states', () => {
     test('witnesses connected fixture renders cleanly', async ({ page }) => {
-        const pageErrors = collectUnexpectedPageErrors(page);
-        const consoleErrors = collectUnexpectedConsoleErrors(page);
+        const browserErrors = collectBrowserErrors(page);
 
         await page.goto('/fortweb/app/index.html#/_fixtures/witnesses/connected');
 
@@ -84,12 +41,11 @@ test.describe('FortWeb empty and error states', () => {
         // Assert connected state is visible (no disconnected badge)
         await expect(page.locator('.badge--success')).toContainText('Connected');
 
-        await expectNoUnexpectedErrors(page, pageErrors, consoleErrors);
+        await expectNoBrowserErrors(page, browserErrors);
     });
 
     test('witnesses error fixture renders cleanly without raw HTML', async ({ page }) => {
-        const pageErrors = collectUnexpectedPageErrors(page);
-        const consoleErrors = collectUnexpectedConsoleErrors(page);
+        const browserErrors = collectBrowserErrors(page);
 
         await page.goto('/fortweb/app/index.html#/_fixtures/witnesses/error');
 
@@ -105,12 +61,11 @@ test.describe('FortWeb empty and error states', () => {
         expect(pageText).not.toContain('<body>');
         // Note: 'HTTP 503' is intentionally part of the fixture's user-facing error message.
 
-        await expectNoUnexpectedErrors(page, pageErrors, consoleErrors);
+        await expectNoBrowserErrors(page, browserErrors);
     });
 
     test('watchers populated fixture renders cleanly', async ({ page }) => {
-        const pageErrors = collectUnexpectedPageErrors(page);
-        const consoleErrors = collectUnexpectedConsoleErrors(page);
+        const browserErrors = collectBrowserErrors(page);
 
         await page.goto('/fortweb/app/index.html#/_fixtures/watchers/populated');
 
@@ -120,6 +75,6 @@ test.describe('FortWeb empty and error states', () => {
         // Assert populated watcher data is visible (stable row text)
         await expect(page.getByRole('cell', { name: 'KF Watcher EWatcher0' })).toBeVisible();
 
-        await expectNoUnexpectedErrors(page, pageErrors, consoleErrors);
+        await expectNoBrowserErrors(page, browserErrors);
     });
 });

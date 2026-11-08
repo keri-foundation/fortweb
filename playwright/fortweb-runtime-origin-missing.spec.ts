@@ -1,4 +1,5 @@
-import { expect, test, type BrowserContext, type Page } from '@playwright/test';
+import { expect, test, type BrowserContext } from '@playwright/test';
+import { collectBrowserErrors, expectNoBrowserErrors } from './utils/error-collector.js';
 
 const applicationOrigin = new URL(process.env['FORTWEB_BASE_URL'] ?? '').origin;
 const rejectedExternalRequests = new WeakMap<BrowserContext, string[]>();
@@ -28,33 +29,9 @@ test.afterEach(async ({ context }) => {
     }
 });
 
-function collectUnexpectedPageErrors(page: Page): string[] {
-    const pageErrors: string[] = [];
-    page.on('pageerror', (error) => {
-        pageErrors.push(error.message);
-    });
-    return pageErrors;
-}
-
-function collectUnexpectedConsoleErrors(page: Page): string[] {
-    const consoleErrors: string[] = [];
-    page.on('console', (message) => {
-        if (message.type() !== 'error') {
-            return;
-        }
-        const text = message.text();
-        if (text.includes('favicon.ico')) {
-            return;
-        }
-        consoleErrors.push(text);
-    });
-    return consoleErrors;
-}
-
 test.describe('FortWeb runtime origin contract missing behavior', () => {
     test('allows startup in local browser dev when contract is missing', async ({ page }) => {
-        const pageErrors = collectUnexpectedPageErrors(page);
-        const consoleErrors = collectUnexpectedConsoleErrors(page);
+        const browserErrors = collectBrowserErrors(page);
 
         // Explicitly ensure the contract is missing (it should be by default in local dev)
         await page.addInitScript(() => {
@@ -70,7 +47,6 @@ test.describe('FortWeb runtime origin contract missing behavior', () => {
         await expect(page.locator('.topbar__brand-link')).toBeVisible();
 
         // Verify no unexpected errors were thrown due to the missing contract
-        expect(pageErrors).toEqual([]);
-        expect(consoleErrors).toEqual([]);
+        await expectNoBrowserErrors(page, browserErrors);
     });
 });

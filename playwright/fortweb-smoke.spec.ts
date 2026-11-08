@@ -1,4 +1,5 @@
-import { expect, test, type BrowserContext, type Page } from '@playwright/test';
+import { expect, test, type BrowserContext } from '@playwright/test';
+import { collectBrowserErrors, expectNoBrowserErrors } from './utils/error-collector.js';
 
 const applicationOrigin = new URL(process.env['FORTWEB_BASE_URL'] ?? '').origin;
 const rejectedExternalRequests = new WeakMap<BrowserContext, string[]>();
@@ -28,58 +29,10 @@ test.afterEach(async ({ context }) => {
     }
 });
 
-function isKnownRuntimeNoise(text: string): boolean {
-    return (
-        text.includes('SyntaxWarning: invalid escape sequence') ||
-        /^\/lib\/python3\.14\/site-packages\/hio\/help\/doming\.py:(364|634): SyntaxWarning:/.test(text) ||
-        text === '  _update(\\*pa, \\*\\*kwa): update attributes using dict like update syntax' ||
-        text.startsWith("/lib/python3.14/site-packages/keri/core/parsing.py:651: SyntaxWarning: 'break' in a 'finally' block") ||
-        text === '  break' ||
-        text.includes("b'(?P<kind2>") ||
-        text.includes('MapDom is a subclass of IceMapDom') ||
-        text.includes('RawDom is subclass of MapDom')
-    );
-}
-
-function collectUnexpectedPageErrors(page: Page): string[] {
-    const pageErrors: string[] = [];
-    page.on('pageerror', (error) => {
-        pageErrors.push(error.message);
-    });
-    return pageErrors;
-}
-
-function collectUnexpectedConsoleErrors(page: Page): string[] {
-    const consoleErrors: string[] = [];
-    page.on('console', (message) => {
-        if (message.type() !== 'error') {
-            return;
-        }
-
-        const text = message.text();
-        if (text.includes('favicon.ico')) {
-            return;
-        }
-        if (isKnownRuntimeNoise(text)) {
-            return;
-        }
-
-        consoleErrors.push(text);
-    });
-    return consoleErrors;
-}
-
-async function expectNoUnexpectedErrors(page: Page, pageErrors: string[], consoleErrors: string[]): Promise<void> {
-    await page.waitForTimeout(250);
-    expect(pageErrors).toEqual([]);
-    expect(consoleErrors).toEqual([]);
-}
-
 test.describe('FortWeb smoke', () => {
     test('app boot renders the vault landing page', async ({ page }) => {
         test.setTimeout(300_000);
-        const pageErrors = collectUnexpectedPageErrors(page);
-        const consoleErrors = collectUnexpectedConsoleErrors(page);
+        const browserErrors = collectBrowserErrors(page);
         const nativeMessages: Array<{ type?: string; message?: string }> = [];
         await page.addInitScript(() => {
             const messages: Array<{ type?: string; message?: string }> = [];
@@ -161,12 +114,11 @@ test.describe('FortWeb smoke', () => {
             message?.includes('event=request_start') && message.includes('method="settings.get"')
         ))).toBe(false);
 
-        await expectNoUnexpectedErrors(page, pageErrors, consoleErrors);
+        await expectNoBrowserErrors(page, browserErrors);
     });
 
     test('fixture index route lists deterministic fixture pages', async ({ page }) => {
-        const pageErrors = collectUnexpectedPageErrors(page);
-        const consoleErrors = collectUnexpectedConsoleErrors(page);
+        const browserErrors = collectBrowserErrors(page);
 
         await page.goto('/fortweb/app/index.html#/_fixtures');
 
@@ -174,12 +126,11 @@ test.describe('FortWeb smoke', () => {
         await expect(page.getByRole('link', { name: 'vaults/populated' })).toBeVisible();
         await expect(page.getByRole('link', { name: 'watchers/populated' })).toBeVisible();
 
-        await expectNoUnexpectedErrors(page, pageErrors, consoleErrors);
+        await expectNoBrowserErrors(page, browserErrors);
     });
 
     test('identifiers fixture renders populated table state', async ({ page }) => {
-        const pageErrors = collectUnexpectedPageErrors(page);
-        const consoleErrors = collectUnexpectedConsoleErrors(page);
+        const browserErrors = collectBrowserErrors(page);
 
         await page.goto('/fortweb/app/index.html#/_fixtures/identifiers/populated');
 
@@ -187,12 +138,11 @@ test.describe('FortWeb smoke', () => {
         await expect(page.getByText('Local Identifiers')).toBeVisible();
         await expect(page.getByRole('link', { name: 'primary-aid' })).toBeVisible();
 
-        await expectNoUnexpectedErrors(page, pageErrors, consoleErrors);
+        await expectNoBrowserErrors(page, browserErrors);
     });
 
     test('witness fixture renders hosted witness account state', async ({ page }) => {
-        const pageErrors = collectUnexpectedPageErrors(page);
-        const consoleErrors = collectUnexpectedConsoleErrors(page);
+        const browserErrors = collectBrowserErrors(page);
 
         await page.goto('/fortweb/app/index.html#/_fixtures/witnesses/account');
 
@@ -200,6 +150,6 @@ test.describe('FortWeb smoke', () => {
         await expect(page.getByText('Hosted Witnesses')).toBeVisible();
         await expect(page.getByRole('cell', { name: 'KF Witness wan-0' })).toBeVisible();
 
-        await expectNoUnexpectedErrors(page, pageErrors, consoleErrors);
+        await expectNoBrowserErrors(page, browserErrors);
     });
 });
