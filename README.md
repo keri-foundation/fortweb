@@ -16,10 +16,19 @@ base, so a narrower document root returns HTML 404 pages for runtime modules.
 From the `fortweb` repo:
 
 ```bash
-python3 scripts/serve_local.py
+npm run build:runtime
+python3 scripts/serve_local.py --no-open --port 8765
 ```
 
+The builder requires the reviewed runtime source manifest described below.
+Before source-mode serving, the server compiles the current TypeScript into a
+temporary directory and compares every configured JavaScript output with
+`dist/runtime`. It stops with the mismatching paths if output is missing or
+stale; it never rebuilds or changes `dist/runtime` automatically.
+
 Then use **`http://127.0.0.1:8765/fortweb/app/`** (the script redirects `/` there). Stop with Ctrl+C.
+For an already prepared artifact, use `--runtime-dir dist/runtime`; that mode
+serves exactly the selected artifact without source fallback.
 
 The **SharedArrayBuffer** / PyScript FAQ warning in the console is expected for a plain `http.server`; the app should still load. If wheel fetches fail, confirm nothing else is bound to the same port and that you are not mixing two different server roots in multiple tabs.
 
@@ -27,7 +36,9 @@ The **SharedArrayBuffer** / PyScript FAQ warning in the console is expected for 
 
 FortWeb now has an active TypeScript conversion lane for the runtime seam and the smallest adjacent app helpers.
 
-This does **not** change the browser runtime path, bundling model, or local serve path. The browser still loads `.js` files from `app/`, but the first converted runtime files now use `.ts` as the source of truth and emit `.js` back into the same runtime path.
+The browser still loads emitted `.js` files from `dist/runtime/`. TypeScript is
+the source of truth for those modules, and local source-mode serving verifies
+the output bytes against a fresh TypeScript compilation before serving them.
 
 From the `fortweb` repo:
 

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,9 +11,59 @@ import {
     diffSnapshots,
     loadRuntimeOutputPaths,
 } from './check-runtime-js.mjs';
+import {
+    compareRuntimeFreshness,
+    emitCurrentTypeScript,
+} from './verify-local-runtime-freshness.mjs';
 
 const PROJECT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CHECKER = path.join(PROJECT_DIR, 'tools/check-runtime-js.mjs');
+const FRESHNESS_OUTPUTS = mkdtempSync(path.join(os.tmpdir(), 'fortweb-runtime-freshness-test.'));
+
+function makeRuntimeFixture(name) {
+    const runtimeDir = path.join(FRESHNESS_OUTPUTS, name);
+    cpSync(path.join(FRESHNESS_OUTPUTS, 'emitted'), runtimeDir, { recursive: true });
+    return runtimeDir;
+}
+
+test('local runtime freshness guard checks fresh, missing, stale, and unrelated outputs', async (t) => {
+    const emittedDir = path.join(FRESHNESS_OUTPUTS, 'emitted');
+    const runtimeOutputs = await loadRuntimeOutputPaths(PROJECT_DIR, 'dist/runtime');
+    emitCurrentTypeScript(PROJECT_DIR, emittedDir);
+
+    t.after(() => rmSync(FRESHNESS_OUTPUTS, { recursive: true, force: true }));
+
+    await t.test('fresh emitted browser outputs pass', async () => {
+        const runtimeDir = makeRuntimeFixture('fresh-runtime');
+        assert.equal(await compareRuntimeFreshness(PROJECT_DIR, runtimeDir, emittedDir), runtimeOutputs.length);
+    });
+
+    await t.test('missing emitted output fails closed with its path', async () => {
+        const runtimeDir = makeRuntimeFixture('missing-runtime');
+        const missing = path.join(runtimeDir, 'app/app/main.js');
+        unlinkSync(missing);
+        await assert.rejects(
+            compareRuntimeFreshness(PROJECT_DIR, runtimeDir, emittedDir),
+            /FortWeb browser JavaScript is stale or missing[\s\S]*app\/app\/main\.js/,
+        );
+    });
+
+    await t.test('stale emitted output fails closed with its path', async () => {
+        const runtimeDir = makeRuntimeFixture('stale-runtime');
+        writeFileSync(path.join(runtimeDir, 'app/app/main.js'), 'stale generated output');
+        await assert.rejects(
+            compareRuntimeFreshness(PROJECT_DIR, runtimeDir, emittedDir),
+            /TypeScript is the source of truth[\s\S]*app\/app\/main\.js/,
+        );
+    });
+
+    await t.test('unrelated runtime files do not trigger a freshness error', async () => {
+        const runtimeDir = makeRuntimeFixture('unrelated-runtime');
+        writeFileSync(path.join(runtimeDir, 'unrelated-runtime-file.txt'), 'not TypeScript-owned');
+        assert.equal(await compareRuntimeFreshness(PROJECT_DIR, runtimeDir, emittedDir), runtimeOutputs.length);
+        assert(existsSync(path.join(runtimeDir, 'unrelated-runtime-file.txt')));
+    });
+});
 
 test('loadRuntimeOutputPaths maps emitted runtime JavaScript files', async () => {
     const outputs = await loadRuntimeOutputPaths();

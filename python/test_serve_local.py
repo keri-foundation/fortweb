@@ -1,8 +1,10 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
-from scripts.serve_local import FortWebRequestHandler, _contained_path
+from scripts.serve_local import FortWebRequestHandler, _contained_path, main
 
 
 class ContainedPathTest(unittest.TestCase):
@@ -103,6 +105,53 @@ class ProxyTargetTest(unittest.TestCase):
             self._target("/_fortweb_proxy/http/example.com:9723/bootstrap/config")
         with self.assertRaises(ValueError):
             self._target("/_fortweb_proxy/http/127.0.0.1/bootstrap/config")
+
+
+class SourceModeFreshnessIntegrationTest(unittest.TestCase):
+    def test_source_server_checks_runtime_freshness_before_listening(self):
+        server = _InterruptingServer()
+        with (
+            mock.patch("scripts.serve_local.os.chdir"),
+            mock.patch("scripts.serve_local.subprocess.run") as run_checker,
+            mock.patch("scripts.serve_local.FortWebServer", return_value=server) as server_type,
+            mock.patch("sys.argv", ["serve_local.py", "--no-open", "--port", "0"]),
+        ):
+            run_checker.return_value = SimpleNamespace(returncode=0, stdout="fresh", stderr="")
+            self.assertEqual(main(), 0)
+
+        command = run_checker.call_args.args[0]
+        self.assertEqual(command[0], "node")
+        self.assertEqual(Path(command[1]).name, "verify-local-runtime-freshness.mjs")
+        self.assertEqual(Path(command[2]).parts[-2:], ("dist", "runtime"))
+        server_type.assert_called_once()
+
+    def test_source_server_stops_before_listening_when_runtime_is_stale(self):
+        with (
+            mock.patch("scripts.serve_local.os.chdir"),
+            mock.patch("scripts.serve_local.subprocess.run") as run_checker,
+            mock.patch("scripts.serve_local.FortWebServer") as server_type,
+            mock.patch("sys.argv", ["serve_local.py", "--no-open", "--port", "0"]),
+        ):
+            run_checker.return_value = SimpleNamespace(
+                returncode=1,
+                stdout="",
+                stderr="FortWeb browser JavaScript is stale or missing.",
+            )
+            with self.assertRaisesRegex(SystemExit, "stale or missing"):
+                main()
+
+        server_type.assert_not_called()
+
+
+class _InterruptingServer:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def serve_forever(self):
+        raise KeyboardInterrupt
 
 
 if __name__ == "__main__":
