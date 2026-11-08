@@ -53,6 +53,7 @@ WEBBASER_SN = 4
 WEBBASER_FN = 7
 
 _RUNTIME_READY = False
+_INTERRUPTED_STATES = []
 
 
 def _origin():
@@ -103,7 +104,7 @@ class _HarnessStorage:
 
 async def _open_worker_storage(namespace):
     module = importlib.import_module("polyscript")
-    return _HarnessStorage(await module.storage(f"@fortweb/{namespace}"))
+    return _HarnessStorage(await module.storage(f"@fortweb-v2/{namespace}"))
 
 
 def _runtime_evidence():
@@ -646,7 +647,7 @@ async def _check_partial_close_retry():
             keeper = ProbeStore("keeper", calls, fail=failure == "keeper")
             baser = ProbeStore("baser", calls, fail=failure == "baser")
             config = ProbeConfig(calls, fail=failure == "config")
-            state = {"hby": SimpleNamespace(ks=keeper, db=baser, cf=config)}
+            state = {"vault": {"id": "test"}, "hby": SimpleNamespace(ks=keeper, db=baser, cf=config)}
             vaulting._STATE = state
 
             try:
@@ -658,15 +659,181 @@ async def _check_partial_close_retry():
 
             _require(calls == expected_calls, f"close_state skipped a store after {failure} failed: {calls}")
             _require(vaulting._STATE is state, f"close_state discarded state after {failure} failed")
+            try:
+                vaulting.require_open_state("test")
+            except vaulting.RuntimeFault as error:
+                _require(error.code == "BAD_STATE", "failed persistence produced the wrong error")
+            else:
+                raise AssertionError("failed persistence allowed further vault use")
 
             keeper.fail = False
             baser.fail = False
             config.fail = False
-            await vaulting.close_state()
+            await vaulting.dispatch("vaults.close", {"vaultId": "test"})
             _require(calls == expected_calls * 2, f"close_state did not retry every store after {failure} failed")
             _require(vaulting._STATE is None, "close_state retained state after a successful retry")
     finally:
         vaulting._STATE = original_state
+
+
+async def _check_interrupted_kel_flush():
+    class Storage:
+        def __init__(self, backend, name):
+            self.backend, self.name = backend, name
+            self.local = dict(backend.persisted.get(name, {}))
+
+        def get(self, key, default=None):
+            return self.local.get(key, default)
+
+        def __setitem__(self, key, value):
+            self.local[key] = value
+
+        async def sync(self):
+            if self.backend.failure == self.name:
+                raise RuntimeError("injected sync failure")
+            self.backend.persisted[self.name] = dict(self.local)
+
+    class Backend:
+        def __init__(self):
+            self.persisted, self.failure = {}, None
+
+        async def open(self, name):
+            return Storage(self, name)
+
+    kering = importlib.import_module("keri.kering")
+    habbing = importlib.import_module("keri.app.habbing")
+    webkeeping = importlib.import_module("keri.app.webkeeping")
+    webbasing = importlib.import_module("keri.db.webbasing")
+    modules = {"kering": kering, "db": importlib.import_module("keri.db"),
+               "eventing": importlib.import_module("keri.core.eventing")}
+    backend = Backend()
+    name = "interrupted-kel-flush"
+
+    async def open_habery(*, validate=False):
+        keeper, baser = webkeeping.WebKeeper(name=name), webbasing.WebBaser(name=name)
+        await keeper.reopen(storageOpener=backend.open)
+        await baser.reopen(storageOpener=backend.open)
+        if validate:
+            await vaulting._validate_open_kels(baser, {
+                "webdbing": importlib.import_module("keri.db.webdbing"),
+                "webbasing": webbasing,
+                "eventing": modules["eventing"],
+            }, keeper=keeper)
+        return habbing.Habery(name=name, ks=keeper, db=baser, cf=vaulting.NullConfiger(),
+                              temp=False, salt=ROOT_SALT, version=kering.Vrsn_2_0)
+
+    hby = await open_habery()
+    hab = hby.makeHab(name="issuer", version=kering.Vrsn_2_0)
+    await vaulting.close_habery(hby)
+    hby = await open_habery()
+    hab = hby.habByName("issuer")
+    hab.interact(data=[{"d": hab.pre}], version=kering.Vrsn_2_0, gvrsn=kering.Vrsn_2_0)
+    said, sn = hab.kever.serder.said, hab.kever.sn
+    backend.failure = f"{name}:sigs."
+    original_state = vaulting._STATE
+    vaulting._STATE = {"vault": {"id": name}, "hby": hby}
+    try:
+        await vaulting.close_state()
+    except RuntimeError as error:
+        _require(str(error) == "injected sync failure", "unexpected KEL flush error")
+    else:
+        raise AssertionError("KEL flush did not reach the injected failure")
+
+    try:
+        vaulting.require_open_state(name)
+    except vaulting.RuntimeFault as error:
+        _require(error.code == "BAD_STATE", "failed KEL flush produced the wrong error")
+    else:
+        raise AssertionError("failed KEL flush allowed further vault use")
+
+    # Open fresh storage handles without closing the failed worker's in-memory state.
+    backend.failure = None
+    try:
+        recovered = await open_habery(validate=True)
+    except vaulting.RuntimeFault as error:
+        _require(error.code == "BAD_STATE", "incomplete KEL produced the wrong recovery error")
+    else:
+        issuer = recovered.habByName("issuer")
+        indexed = recovered.db.kels.getLast(keys=issuer.pre, on=sn)
+        vaulting._identifier_introduction(issuer, modules)
+        _require(indexed is None or recovered.db.sigs.get(keys=(issuer.pre, said)),
+                 "incomplete KEL was exported without its signature")
+        await vaulting.close_habery(recovered)
+    await vaulting.dispatch("vaults.close", {"vaultId": name})
+    vaulting._STATE = original_state
+
+
+async def _create_interrupted_kel(name):
+    kering = importlib.import_module("keri.kering")
+    _, hby = await _open_v2_habery(name, clear=True)
+    hby.makeHab(name="issuer", version=kering.Vrsn_2_0)
+    await vaulting.close_habery(hby)
+    _, hby = await _open_v2_habery(name)
+    hab = hby.habByName("issuer")
+    hab.interact(data=[{"d": hab.pre}], version=kering.Vrsn_2_0, gvrsn=kering.Vrsn_2_0)
+
+    class FailedSync:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def get(self, key, default=None):
+            return self.handle.get(key, default)
+
+        def __setitem__(self, key, value):
+            self.handle[key] = value
+
+        async def sync(self):
+            raise RuntimeError("injected browser sync failure")
+
+    store = hby.db._stores["sigs."]
+    store.handle = FailedSync(store.handle)
+    vaulting._STATE = {"vault": {"id": name}, "hby": hby}
+    try:
+        await vaulting.close_state()
+    except RuntimeError as error:
+        _require(str(error) == "injected browser sync failure", "unexpected browser sync error")
+    else:
+        raise AssertionError("browser sync failure was not injected")
+    try:
+        vaulting.require_open_state(name)
+    except vaulting.RuntimeFault as error:
+        _require(error.code == "BAD_STATE", "failed browser sync produced the wrong error")
+    else:
+        raise AssertionError("failed browser sync allowed further vault use")
+    _INTERRUPTED_STATES.append(hby)
+    vaulting._STATE = None
+    return {"name": name, "pre": hab.pre, "sn": hab.kever.sn, "said": hab.kever.serder.said}
+
+
+async def _recover_interrupted_kel(fixture):
+    webbasing = importlib.import_module("keri.db.webbasing")
+    webdbing = importlib.import_module("keri.db.webdbing")
+    eventing = importlib.import_module("keri.core.eventing")
+    webkeeping = importlib.import_module("keri.app.webkeeping")
+    keeper = webkeeping.WebKeeper(name=fixture["name"])
+    baser = webbasing.WebBaser(name=fixture["name"])
+    await keeper.reopen(storageOpener=_open_worker_storage)
+    await baser.reopen(storageOpener=_open_worker_storage)
+    try:
+        try:
+            await vaulting._validate_open_kels(baser, {
+                "webdbing": webdbing, "webbasing": webbasing, "eventing": eventing,
+            }, keeper=keeper)
+        except vaulting.RuntimeFault as error:
+            _require(error.code == "BAD_STATE", "interrupted browser KEL produced the wrong error")
+            outcome = "rejected"
+        else:
+            pre, sn = fixture["pre"], fixture["sn"]
+            candidates = baser.kels.get(keys=pre, on=sn)
+            _require(len(candidates) <= 1, "interrupted browser KEL contains conflicting events")
+            if candidates:
+                _require(candidates[0] == fixture["said"] and baser.kevers[pre].sn == sn,
+                         "interrupted browser KEL did not recover its complete event")
+            outcome = "complete" if candidates else "unwritten"
+    finally:
+        await baser.aclose(clear=True)
+        await keeper.aclose(clear=True)
+    return outcome
 
 
 def _check_witness_receipt_ingestion():
@@ -739,6 +906,7 @@ async def _check_witness_receipt_aggregation():
     serdering = importlib.import_module("keri.core.serdering")
     signing = importlib.import_module("keri.core.signing")
     _, hby = await _open_habery(f"receipt-aggregation-{uuid4().hex}", clear=True)
+    original_state = vaulting._STATE
     original_config = dict(vaulting._CONFIG)
     original_onboarding_config = dict(onboarding._CONFIG)
     original_fetch = transporting.fetch_response
@@ -843,6 +1011,11 @@ async def _check_witness_receipt_aggregation():
 
             transporting.fetch_response = fetch
             await onboarding._rotate_kf_account_to_witnesses(hab, rows, toad=3)
+            await vaulting._validate_open_kels(hby.db, {
+                "webdbing": importlib.import_module("keri.db.webdbing"),
+                "webbasing": importlib.import_module("keri.db.webbasing"),
+                "eventing": eventing,
+            }, keeper=hby.ks)
             for eid in witnesses:
                 check_state(recipients[eid], f"{encoding} witness {eid}")
             await onboarding._introduce_account_to_watcher(hab, watcher_row, rows)
@@ -854,6 +1027,7 @@ async def _check_witness_receipt_aggregation():
                 await vaulting.close_habery(recipient, clear=True)
 
     try:
+        vaulting._STATE = {"vault": {"id": "receipt-aggregation"}, "hby": hby}
         vaulting._CONFIG["load_modules"] = lambda: {
             "kering": kering, "eventing": eventing, "serdering": serdering,
         }
@@ -933,6 +1107,7 @@ async def _check_witness_receipt_aggregation():
                 f"{encoding}: interaction did not inherit establishment witnesses",
             )
     finally:
+        vaulting._STATE = original_state
         vaulting._CONFIG.clear()
         vaulting._CONFIG.update(original_config)
         onboarding._CONFIG.clear()
@@ -1035,6 +1210,7 @@ async def _oobi_absent(fixture):
 
 async def _create(names):
     await _check_partial_close_retry()
+    await _check_interrupted_kel_flush()
     _check_witness_receipt_ingestion()
     await _check_witness_receipt_aggregation()
     fixtures = {
@@ -1044,6 +1220,7 @@ async def _create(names):
         "habery": await _habery_create(names["habery"]),
         "oobi": await _oobi_create(names["oobi"]),
         "nested": await _nested_create(names["nested"]),
+        "interrupted_kel": await _create_interrupted_kel(names["interrupted_kel"]),
     }
     return {
         "fixtures": fixtures,
@@ -1054,6 +1231,8 @@ async def _create(names):
             "habery-create-rotate",
             "browserclienter-http-oobi",
             "aggregate-close-partial-failure-retry",
+            "interrupted-kel-flush-export-safety",
+            "browser-kel-interruption-blocks-use",
             "mixed-version-witness-receipt-ingestion",
             "multi-witness-receipts-from-parser",
             "nested-v2-exn-stored-from-parser",
@@ -1062,6 +1241,7 @@ async def _create(names):
 
 
 async def _recover(fixtures):
+    interrupted_outcome = await _recover_interrupted_kel(fixtures["interrupted_kel"])
     await _webdber_recover(fixtures["webdber"], clear=True)
     await _webbaser_recover(fixtures["webbaser"], clear=True)
     await _webkeeper_recover(fixtures["webkeeper"], clear=True)
@@ -1072,6 +1252,8 @@ async def _recover(fixtures):
         "fixtures": fixtures,
         "checks": [
             "new-worker-recovery",
+            "interrupted-browser-kel-reopen-checked",
+            f"interrupted-browser-kel-{interrupted_outcome}",
             "webkeeper-sign-after-rotation",
             "habery-kel-key-state-recovery",
             "oobi-contact-recovery",

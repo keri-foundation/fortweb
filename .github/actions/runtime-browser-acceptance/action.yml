@@ -112,9 +112,14 @@ runs:
           sleep 0.1
         done
         test -s "$ready_file" || { cat "$server_log"; exit 1; }
+        expect_browser_acdc=0
+        if [ "$FORTWEB_RUNTIME_SOURCE_MANIFEST_SHA256" = 'f76cf23f5cdaa5fe3f7a0e264c862290f9c8b6be2aafca6622926e1869731431' ]; then
+          expect_browser_acdc=1
+        fi
         FORTWEB_BASE_URL=http://127.0.0.1:4175 \
         FORTWEB_PLAYWRIGHT_OUTPUT_DIR=test-results/runtime-lifecycle \
         FORTWEB_RUNTIME_DIR=dist/runtime \
+        FORTWEB_EXPECT_BROWSER_ACDC="$expect_browser_acdc" \
         FORTWEB_FOCUSED_ARTIFACT_DIR=test-results/runtime-lifecycle/evidence \
         FORTWEB_RUN_ID="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
         FORTWEB_SOURCE_IDENTITY=test-results/source-identity.txt \

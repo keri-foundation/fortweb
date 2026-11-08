@@ -69,7 +69,7 @@ function resourceReferencesFromText(text, extension) {
     if (extension === '.js') {
         const patterns = [
             /(?:import|export)[^;"']*?\bfrom\s*["']([^"']+)["']/g,
-            /import\s*["']([^"']+)["']/g,
+            /(?<!["'`\w$.])import\s*["']([^"']+)["']/g,
             /import\s*\(\s*["']([^"']+)["']/g,
             /new\s+URL\s*\(\s*["']([^"']+)["']/g,
         ];
@@ -180,6 +180,9 @@ test('JavaScript scanner exposes every forbidden literal reference to the resolv
     const source = path.join(RUNTIME, 'app/app/main.js');
     for (const text of [
         'import value from "bare-package";',
+        'import "bare-package";',
+        'const value = 1; import"bare-package";',
+        '/* comment */import"bare-package";',
         'export { value } from "https://example.com/value.js";',
         'import("/absolute.js");',
         'new URL("./encoded%2fpath.js", import.meta.url);',
@@ -188,4 +191,5 @@ test('JavaScript scanner exposes every forbidden literal reference to the resolv
         assert.equal(references.length, 1);
         assert.throws(() => resolveLocalReference(references[0], source));
     }
+    assert.deepEqual(resourceReferencesFromText('{ dataAction: "import" }, { label: "Cancel" }', '.js'), []);
 });

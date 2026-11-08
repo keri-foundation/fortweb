@@ -17,6 +17,30 @@ wheels are replaced. Building those compiled artifacts from scratch remains a
 separate toolchain procedure. The public source producer below verifies and
 reuses the selected baseline bytes.
 
+## Strict CSP candidate
+
+For the pinned IPEX candidate only, `scripts/prepare_csp_runtime_source.py`
+derives a new source tree from the exact baseline manifest identified in the
+script. It verifies every copied file, the Pyodide loader, and the `pysodium`
+wheel. It replaces one dynamic side-module callback loader with static functions
+generated from the two exact callbacks in that wheel. Other callbacks fail
+closed. The derived manifest records the original manifest, loader, wheel,
+and producer digests; the baseline is not modified.
+
+```sh
+python3 scripts/prepare_csp_runtime_source.py \
+  --baseline build/verified-ipex-runtime-source \
+  --output build/runtime-source-csp
+```
+
+Use the printed digest as `FORTWEB_RUNTIME_SOURCE_MANIFEST_SHA256` and the new
+manifest as `FORTWEB_RUNTIME_SOURCE_MANIFEST` for the normal build and package
+steps below. The vendored PyScript worker-hook change accepts only the pinned
+default hook. The application entrypoint carries a strict content-security
+policy; each host must preserve and test that policy before declaring v2
+compatible. Other Pyodide code paths may still require dynamic evaluation and
+fail under the policy. The original runtime remains a separate artifact.
+
 ## Build normal source wheels
 
 `scripts/build_runtime_source.py` accepts a verified baseline, a source
@@ -82,6 +106,234 @@ Retain the source declaration and patches with the build evidence. Compare
 packaged source modules and dependency metadata with the patched source before
 promoting a changed wheel.
 
+### Browser ACDC import patch
+
+The optional [`keripy-pyodide-acdc-imports.patch`](../scripts/patches/keripy-pyodide-acdc-imports.patch)
+allows ACDC message construction in Pyodide without importing the native LMDB
+registry classes. Native Python keeps those imports. Copy the patch beside the
+source declaration and include it in the Keripy source entry:
+
+```json
+"patches": [{
+  "path": "keripy-pyodide-acdc-imports.patch",
+  "sha256": "8de46e856d6fc68f7096a4e25ca169cbf3caaf92037b0f71e79c5ee09e4c1177"
+}]
+```
+
+Build a new runtime source and use its manifest and digest when running the
+runtime builder. The published default source remains unpatched until a new
+reviewed source archive is published and pinned. Set
+`FORTWEB_EXPECT_BROWSER_ACDC=1` when running the WebBaser lifecycle browser test
+against a runtime built with this patch; the unpatched runtime must reject the
+operation without interrupting the vault worker.
+
+The `credentials.issueSigned` worker method creates a schema-validated signed
+ACDC for a known remote identifier and returns its CESR bytes. It does not store
+or deliver the credential, create a registry, track revocation, or verify receipt.
+The caller must retain the returned bytes and the recipient must verify issuer
+authentication independently. This patch does not enable V2 browser registry
+management or change the pinned KERIpy issuer-authentication implementation.
+The patched-runtime browser test writes a synthetic credential, issuer history,
+and schema to its Playwright output directory. In an environment with Locksmith
+installed, set `FORTWEB_CREDENTIAL_INTEROP_DIR` to that directory and run
+`python -m unittest python.test_credential_issuance.CredentialIssuanceTest.test_browser_output_with_locksmith_issuer_authentication`
+to verify the result independently.
+
+### Browser registry backend patch
+
+The optional [`keripy-pyodide-registry.patch`](../scripts/patches/keripy-pyodide-registry.patch)
+avoids the native registry import in Pyodide, adds the browser alias store, and supplies
+the ordered KEL iterator used by registry anchor discovery. Apply it after the
+ACDC import patch and record its digest in the source declaration. Browser
+registry management requires a pre-opened WebRegBaser with alias storage; the
+native backend keeps its existing behavior. FortWeb validates persisted TEL
+indexes and KEL anchors when looking up a registry; the underlying manager
+does not provide these browser recovery checks on its own. FortWeb records an incomplete
+operation before signing, and refuses further registry operations if a failure
+leaves that marker behind. Automatic recovery of such operations is not yet
+available; do not clear the marker or discard evidence without verified recovery.
+Set `FORTWEB_EXPECT_REGISTRY_BACKEND=1` to run
+`playwright/registry-backend.spec.ts` against this patch.
+
+The worker exposes `registries.create` with `vaultId`, `issuerAid`, and `name`,
+and `registries.get` with `vaultId` and `name`. Each returns the registry ID,
+issuer, base64-encoded inception event, and public issuer KEL. A registry with
+unresolved or incomplete evidence is rejected without deleting that evidence.
+
+`credentials.issueRegistered` accepts `vaultId`, registry `name`, `requestId`,
+`issuerAid`, `recipientAid`, `schemaId`, and `attributes`. It signs the ACDC,
+anchors and accepts its KERIpy blindable update, and persists the credential
+and disclosure before returning. Reusing a request ID with the same input
+returns the existing issuance; conflicting input is rejected.
+`credentials.getIssued` retrieves the stored evidence using `vaultId`, registry
+`name`, and `requestId`. Both return the signed CESR, issuance sequence,
+disclosed blinder, registry TEL and public issuer KEL. Treat the blinder and
+credential as private disclosure material. The vault substore uses plain-value
+browser IndexedDB and does not separately encrypt this material; same-origin
+code with storage access can read it. Browser test artifacts contain synthetic
+disclosure material and should be handled accordingly.
+
+The TEL may contain later blinded updates. A verifier can bind the credential
+to the chain through its issuance sequence and independently validate the full
+chain; later blinded events do not by themselves reveal the credential's current
+status. Revocation, credential delivery, and automatic recovery of interrupted
+operations are not implemented.
+
+The experimental `credentials.receive` and `credentials.getReceived` methods
+are disabled unless the local runtime configuration explicitly sets
+`fort_synthetic_recipient_testing` to `true`. Both require `syntheticOnly: true`
+and a passcode-protected recipient vault. This is an explicit test-data
+acknowledgment, not a way to detect whether supplied data is actually synthetic.
+Do not use real personal data with this experimental path.
+
+Receipt accepts the existing issuance result as an evidence object, alongside
+the expected issuer, local recipient, and an already imported schema ID. It
+verifies the signed KEL, signature, schema, TEL chain, anchors and blinded
+issuance binding in temporary KERI storage. It reports the verified supplied
+head separately from current status, which is always unknown without fresh
+authoritative evidence. The local object wraps CESR and TEL events; it is not
+an IPEX message. The current verifier supports non-delegated issuer histories
+without endpoint reply messages and rejects unsupported evidence.
+
+Received evidence is encrypted using the existing passcode-backed KERI key
+manager before storage in the recipient vault; the storage key still reveals
+the credential SAID and that a record exists. An interrupted write can leave a
+pending marker that blocks receipt operations; automatic recovery is not
+implemented. The issuer's existing issuance records remain plaintext.
+More seriously, current vault registry records also contain a plaintext root
+used for deterministic signing-key derivation. A party able to read that
+browser storage can reconstruct signing authority even while a passcode vault
+is closed. Recipient-record encryption does not fix this signing-root exposure,
+protect the unlocked vault against same-origin code, or establish that any
+existing identity is safe for sensitive use.
+
+The browser registry test writes initial and recovered public evidence to its
+Playwright output directory. Set `FORTWEB_REGISTRY_INTEROP_DIR` to that
+directory and run `python -m unittest python.test_registry_interop` with a
+compatible native KERIpy to verify both KEL anchors and the inception event.
+Run `playwright/registry-issuance.spec.ts` with
+`FORTWEB_EXPECT_REGISTRY_BACKEND=1`; it writes synthetic evidence. Set
+`FORTWEB_ISSUANCE_INTEROP_DIR` to its output directory and run
+`python -m unittest python.test_registered_issuance_interop` with compatible
+native KERIpy to verify issuance and disclosure independently.
+
+### Presentation-registry candidate patch
+
+The optional [presentation-registry patch](../scripts/patches/keripy-pyodide-presentation-registry.patch)
+is the minimal candidate that applies after the ACDC import and registry backend
+patches. Its SHA-256 is
+`40df4696a7211c14669b8dcaf7f0d36df46ba1069ec8eac917de63b38c2b573c`.
+It adds browser-runtime `Registry.present` and `Registrar.present` support so
+`registries.present` can bind an already-created Grant SAID, anchor the TEL
+event in the holder KEL, and persist the verified binding. Run the focused
+[registry receipt test](../playwright/registry-receipt.spec.ts) with both
+`FORTWEB_EXPECT_REGISTRY_BACKEND=1` and
+`FORTWEB_EXPECT_PRESENTATION_REGISTRY=1` against a runtime built with this
+patch.
+
+This is a source-build candidate, not part of the published source archive or
+the default runtime pin. Use the full IPEX V2 patch below for final-Grant proof
+assembly and verifier acceptance. This smaller patch proves binding creation,
+persistence, idempotence, and invalid-SAID rejection only.
+
+### Full IPEX V2 candidate patch
+
+The [IPEX V2 patch](../scripts/patches/keripy-pyodide-ipex-v2.patch) backports
+the seven coupled Keripy modules from upstream commit
+`790797bcdef8322adb86eeb762f4610f481a3ce7`; its SHA-256 is
+`73eee9ad3465d4a47ebb84d21ee3231d4aa180026d29a7d86d5e2dd9642f55f2`.
+It includes upstream presentation-registry support, strict exchange evidence
+verification, and KRAM storage. Apply it after the ACDC import and registry
+backend patches, instead of the smaller presentation-registry patch above, and
+then apply the exchange-storage patch below.
+
+The combined candidate has focused Chromium evidence for a synthetic
+registry-bound presentation: the holder creates a Grant, binds its SAID in the
+declared presentation registry, attaches issuer and holder TEL proofs plus the
+holder KEL anchor, and the independent verifier accepts that exact Grant.
+Run [registry receipt](../playwright/registry-receipt.spec.ts) with
+`FORTWEB_EXPECT_REGISTRY_BACKEND=1` and
+`FORTWEB_EXPECT_PRESENTATION_REGISTRY=1` for that route, and without
+`FORTWEB_EXPECT_PRESENTATION_REGISTRY` for the retained evidence-only
+Grant/Admit route.
+
+It remains a synthetic, source-build candidate. This evidence does not make it
+a published runtime or establish SEDI interoperability with external agents,
+real credentials, or mobile clients.
+
+### IPEX exchange-storage candidate patch
+
+The optional [IPEX exchange-storage patch](../scripts/patches/keripy-pyodide-ipex-exchange-storage.patch)
+adds the `ests.` source-seal store and `eidx.` accepted-endorser index required
+by the newer exchange verifier. Its SHA-256 is
+`8e2d4b09a1a822358fa0cfb036cd7efad7b69c912c579dd2bd7441cacba93437`.
+Apply it after the full IPEX V2 patch; the focused presentation verification
+above depends on both patches. This patch only makes the browser store surface
+compatible with the upstream verifier; it does not by itself supply the full
+IPEX V2 backport or prove native verifier acceptance.
+
+### Core SEDI compatibility candidate
+
+The optional [Core SEDI patch](../scripts/patches/keripy-pyodide-sedi-compat.patch)
+extends the preceding patches with disclosure-plan, authority-graph, schema,
+and browser exchange-storage support from KERIpy reference commit
+`84301a9ff4bbb644ce134f9649ad56b49aa130f2`. Its SHA-256 is
+`e71f845949a32cd54c368914788d2e0a413b56847c69140a6a7b97aa38491ac8`.
+Apply it after the exchange-storage patch and record it in the source
+declaration. The default source pin selects the qualified Core SEDI source.
+
+For the synthetic Core interoperability and recovery tests, set
+`FORTWEB_EXPECT_REGISTRY_BACKEND=1`, `FORTWEB_EXPECT_SEDI_COMPAT=1`,
+`FORTWEB_SEDI_REFERENCE` to a checkout of that reference commit, and
+`FORTWEB_SEDI_PYTHON` to a Python interpreter with its native dependencies.
+Run `playwright/sedi-core-interop.spec.ts`, `playwright/sedi-core-failure.spec.ts`,
+`playwright/sedi-core-browser-verifier.spec.ts`, and `playwright/sedi-compactor.spec.ts`
+using the prepared runtime browser harness. The tests exchange synthetic CESR
+evidence through local test files; they do not demonstrate delivery over a live
+SEDI network.
+
+With a verified runtime already served, set `FORTWEB_BASE_URL` to that server
+and `FORTWEB_PLAYWRIGHT_OUTPUT_DIR` to an output directory, then run:
+
+```sh
+npx playwright test --config=playwright.runtime.config.ts \
+  playwright/sedi-core-interop.spec.ts playwright/sedi-core-failure.spec.ts \
+  playwright/sedi-core-browser-verifier.spec.ts playwright/sedi-compactor.spec.ts
+```
+
+The holder validates the disclosed graph in transient stores before anchoring
+the Grant and records a pending operation before changing signed history. An
+interrupted presentation remains blocked for manual recovery; do not clear its
+marker or discard signed evidence. The worker can retrieve exchange metadata
+and its presentation binding after reopening, but complete Grant-stream
+outbox recovery is not yet exposed. A requested partial disclosure is rejected
+if the supplied evidence does not match the requested disclosure plan. The
+disclosed status for every node must reach its supplied TEL head; a later
+blinded update is treated as unknown. This local check does not establish that
+the supplied TEL head is the latest state on a live network. Missing schemas in
+preflight return a retryable `NOT_FOUND`; import the missing schema and retry.
+
+### Promoting a patched source archive
+
+The source archive is a separate release input from the runtime package. After
+reviewing and publishing a source archive, update the source URL, archive
+SHA-256, and manifest SHA-256 together in
+`.github/actions/produce-runtime-package/action.yml`. Do not point the default
+pin at an unpublished archive. Retain the prior three values for rollback.
+
+The shared browser acceptance action enables `FORTWEB_EXPECT_BROWSER_ACDC` for
+the pinned SEDI manifest and retains the unpatched expectation for other source
+overrides.
+Verify the produced runtime and its complete browser acceptance sequence before
+using it as a release candidate. Tag-based releases reject source overrides and
+consume the reviewed default pin.
+
+The previous source pin for rollback is:
+
+- URL: `https://github.com/keri-foundation/fortweb/releases/download/runtime-source-pyodide-314-hio-0.7.20-20261102/runtime-source.tar.gz`
+- Archive SHA-256: `c0f975accd8be662ba2d31e46800bef34b8c0b7651154b64dfec28d9453ffccd`
+- Manifest SHA-256: `d00ad7c4dc2fcce08904562bb50dd2ace53cf226027d376b41e42cbb69410023`
+
 ## Acquire, build, and verify
 
 For a published runtime-source archive, supply both archive and manifest
@@ -116,6 +368,30 @@ and a fresh compilation of current TypeScript. File counts and runtime hashes
 come from the generated inventory, not a previous acceptance run.
 
 ## Browser and package proof
+
+Vault opening checks local identifier histories and signing-key state, and
+refuses incomplete or conflicting state. A failed flush blocks further use of
+the open vault until its close is retried. These checks do not repair persisted
+data. Cooperating wallet workers use an exclusive browser Web Lock while a
+vault is open and reject access when the lock is unavailable or busy.
+
+New vaults use the `@fortweb-v2/` storage namespace, separate from the legacy
+`@fortweb/` namespace. Their keys are generated in the new vault; legacy keys
+and identities are not migrated. Older vaults remain in legacy storage and are
+not available in the new vault list. Copying legacy signing authority into the
+new namespace would not make that identity safe from a legacy writer.
+
+Web Locks cannot prevent code that ignores the lock from writing the same
+IndexedDB data. The namespace boundary protects against the normal paths of
+legacy FortWeb workers, not arbitrary same-origin code or copies of signing
+keys outside this storage. Different browser origins and application containers
+are separate lock and storage scopes. Web Lock availability and storage scope
+in the target iOS and Android WebViews remain unverified.
+
+The mixed-version lifecycle test requires `FORTWEB_LEGACY_RUNTIME_DIR` to point
+to a verified legacy runtime tree; without it the test is skipped. Existing
+legacy signing identities are not eligible for protected use until a separate
+safe migration procedure has been established.
 
 Run the wheelhouse, WebBaser lifecycle, runtime canary, and application suites.
 The lifecycle suite uses new workers for persistence and recovery. It checks

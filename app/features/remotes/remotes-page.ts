@@ -39,6 +39,7 @@ interface RemotesPageProps {
     remotes: RemoteRecord[];
     filter: string;
     onResolveRemote(url: string, alias: string): Promise<void>;
+    onImportRemote(cesr: string, alias: string): Promise<void>;
     onUpdateRemote(aid: string, patch: Record<string, unknown>): Promise<void>;
     onFilterChange(filter: string): void;
 }
@@ -59,19 +60,22 @@ function errorMessage(error: unknown, fallback: string): string {
     return error instanceof Error && error.message ? error.message : fallback;
 }
 
-function createResolveRemoteDialog(onResolveRemote: RemotesPageProps["onResolveRemote"]): void {
+function createResolveRemoteDialog(onResolveRemote: RemotesPageProps["onResolveRemote"], onImportRemote: RemotesPageProps["onImportRemote"]): void {
     const modal = createModal({
         title: "Add Remote Identifier",
         body: `
             <form data-resolve-remote-form>
-                ${fieldTextHtml({ id: "resolve-oobi-url", label: "OOBI URL", placeholder: "https://...", required: true })}
+                ${fieldTextHtml({ id: "resolve-oobi-url", label: "OOBI URL", placeholder: "https://..." })}
                 ${fieldTextHtml({ id: "resolve-alias", label: "Alias", placeholder: "e.g. remote-peer" })}
-                <p class="muted">Enter the OOBI URL shared by the identifier's controller or provider.</p>
+                <label for="import-cesr">Or select a public CESR identifier file</label>
+                <input id="import-cesr" type="file" accept=".cesr,application/cesr,application/octet-stream">
+                <p class="muted">A CESR file adds a remote public identifier; it does not restore signing keys. Maximum file size: 3 MiB.</p>
                 <p class="status-line" data-resolve-remote-status></p>
             </form>
         `,
         actions: [
             { label: "Cancel", tone: "ghost", dataAction: "cancel" },
+            { label: "Import CESR", tone: "secondary", dataAction: "import" },
             { label: "Resolve OOBI", tone: "primary", dataAction: "submit" },
         ],
     });
@@ -86,6 +90,7 @@ function createResolveRemoteDialog(onResolveRemote: RemotesPageProps["onResolveR
     const form = root.querySelector("[data-resolve-remote-form]");
     const statusLine = queryElement(root, "[data-resolve-remote-status]");
     const submitBtn = queryButton(root, "[data-action='submit']");
+    const importBtn = queryButton(root, "[data-action='import']");
     const cancelBtn = queryButton(root, "[data-action='cancel']");
 
     if (!(form instanceof HTMLFormElement) || !statusLine || !submitBtn) {
@@ -118,6 +123,36 @@ function createResolveRemoteDialog(onResolveRemote: RemotesPageProps["onResolveR
 
     submitBtn.addEventListener("click", () => {
         void submit();
+    });
+    importBtn?.addEventListener("click", async () => {
+        const file = queryInput(form, "#import-cesr")?.files?.[0];
+        const alias = queryInput(form, "#resolve-alias")?.value.trim() || "";
+        if (!file || !alias) {
+            statusLine.textContent = "Choose a CESR file and enter an alias.";
+            return;
+        }
+        if (file.size > 3 * 1024 * 1024) {
+            statusLine.textContent = "Identifier files must be 3 MiB or smaller.";
+            return;
+        }
+        importBtn.disabled = true;
+        submitBtn.disabled = true;
+        statusLine.textContent = "";
+        try {
+            const bytes = new Uint8Array(await file.arrayBuffer());
+            const chunks: string[] = [];
+            for (let i = 0; i < bytes.length; i += 0x8000) {
+                chunks.push(String.fromCharCode(...bytes.subarray(i, i + 0x8000)));
+            }
+            await onImportRemote(btoa(chunks.join("")), alias);
+            modal.close();
+            showToast({ message: "Remote identifier imported.", tone: "success" });
+        } catch (error) {
+            statusLine.textContent = errorMessage(error, "Identifier import failed.");
+        } finally {
+            importBtn.disabled = false;
+            submitBtn.disabled = false;
+        }
     });
     form.addEventListener("submit", (event) => {
         event.preventDefault();
@@ -207,6 +242,7 @@ export function renderRemotesPage({
     remotes,
     filter,
     onResolveRemote,
+    onImportRemote,
     onUpdateRemote,
     onFilterChange,
 }: RemotesPageProps) {
@@ -229,7 +265,7 @@ export function renderRemotesPage({
             ${chipHtml({ label: "Transferable", selected: filter === "transferable", dataValue: "transferable" })}
             ${chipHtml({ label: "Non-transferable", selected: filter === "non-transferable", dataValue: "non-transferable" })}
         </div>
-        <p class="lk-table-header__note">Connect to a remote identifier using its OOBI URL.</p>
+        <p class="lk-table-header__note">Connect using an OOBI URL or a public CESR file.</p>
     `;
 
     const columns = [
@@ -256,9 +292,9 @@ export function renderRemotesPage({
         ],
         itemsPerPage: 10,
         emptyTitle: "No Remote Identifiers Yet",
-        emptyText: "Add a remote identifier by resolving its OOBI URL.",
+        emptyText: "Add a remote identifier using an OOBI URL or CESR file.",
         onAdd() {
-            createResolveRemoteDialog(onResolveRemote);
+            createResolveRemoteDialog(onResolveRemote, onImportRemote);
         },
         onAction(row: RemoteTableRow, actionKey: string) {
             if (actionKey === "view") {

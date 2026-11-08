@@ -176,7 +176,7 @@ export function createVaultDrawer<Vault extends VaultDrawerRecord>(opts: VaultDr
                     <img src="./assets/brand/SymbolLogo.svg" alt="" width="36" height="36">
                     <div>
                         <span class="lk-drawer__title">Vaults</span>
-                        <p class="lk-drawer__subtitle">Switch vaults or start a new one.</p>
+                        <p class="lk-drawer__subtitle">Older vaults remain in separate storage and cannot yet be opened here. No keys have been migrated.</p>
                     </div>
                 </div>
                 <button class="lk-drawer__close" type="button" aria-label="Close vault switcher">

@@ -1,0 +1,4078 @@
+--- a/src/keri/acdc/ipexing.py
++++ b/src/keri/acdc/ipexing.py
+@@ -15,12 +15,13 @@
+ from .. import Kinds, Protocols
+ from ..kering import (Colds, DuplicitousRegistryError, Ilks, MisanchorError,
+                       MisbindingError, MissingAnchorError, MissingChainError,
+-                      MisdigestError, MisregistryError, MissequenceError,
+-                      RootSealError, UnverifiedBlindError, ValidationError,
+-                      Vrsn_2_0, sniff)
++                      MissingSenderKeyStateError, MisdigestError,
++                      MisregistryError, MissequenceError, RootSealError,
++                      UnverifiedBlindError, ValidationError, Vrsn_2_0, sniff)
+ from ..core import (BlindState, Blinder, BoundState, Counter, Codens, Diger, GenDex, Noncer,
+-                    Number, Saider, Schemer, Serdery, Texter, exchange, messagize)
+-from ..peer import cloneMessage
++                    Number, Prefixer, Saider, Schemer, SealEvent, SealSource, Serdery, Texter,
++                    exchange, messagize)
++from ..peer.exchanging import cloneMessage, verifyAttachments
+ 
+ logger = ogler.getLogger()
+ 
+@@ -31,7 +32,7 @@
+ PreviousRoutes = {
+     Ipex.offer: (Ipex.apply,),
+     Ipex.agree: (Ipex.offer,),
+-    Ipex.grant: (Ipex.agree,),
++    Ipex.grant: (Ipex.apply, Ipex.agree),
+     Ipex.admit: (Ipex.grant,),
+     Ipex.spurn: (Ipex.apply, Ipex.offer, Ipex.agree, Ipex.grant),
+ }
+@@ -203,17 +204,13 @@
+     return _normalizeNestedStream(raw[:serder.size] + atc)
+ 
+ 
+-def _validSingleDagList(value, itemtype, *, allow_empty=False):
++def _validSingleDagList(value, itemtype):
+     """Validate one of the single-item list fields used by single-DAG IPEX.
+ 
+     Parameters:
+         value: Candidate wire value for a single-DAG field such as ``o`` or
+             ``ax``.
+         itemtype (type): Required Python type for each outer-list entry.
+-        allow_empty (bool): When True, ``[]`` is accepted in addition to a
+-            one-item list. This is used only for today's unanchored ``ax``
+-            behavior.
+-
+     Returns:
+         bool: True when ``value`` matches the current single-DAG wire shape,
+             False otherwise.
+@@ -224,15 +221,13 @@
+     if not isinstance(value, list):
+         return False
+ 
+-    # We currently only support one DAG (until Multi DAG), so at most one entry is allowed.
+-    # `allow_empty=True` is used only for today's unanchored `ax=[]` behavior;
+-    # every other caller requires exactly one entry in the outer list.
+-    if len(value) > 1 or (not allow_empty and len(value) != 1):
++    # We currently only support one DAG (until Multi DAG), so exactly one entry is required.
++    if len(value) != 1:
+         return False
+ 
+     # The inner item type differs by field:
+     # - `o` carries one origin SAID string
+-    # - `ax` carries zero or one booleans
++    # - `ax` carries one boolean
+     return all(isinstance(item, itemtype) for item in value)
+ 
+ 
+@@ -283,7 +278,8 @@
+     return True
+ 
+ 
+-def _sign(hab, serder, *, nests=None, gvrsn=None):
++def _sign(hab, serder, *, nests=None, anchor=False, endorsers=None,
++          anchorers=None, gvrsn=None):
+     """Sign and messagize an outer IPEX exchange with optional nested streams.
+ 
+     Parameters:
+@@ -291,6 +287,12 @@
+         serder (Serder): Outer exchange serder to sign.
+         nests (list[bytes | bytearray] | None): Optional nested substreams to
+             append in the outer attachment section.
++        anchor (bool): True creates a permitted KEL event sealing
++            ``serder.said`` and attaches its source-seal couple to the exchange.
++        endorsers (list[Hab] | None): Additional local habitats that sign the
++            same outer exchange as non-sender grantors (e.g proxy AIDs).
++        anchorers (list[Hab] | None): Additional local transferable habitats
++            whose KELs seal the same outer exchange.
+         gvrsn (Versionage | None): Optional CESR genus version override for the
+             attachment and nesting groups.
+ 
+@@ -301,21 +303,106 @@
+     gvrsn = gvrsn if gvrsn is not None else Vrsn_2_0
+     nests = nests if nests else None
+ 
+-    if hab.kever.prefixer.transferable:
+-        sigers = hab.sign(ser=serder.raw, indexed=True)
+-        tsgs = [(hab.kever.prefixer,
+-                 Number(sn=hab.kever.lastEst.s),
+-                 Diger(qb64=hab.kever.lastEst.d),
+-                 sigers)]
+-        return messagize(serder=serder,
+-                         tsgs=tsgs,
+-                         nests=nests,
+-                         framed=False,
+-                         gvrsn=gvrsn)
++    # Copy caller lists before filtering or iterating them.
++    endorsers = list(endorsers or [])
++    anchorers = list(anchorers or [])
+ 
+-    cigars = hab.sign(ser=serder.raw, indexed=False)
++    # Collect sender and non-sender source references together.
++    bonds = []
++
++    # Validate every additional Grant authentication habitat.
++    for endorser in endorsers + anchorers:
++
++        # Local signing requires access to the same hab
++        if endorser.db is not hab.db:
++            raise ValueError("additional grantors must belong to the sender's Habery")
++
++        # The sender is already authenticated separately
++        if endorser.pre == hab.pre:
++            raise ValueError("sender must not be repeated as an additional grantor")
++
++    if anchor:
++        # Only transferable identifiers can append the KEL event that carries the seal.
++        if not hab.kever.prefixer.transferable:
++            raise ValueError("anchored IPEX exchanges require a transferable sender")
++
++        kwa = dict(data=[dict(d=serder.said)],
++                   kind=hab.kever.serder.kind,
++                   version=hab.kever.serder.pvrsn,
++                   gvrsn=gvrsn)
++
++        anc = None
++        if hab.kever.estOnly:
++            # Establishment Only KELs reject interactions, so advance key state with a rotation.
++            anc = hab.rotate(**kwa)
++        else:
++            # Normal KELs use a cheaper interaction that leaves key state unchanged.
++            anc = hab.interact(**kwa)
++
++        aserder = _streamSerder(anc)
++
++        # Add the seal to the exchange's source-seal list
++        bonds.append(SealSource(s=aserder.snh, d=aserder.said))
++
++    # Create one explicit source seal for each additional anchorer.
++    for anchorer in anchorers:
++
++        # Non-transferable AIDs cannot create KEL anchors.
++        if not anchorer.kever.prefixer.transferable:
++            raise ValueError("anchored IPEX endorsements require transferable AIDs")
++
++        # Seal the immutable outer EXN SAID in the anchorer's KEL.
++        kwa = dict(data=[dict(d=serder.said)],
++                   kind=anchorer.kever.serder.kind,
++                   version=anchorer.kever.serder.pvrsn,
++                   gvrsn=gvrsn)
++
++        # Respect Establishment Only KEL policy when creating the seal.
++        anc = anchorer.rotate(**kwa) if anchorer.kever.estOnly else anchorer.interact(**kwa)
++
++        # Parse the emitted KEL event for attachment coordinates.
++        aserder = _streamSerder(anc)
++
++        # Explicitly name the non-sender anchorer in a source triple.
++        bonds.append(SealEvent(i=anchorer.pre, s=aserder.snh, d=aserder.said))
++
++    # Sign after anchoring so an Establishment Only rotation's new keys and lastEst are used.
++    # Collect transferable signature groups separately from cigars.
++    tsgs = []
++    cigars = []
++
++    # Sign the outer EXN with the sender's current key state.
++    if hab.kever.prefixer.transferable:
++        # Transferable senders produce indexed signatures.
++        sigers = hab.sign(ser=serder.raw, indexed=True)
++
++        # Bind those signatures to the sender's latest establishment event.
++        tsgs.append((hab.kever.prefixer,
++                     Number(sn=hab.kever.lastEst.s),
++                     Diger(qb64=hab.kever.lastEst.d),
++                     sigers))
++    else:
++        # Non-transferable senders authenticate with cigars.
++        cigars.extend(hab.sign(ser=serder.raw, indexed=False))
++
++    # Add each requested non-sender signature endorsement.
++    for endorser in endorsers:
++
++        # Transferable endorsers identify their current establishment state.
++        if endorser.kever.prefixer.transferable:
++            tsgs.append((endorser.kever.prefixer,
++                         Number(sn=endorser.kever.lastEst.s),
++                         Diger(qb64=endorser.kever.lastEst.d),
++                         endorser.sign(ser=serder.raw, indexed=True)))
++        else:
++            # Non-transferable endorsers contribute unindexed signatures.
++            cigars.extend(endorser.sign(ser=serder.raw, indexed=False))
++
++    # Serialize the EXN with all selected authentication factors and nests.
+     return messagize(serder=serder,
+-                     cigars=cigars,
++                     tsgs=tsgs or None,
++                     cigars=cigars or None,
++                     bonds=bonds or None,
+                      nests=nests,
+                      framed=False,
+                      gvrsn=gvrsn)
+@@ -324,6 +411,13 @@
+ class IpexHandler:
+     """Verify and handle the linear V2 IPEX `exn` workflow."""
+ 
++    # Receive validated sender source couples from Exchanger.
++    acceptsSscs = True
++    # Receive route-filtered non-sender evidence from Exchanger.
++    acceptsEvidence = True
++    # Share verified registry snapshots with the accepted-message handler.
++    acceptsVerificationContext = True
++
+     def __init__(self, resource, hby, notifier, rgy=None):
+         """Create a handler for one IPEX route.
+ 
+@@ -341,8 +435,13 @@
+         self.hby = hby
+         self.notifier = notifier
+         self.rgy = rgy
++        # Only Grant treats unresolved non-sender evidence as optional. Other
++        # IPEX verbs continue rejecting foreign evidence before persistence.
++        # Store this policy per route-specific handler instance.
++        self.acceptsMissingEvidence = resource == "/ipex/grant"
+ 
+-    def verify(self, serder, attachments=None, nests=None):
++    def verify(self, serder, attachments=None, nests=None, sscs=None,
++               evidence=None, verification=None):
+         """Validate the verb, prior link, and single-response rule.
+ 
+         Parameters:
+@@ -352,6 +451,11 @@
+             nests (list | None): Parsed V2 nested artifacts. In the current
+                 single-DAG workflow ``offer`` may carry a metadata DAG subset
+                 and ``grant`` may carry the final disclosed DAG.
++            sscs (list | None): Sender source-seal couples retained after KRAM.
++            evidence (tuple | None): Post-KRAM non-sender signature groups,
++                cigars, and source-seal triples accepted by ``verifyEvidence``.
++            verification (dict | None): Mutable per-message context used to
++                surface verified registry-state snapshots after acceptance.
+ 
+         Returns:
+             bool: True when the message is valid for the linear IPEX workflow,
+@@ -361,8 +465,14 @@
+             MissingChainError: When a grant's issuer-auth proof needs TEL
+                 evidence that is not yet available locally and the exchange
+                 should be retried from escrow later.
++            MissingSenderKeyStateError: When a required sender anchor refers
++                to KEL evidence that is not yet available locally.
+         """
+         nests = nests if nests is not None else []
++        sscs = sscs if sscs is not None else []
++
++        # Normalize absent supplemental evidence to an empty accepted set.
++        evidence = evidence if evidence is not None else ([], [], [])
+         q = serder.ked.get("q")
+         attrs = serder.ked["a"]
+         dig = serder.ked["p"]
+@@ -378,10 +488,10 @@
+ 
+         # Stage 1: every inbound IPEX message must at least carry an attrs map
+         # with a human message and a query/modifier map. `ax` is the only shared
+-        # optional list field and remains syntax-only for this ticket.
++        # optional list field.
+         if not isinstance(attrs, dict) or "m" not in attrs or not isinstance(q, dict):
+             return False
+-        if "ax" in attrs and not _validSingleDagList(attrs["ax"], bool, allow_empty=True):
++        if "ax" in attrs and not _validSingleDagList(attrs["ax"], bool):
+             return False
+ 
+         # Stage 2: apply/offer carry disclose-paths. The wire shape is now one
+@@ -421,6 +531,7 @@
+ 
+         # Stage 3: opener flows validate directly from the message itself,
+         # while replies must first resolve and validate their prior exchange.
++        pserder = None
+         if not dig:
+             if verb == Ipex.apply:
+                 # Apply is always a thread opener, so it must provide both
+@@ -437,10 +548,46 @@
+                 return False
+         elif verb == Ipex.apply:
+             return False
+-        elif not self._verifyReplyChain(verb=verb, serder=serder, dig=dig):
+-            return False
++        else:
++            # Retrieve prior serder
++            pserder = self._verifyReplyChain(verb=verb, serder=serder, dig=dig)
++            if pserder is None:
++                return False
+ 
+-        # Stage 4: offer may disclose only a reachable metadata subgraph,
++        # Stage 4: enforce the anchoring negotiation and verify direct sender
++        # KEL anchors on the messages that make the binding commitments.
++        messageAx = attrs.get("ax", [False])
++        messageRequiresAnchor = messageAx[0] is True
++        priorRequiresAnchor = False
++        if pserder is not None:
++            priorAx = pserder.ked.get("a", {}).get("ax", [False])
++            priorRequiresAnchor = priorAx[0] is True
++
++            if verb in (Ipex.agree, Ipex.grant, Ipex.admit):
++                # Binding replies must exactly preserve the negotiated state.
++                if messageRequiresAnchor != priorRequiresAnchor:
++                    return False
++            elif verb == Ipex.offer:
++                # An offer may initiate anchoring, but may not drop it.
++                if priorRequiresAnchor and not messageRequiresAnchor:
++                    return False
++
++        # Inherit anchoring when either the message or its prior requires it.
++        requiresAnchor = messageRequiresAnchor or priorRequiresAnchor
++
++        # Agree and Admit satisfy anchoring directly through their sender.
++        if verb in (Ipex.agree, Ipex.admit) and requiresAnchor:
++            # Anchored replies must carry a validated sender source couple.
++            if not sscs:
++                return False
++            # Verify the newest supplied sender source reference.
++            if not self._verifySourceAnchor(serder=serder,
++                                            aid=serder.pre,
++                                            number=sscs[-1][0],
++                                            diger=sscs[-1][1]):
++                return False
++
++        # Stage 5: offer may disclose only a reachable metadata subgraph,
+         # while grant must disclose one fully closed reachable DAG rooted at
+         # the message's `a.o[0]`.
+         if verb == Ipex.offer and nests:
+@@ -453,13 +600,132 @@
+             if not self._verifyGraphSemantics(nodes=walked[0], order=walked[1]):
+                 return False
+ 
+-            # Stage 5: after the disclosed graph shape is accepted, each walked
++            # Stage 6: after the disclosed graph shape is accepted, each walked
+             # registry-backed node must vet its own node-local proof group.
+-            if not self._verifyIssuerAuthGraph(nodes=walked[0], order=walked[1]):
++            issuerStates = {}
++            if not self._verifyIssuerAuthGraph(nodes=walked[0], order=walked[1],
++                                               states=issuerStates):
+                 return False
+ 
++            # Require Exchanger's fixed three-part evidence result.
++            try:
++                extraTsgs, extraCigars, extraSeals = evidence
++            except (TypeError, ValueError):
++                return False
++
++            # The KRAM-authenticated sender is always a Grantor.
++            grantors = {serder.pre}
++            # Add Grantors with accepted transferable endorsements.
++            grantors.update(prefixer.qb64 for prefixer, _, _, _ in extraTsgs)
++            # Add Grantors with accepted non-transferable endorsements.
++            grantors.update(cigar.verfer.qb64 for cigar in extraCigars)
++            # Add Grantors with accepted direct KEL anchors.
++            grantors.update(prefixer.qb64 for prefixer, _, _ in extraSeals)
++
++            # Verify every presentation registry declared across the DAG.
++            presentationStates = {}
++            tethered = self._verifyPresentationAuthGraph(
++                serder=serder,
++                nodes=walked[0],
++                order=walked[1],
++                grantors=grantors,
++                states=presentationStates,
++            )
++
++            # Reject any malformed, missing, or invalid presentation factor.
++            if tethered is None:
++                return False
++
++            # A truthy ax requires one permitted Grant anchorer.
++            if requiresAnchor:
++                # Resolve the origin ACDC named by the Grant.
++                origin = walked[0][attrs["o"][0]]
++                origin = origin["serder"] if isinstance(origin, dict) else origin.serder
++
++                # Presentation registries authenticate their controlling Issuees.
++                anchorers = set(tethered)
++
++                # Count a valid direct sender anchor when supplied.
++                if sscs and self._verifySourceAnchor(serder=serder,
++                                                     aid=serder.pre,
++                                                     number=sscs[-1][0],
++                                                     diger=sscs[-1][1]):
++                    anchorers.add(serder.pre)
++
++                # Check each accepted non-sender source seal.
++                for prefixer, number, diger in extraSeals:
++                    if self._verifySourceAnchor(serder=serder,
++                                                aid=prefixer.qb64,
++                                                number=number,
++                                                diger=diger):
++                        # Record the AID whose KEL actually seals this Grant.
++                        anchorers.add(prefixer.qb64)
++
++                # Default IPEX policy deliberately stops at these three AIDs;
++                # credential-specific policy may impose a narrower requirement.
++                # Restrict default qualification to sender, Issuee, or issuer.
++                candidates = (serder.pre, origin.iseaid, origin.israid)
++
++                # Require at least one qualifying authenticated anchorer.
++                if not any(aid and aid in anchorers for aid in candidates):
++                    return False
++
++            # Surface verified snapshots only after all Grant checks pass.
++            if verification is not None:
++                verification["issuerStates"] = issuerStates
++                verification["presentationStates"] = presentationStates
++
+         return True
++
++    def _verifySourceAnchor(self, serder, aid, number, diger):
++        """Verify one source reference against the anchorer's current Kever."""
++
++        # Resolve the anchorer's verified current key state.
++        kever = self.hby.db.kevers.get(aid)
++        # Missing key state is retryable after KEL retrieval.
++        if kever is None:
++            raise MissingSenderKeyStateError(f"missing current key state for {aid}")
++
++        # Compare the source reference with the current establishment state.
++        lastEst = kever.lastEst
++        # Reject references older than the current key state.
++        if number.sn < lastEst.s:
++            return False
++        # Require an exact SAID at the current establishment sequence number.
++        if number.sn == lastEst.s and diger.qb64 != lastEst.d:
++            return False
+ 
++        # Resolve the referenced event from the anchorer's accepted KEL.
++        prefix = aid.encode("utf-8")
++        eventSaid = self.hby.db.kels.getLast(keys=prefix, on=number.sn)
++
++        # A missing event can become verifiable after KEL retrieval.
++        if eventSaid is None:
++            raise MissingSenderKeyStateError(
++                f"missing KEL event at sn={number.sn} for {aid}")
++        # Reject a digest that does not match the accepted event at this SN.
++        if eventSaid != diger.qb64:
++            return False
++
++        # Load the event body needed to inspect its seals.
++        event = self.hby.db.evts.get(keys=(prefix, diger.qb64b))
++        # Treat a missing accepted event body as retryable KEL evidence.
++        if event is None:
++            raise MissingSenderKeyStateError(
++                f"missing KEL event body at sn={number.sn} for {aid}")
++        # References after lastEst must name interaction events.
++        if number.sn > lastEst.s and event.ilk != Ilks.ixn:
++            return False
++
++        # Inspect every event seal for the outer IPEX SAID.
++        for seal in event.seals or []:
++            # Accept only a mapping that anchors this exact message.
++            if isinstance(seal, Mapping) and seal.get("d") == serder.said:
++                return True
++
++        # Reject a valid KEL event that does not anchor this message.
++        return False
++
+     def _validNodeNest(self, origin, nests):
+         """Validate disclosed node nests and index them by ACDC SAID.
+ 
+@@ -500,40 +766,40 @@
+             dig (str): SAID of the prior message named by ``serder.ked["p"]``.
+ 
+         Returns:
+-            bool: True when the reply points to an allowed prior message, keeps
+-                sender/receiver roles consistent, and does not duplicate an
+-                existing response; False otherwise.
++            Serder | None: The accepted prior when the reply points to an
++                allowed message, keeps sender/receiver roles consistent, and
++                does not duplicate an existing response; otherwise None.
+         """
+         pserder, _ = cloneMessage(self.hby, said=dig)
+         if pserder is None:
+-            return False
++            return None
+ 
+         # Replies must point at the allowed prior verb in the linear IPEX chain.
+         proute = pserder.ked["r"]
+         pparts = proute.split("/")
+         if len(pparts) != 3 or pparts[:2] != ["", "ipex"]:
+-            return False
++            return None
+         pverb = pparts[2]
+         if pverb not in PreviousRoutes[verb]:
+-            return False
++            return None
+         if verb == Ipex.spurn and pverb == Ipex.grant and pserder.ked.get("p", ""):
+-            return False
++            return None
+ 
+         # Replies must target the prior sender and come from the prior receiver
+         if serder.ked.get("ri", "") != pserder.ked.get("i", ""):
+-            return False
++            return None
+         preceiver = pserder.ked.get("ri", "")
+         if not preceiver:
+-            return False
++            return None
+         if serder.ked.get("i", "") != preceiver:
+-            return False
++            return None
+         if serder.ked.get("x", "") != pserder.ked.get("x", ""):
+-            return False
++            return None
+ 
+         if self.response(pserder) is not None:
+-            return False
++            return None
+ 
+-        return True
++        return pserder
+ 
+     def _walkGraph(self, origin, nests, *, closed):
+         """Walk the disclosed origin DAG and return the visited node order.
+@@ -865,7 +1131,7 @@
+ 
+         return True
+ 
+-    def _verifyIssuerAuthGraph(self, nodes, order):
++    def _verifyIssuerAuthGraph(self, nodes, order, states=None):
+         """Verify issuer-auth proof groups for each walked disclosed DAG node.
+ 
+         Parameters:
+@@ -873,127 +1139,528 @@
+             order (list): Breadth-first walk order returned by ``_walkGraph``.
+ 
+         Returns:
+-            bool: True when every walked node either has no registry binding or
+-                vets successfully against its node-local proof group.
++            bool: True when every walked node has a valid issuer registry,
++                direct KEL anchor, or current issuer signature factor.
+ 
+         Raises:
+-            MissingChainError: When a registry-backed node names TEL evidence
++            MissingChainError: When an issuer factor names KEL or TEL evidence
+                 that the verifier has not loaded locally yet.
+         """
+         # Run proof verification in graph order so each registry-backed node is
+         # checked against the exact nested substream that carried its body.
+         for said in order:
++
++            # Resolve the node-local body and attachments.
+             nest = nodes[said]
++
++            # Read the ACDC body from either parsed representation.
+             nserder = nest["serder"] if isinstance(nest, dict) else nest.serder
+-            if not self._verifyIssuerAuthNode(serder=nserder, nest=nest):
++
++            # Require one valid issuer authentication factor per node.
++            if not self._verifyIssuerAuthNode(serder=nserder, nest=nest,
++                                              states=states):
+                 return False
+ 
++        # Every disclosed node passed issuer authentication.
+         return True
+ 
+-    def _verifyIssuerAuthNode(self, serder, nest):
+-        """Verify the issuer-auth proof carried on one disclosed ACDC node.
++    def _verifyIssuerAuthNode(self, serder, nest, states=None):
++        """Verify one ACDC using its declared issuer authentication factor."""
+ 
+-        This hook only applies to registry-backed credentials. When the ACDC
+-        body has a top-level ``rd`` field, that field names the registry whose
+-        TEL history must authenticate the node. The proof material is expected
+-        to live on the same nested substream as the ACDC body. 
+-        In other words, one disclosed DAG node is:
++        # Authentication Factor 1: Registry
++        # First check if a registry was declared, if so verify it
++        regk = serder.sad.get("rd")
++        if regk:
++            record = self._vetRegistry(regk=regk,
++                                       proofs=self._blindProofs(nest),
++                                       target=serder.said,
++                                       acdc=serder)
++            if record is None:
++                return False
++            if states is not None:
++                states[serder.said] = record
++            return True
+ 
+-        ``ACDC body + that node's issuer-auth attachment group``
++        # An inner rd without a top-level rd selects the unsupported hidden
++        # issuer-registry form; it must not fall through to another factor.
++        if self._presentationRegistries(serder) is None:
++            return False
+ 
+-        Workflow:
+-            1. Read ``rd`` from the ACDC body. If there is no ``rd``, this node
+-               is not registry-backed and there is nothing to vet here.
+-            2. Read the node-local blind proof group (`bsqs` or `bsss`) from the
+-               parsed nest and normalize the parsed tuples back into the crew
+-               shape expected by ``Blinder``.
+-            3. Require exactly one blinded state proof for this node's registry
+-               root event. Missing or multiple proofs fail closed.
+-            4. Load the registry inception event and subsequent TEL updates from
+-               the local ``Regery`` store.
+-            5. Call ``regeventing.vet(...)`` with the ACDC, the disclosed blind
+-               proof, and the persisted TEL evidence so registry anchoring and
+-               ACDC binding are checked in one place.
++        # Authentication Factor 2: Seal Anchor
++        # Registry-less ACDCs must identify a direct issuer AID.
++        issuer = serder.israid
+ 
+-        Parameters:
+-            serder (Serder): The disclosed ACDC node being verified.
+-            nest (dict | object): The parsed nested substream that carried the
+-                node. It must expose any attached blind proof groups as ``bsqs``
+-                or ``bsss``.
++        # Reject a credential with no issuer authentication identity.
++        if not issuer:
++            return False
+ 
+-        Returns:
+-            bool: ``True`` when the node is either not registry-backed or its
+-            node-local proof vets successfully against TEL evidence already
+-            loaded in the verifier's injected local ``Regery`` store; ``False``
+-            when the node's proof is permanently invalid for this ACDC or the
+-            handler was not configured with verifier-side registry access.
++        # Parse the issuer identifier before processing attachments.
++        try:
++            prefixer = Prefixer(qb64=issuer)
++        except Exception:
++            return False
+ 
+-        Raises:
+-            MissingChainError: When the verifier is still missing retryable TEL
+-                evidence, such as the registry inception, a later update, or an
+-                anchor that has not replicated yet.
+-        """
+-        regk = serder.sad.get("rd")
+-        if regk:
+-            # Registry-backed ACDCs must carry their proof group on the node's own
+-            # nest so issuer-auth evidence travels with the ACDC it authenticates.
+-            bsqs = nest.get("bsqs", []) if isinstance(nest, dict) else nest.bsqs
+-            bsss = nest.get("bsss", []) if isinstance(nest, dict) else nest.bsss
++        # Normalize object and dictionary nest representations.
++        parsed = nest if isinstance(nest, dict) else nest.__dict__
+ 
+-            # The parser gives us primitive tuples. Rebuild those as the
+-            # canonical BlindState / BoundState data records before handing
+-            # them back to Blinder.
+-            proofs = []
+-            for proof in bsqs:
+-                data = proof if isinstance(proof, BlindState) else BlindState(*proof)
+-                proofs.append(Blinder(data=data))
++        # Check for any Seal anchor attachments that may be supplied by the issuer.
++        # Convert issuer-implied source couples into explicit triples.
++        sourceSeals = [(prefixer, number, diger)
++                       for number, diger in parsed.get("sscs", [])]
+ 
+-            for proof in bsss:
+-                data = proof if isinstance(proof, BoundState) else BoundState(*proof)
+-                proofs.append(Blinder(data=data))
++        # Keep only explicit source triples from the issuer.
++        sourceSeals.extend((sealer, number, diger)
++                           for sealer, number, diger in parsed.get("ssts", [])
++                           if sealer.qb64 == issuer)
+ 
+-            # The proof group must disclose exactly one blinded state for the registry's root event.
+-            if len(proofs) != 1:
+-                return False
++        # A supplied issuer seal selects anchor authentication.
++        if sourceSeals:
++            # Verify every candidate seal against local issuer KEL evidence.
++            _, _, validSeals, _, missing = verifyAttachments(
++                hby=self.hby,
++                serder=serder,
++                sourceSeals=sourceSeals,
++            )
++            # Missing KEL evidence makes this node retryable.
++            if missing:
++                raise MissingChainError(
++                    f"missing issuer KEL evidence for ACDC {serder.said}")
+ 
+-            # IPEX verification assumes the disclosee has already learned the
+-            # foreign TEL chain, for example by retrieving it from observers
+-            # before processing the grant, and the app injects that local
+-            # registry store into the handler up front.
+-            if self.rgy is None:
+-                return False
++            # A supplied issuer anchor is the selected factor. An invalid anchor
++            # must not silently downgrade the ACDC to signature authentication.
++            return bool(validSeals)
+ 
+-            rip = self.rgy.store.seqEvent(regk, 0)
+-            head = self.rgy.store.headEvent(regk)
+-            if rip is None or head is None:
+-                raise MissingChainError(f"missing local TEL evidence for registry {regk}")
++        # Authentication Factor 3: Signatures
++        # Fall back to signature verification when no registry or anchor is supplied
++        tsgs = []
+ 
+-            updates = []
+-            for sn in range(1, Number(numh=head.sad["n"]).num + 1):
+-                if not (update := self.rgy.store.seqEvent(regk, sn)):
+-                    raise MissingChainError(f"missing local TEL update {sn} for registry {regk}")
+-                updates.append(update)
++        # Resolve the issuer's current key state.
++        kever = self.hby.db.kevers.get(issuer)
+ 
+-            from . import regeventing
+-            try:
+-                regeventing.vet(rip=rip,
+-                                updates=updates,
+-                                db=self.hby.db,
+-                                acdc=serder,
+-                                blinder=proofs[0])
+-            # Missing anchors mean the local verifier does not yet know enough
+-            # to conclude; keep the grant retryable instead of dropping it.
+-            except MissingAnchorError as ex:
+-                raise MissingChainError(f"registry {regk} is missing anchored TEL evidence") from ex
+-            # Named vet refusals are permanent: the disclosed node and its proof
+-            # do not match the registry evidence the verifier already has.
+-            except (MisdigestError, MissequenceError, MisregistryError,
+-                    MisanchorError, RootSealError, MisbindingError,
+-                    DuplicitousRegistryError, UnverifiedBlindError):
+-                return False
++        # Read bare indexed signatures from the node stream.
++        sigers = parsed.get("sigers", [])
+ 
+-        return True
++        # Keep explicit signature groups belonging to the issuer.
++        issuerTsgs = [tsg for tsg in parsed.get("tsgs", [])
++                      if tsg[0].qb64 == issuer]
+ 
++        # Keep last-establishment groups belonging to the issuer.
++        issuerLsgs = [lsg for lsg in parsed.get("lsgs", [])
++                      if lsg[0].qb64 == issuer]
++
++        # Transferable evidence must resolve against current issuer keys.
++        if prefixer.transferable and (sigers or issuerTsgs or issuerLsgs):
++
++            # Missing current state makes signature verification retryable.
++            if kever is None:
++                raise MissingChainError(
++                    f"missing current issuer key state for ACDC {serder.said}")
++
++            # Build the current establishment coordinates once.
++            number = Number(sn=kever.lastEst.s)
++            diger = Diger(qb64=kever.lastEst.d)
++
++            # Bind bare signatures to the current issuer state.
++            if sigers:
++                tsgs.append((prefixer, number, diger, sigers))
++
++            # Keep explicit groups that already name the current state.
++            tsgs.extend(tsg for tsg in issuerTsgs
++                        if tsg[1].sn == kever.lastEst.s
++                        and tsg[2].qb64 == kever.lastEst.d)
++
++            # Resolve last-establishment groups to the current state.
++            tsgs.extend((sealer, number, diger, lsigers)
++                        for sealer, lsigers in issuerLsgs)
++
++        # Keep only non-transferable signatures made by the issuer.
++        cigars = [cigar for cigar in parsed.get("cigars", [])
++                  if cigar.verfer.qb64 == issuer]
++
++        # Cryptographically verify all selected issuer signatures.
++        validTsgs, validCigars, _, _, missing = verifyAttachments(
++            hby=self.hby,
++            serder=serder,
++            tsgs=tsgs,
++            cigars=cigars,
++        )
++        # Missing establishment events make verification retryable.
++        if missing:
++            raise MissingChainError(
++                f"missing current issuer KEL evidence for ACDC {serder.said}")
++
++        # Require at least one valid current issuer signature.
++        return bool(validTsgs or validCigars)
++
++    @staticmethod
++    def _blindProofs(nest):
++        """Rebuild all parsed node-local blind disclosures as Blinders."""
++        # Read sequenced blind disclosures from the parsed node.
++        bsqs = nest.get("bsqs", []) if isinstance(nest, dict) else nest.bsqs
++
++        # Read bound blind disclosures from the parsed node.
++        bsss = nest.get("bsss", []) if isinstance(nest, dict) else nest.bsss
++
++        # Rebuild each sequenced disclosure as a BlindState proof.
++        proofs = []
++        for proof in bsqs:
++            stream = b''.join(item.qb64b for item in proof)
++            proofs.append(Blinder(clan=BlindState, qb64=stream))
++
++        # Rebuild each bound disclosure as a BoundState proof.
++        for proof in bsss:
++            stream = b''.join(item.qb64b for item in proof)
++            proofs.append(Blinder(clan=BoundState, qb64=stream))
++
++        # Return every proof attached to this one ACDC node.
++        return proofs
++
++    def _registryEvidence(self, regk):
++        """Load one complete accepted TEL chain from the injected store."""
++        # Registry verification requires an injected local Regery.
++        if self.rgy is None:
++            return None
++
++        # Load the registry inception and current accepted head.
++        rip = self.rgy.store.seqEvent(regk, 0)
++        head = self.rgy.store.headEvent(regk)
++
++        # Missing either of them mean the local TEL chain is incomplete.
++        if rip is None or head is None:
++            raise MissingChainError(f"missing local TEL evidence for registry {regk}")
++
++        # Rebuild the contiguous accepted update chain in sequence order.
++        updates = []
++        for sn in range(1, Number(numh=head.sad["n"]).num + 1):
++
++            # Load the accepted event at this sequence number.
++            update = self.rgy.store.seqEvent(regk, sn)
++
++            # A sequence gap must be retrieved before retrying.
++            if update is None:
++                raise MissingChainError(f"missing local TEL update {sn} for registry {regk}")
++
++            # Preserve this contiguous update for TEL verification.
++            updates.append(update)
++
++        # Return the complete local chain.
++        return rip, updates
++
++    def _vetRegistry(self, regk, proofs, target, controller=None, acdc=None,
++                     cutoff=None, sourceSeals=None, requireSource=False):
++        """Vet one issuer or presentation registry using matching BLIDs."""
++
++        # Require disclosed proofs and a locally available TEL chain.
++        if not proofs or (evidence := self._registryEvidence(regk)) is None:
++            return None
++
++        # Import lazily to avoid the ACDC module cycle.
++        from . import regeventing
++        try:
++            # Resolve node-local source triples into exact TEL anchor claims.
++            sources = {}
++            unresolved = False
++            if requireSource:
++                for prefixer, number, diger in sourceSeals or []:
++                    if prefixer.qb64 != controller:
++                        continue
++
++                    # Resolve the claimed source event from the Issuee's KEL.
++                    eventSaid = self.hby.db.kels.getLast(
++                        keys=prefixer.qb64b, on=number.sn)
++                    if eventSaid is None:
++                        unresolved = True
++                        continue
++
++                    # A known different event makes this source claim invalid.
++                    if eventSaid != diger.qb64:
++                        continue
++
++                    # The event body may arrive after its KEL coordinate is known.
++                    event = self.hby.db.evts.get(
++                        keys=(prefixer.qb64b, diger.qb64b))
++                    if event is None:
++                        unresolved = True
++                        continue
++
++                    # Match the source only to TEL events it actually seals.
++                    for update in evidence[1]:
++                        if regeventing._verifyAnchorCouple(
++                                update,
++                                db=self.hby.db,
++                                issuer=controller,
++                                number=number,
++                                diger=diger):
++                            sources[update.said] = diger.qb64
++
++                # An unavailable attached source is retryable after KEL retrieval.
++                if not sources and unresolved:
++                    raise MissingChainError(
++                        f"missing presentation anchor source for registry {regk}")
++
++            # Verify the TEL and its latest disclosed target binding.
++            record = regeventing.vetBinds(rip=evidence[0],
++                                          updates=evidence[1],
++                                          db=self.hby.db,
++                                          blinders=proofs,
++                                          target=target,
++                                          controller=controller,
++                                          acdc=acdc,
++                                          cutoff=cutoff,
++                                          sources=sources,
++                                          requireSource=requireSource)
++
++            # Require the vetted chain to be the registry named by the ACDC.
++            if record.regid != regk:
++                raise MisregistryError(
++                    f"verified registry {record.regid} does not match "
++                    f"declared registry {regk}")
++
++            return record
++
++        # Missing KEL anchors can be resolved by later evidence retrieval.
++        except MissingAnchorError as ex:
++            raise MissingChainError(f"registry {regk} is missing anchored TEL evidence") from ex
++
++        # An unresolved attached source may later prove the selected binding.
++        except MisanchorError as ex:
++            if requireSource and unresolved:
++                raise MissingChainError(
++                    f"missing presentation anchor source for registry {regk}") from ex
++            return None
++
++        # Structurally invalid or misbound TEL evidence fails permanently.
++        except (MisdigestError, MissequenceError, MisregistryError,
++                RootSealError, MisbindingError, DuplicitousRegistryError,
++                UnverifiedBlindError):
++            return None
++
++    @staticmethod
++    def _presentationRegistries(serder):
++        """Extract disclosed issuee/presentation-registry declarations.
++
++        Return ``None`` for an unsupported hidden issuer registry or when a
++        registry-backed ACDC hides an attribute or aggregate element that could
++        contain a presentation requirement. A verifier cannot distinguish an
++        omitted requirement from an undisclosed one using only its digest.
++        """
++        if not serder.sad.get("rd"):
++            # A disclosed inner rd without top-level rd is an unsupported
++            # hidden issuer registry, not a presentation registry.
++            attribute = serder.sad.get("a")
++            if isinstance(attribute, Mapping) and attribute.get("rd"):
++                return None
++
++            # Apply the same rule to disclosed aggregate entries.
++            aggregate = serder.sad.get("A")
++            sections = aggregate[1:] if isinstance(aggregate, list) else [aggregate]
++            if any(isinstance(section, Mapping) and section.get("rd")
++                   for section in sections):
++                return None
++
++            # A genuinely registry-less ACDC has no presentation declaration.
++            return []
++
++        # Collect disclosed sections that may declare Issuee registry pairs.
++        sections = []
++
++        # Inspect the attribute section first.
++        attribute = serder.sad.get("a")
++
++        # A blinded attribute section may hide a required declaration.
++        if isinstance(attribute, str):
++            return None
++
++        # Keep a disclosed attribute mapping for declaration scanning.
++        if isinstance(attribute, Mapping):
++            sections.append(attribute)
++
++        # Inspect aggregate sections for additional Issuees.
++        aggregate = serder.sad.get("A")
++
++        # A blinded aggregate may hide a required declaration.
++        if isinstance(aggregate, str):
++            return None
++
++        # Skip the aggregate root and inspect its disclosed entries.
++        if isinstance(aggregate, list):
++
++            # Every inspected aggregate entry must be a mapping.
++            if any(not isinstance(section, Mapping) for section in aggregate[1:]):
++                return None
++            sections.extend(aggregate[1:])
++
++        # Support the single disclosed aggregate mapping form.
++        elif isinstance(aggregate, Mapping):
++            sections.append(aggregate)
++
++        # Preserve unique Issuee and registry declarations in wire order.
++        declarations = []
++        for section in sections:
++
++            # Read the presentation registry and its controlling Issuee.
++            regk = section.get("rd")
++            issuee = section.get("i")
++
++            # Ignore sections that do not declare the complete pair.
++            if not regk or not issuee:
++                continue
++
++            # Validate both identifiers before trusting the declaration.
++            try:
++                Saider(qb64=regk)
++                Prefixer(qb64=issuee)
++            except Exception:
++                return None
++
++            # Deduplicate declarations repeated across disclosed sections.
++            if (issuee, regk) not in declarations:
++                declarations.append((issuee, regk))
++
++        # Return every explicit presentation requirement.
++        return declarations
++
++    def _verifyPresentationAuthGraph(self, serder, nodes, order, grantors,
++                                     states=None):
++        """Verify every presentation registry in the DAG."""
++
++        required = []
++
++        # Walk the already validated DAG in deterministic order.
++        for said in order:
++
++            # Resolve this node and its attached proof stream.
++            nest = nodes[said]
++
++            # Read the ACDC body from either parsed representation.
++            acdc = nest["serder"] if isinstance(nest, dict) else nest.serder
++
++            # Extract this node's Issuee registry declarations.
++            declarations = self._presentationRegistries(acdc)
++
++            # Reject hidden or malformed declarations.
++            if declarations is None:
++                return None
++
++            # Bind each declaration to this node's local proofs.
++            for issuee, regk in declarations:
++                # The declaration is the issuer's signal that this Issuee must
++                # authenticate the grant through this node-local registry.
++                required.append((said, issuee, regk, nest))
++
++        # Load the receiver timestamp that freezes registry history.
++        cache = self.hby.db.kramTMSC.get(
++            keys=(serder.pre, serder.ked.get("x", ""), serder.said))
++
++        # A presentation requirement needs a completed KRAM acceptance.
++        if required and (cache is None or not cache.rdt):
++            return None
++
++        # Collect Issuees authenticated through presentation registries.
++        tethered = set()
++
++        # Vet every declared registry independently.
++        for said, issuee, regk, nest in required:
++            # A registry supplements, but never replaces, a Grant endorsement.
++            if issuee not in grantors:
++                return None
++
++            # Resolve the latest disclosed binding as of KRAM acceptance.
++            sourceSeals = nest.get("ssts", []) if isinstance(nest, dict) else nest.ssts
++            record = self._vetRegistry(regk=regk,
++                                       proofs=self._blindProofs(nest),
++                                       target=serder.said,
++                                       controller=issuee,
++                                       cutoff=cache.rdt,
++                                       sourceSeals=sourceSeals,
++                                       requireSource=True)
++
++            # Require a valid binding anchored before the KRAM-accepted send.
++            if record is None:
++                return None
++
++            # Preserve this registry snapshot for downstream policy.
++            if states is not None:
++                states[(said, issuee, regk)] = record
++
++            # Record the Issuee authenticated by this registry.
++            tethered.add(issuee)
++
++        # Return all presentation-authenticated Issuees.
++        return tethered
++
++    def verifyEvidence(self, serder, *, tsgs=None, cigars=None, sourceSeals=None,
++                       invalid=False, missing=None):
++        """Select verified non-sender evidence accepted by this IPEX route.
++
++        Exchanger first removes cryptographically invalid attachments.  Grants
++        then apply the stricter IPEX freshness rule against each endorser's
++        current Kever and prefer a valid seal over signatures from the same AID.
++        Grants drop unresolved optional evidence after Exchanger requests the
++        missing KEL. Other verbs reject foreign, invalid, or unresolved evidence.
++        """
++        # Normalize optional evidence collections for filtering.
++        tsgs = tsgs if tsgs is not None else []
++        cigars = cigars if cigars is not None else []
++        sourceSeals = sourceSeals if sourceSeals is not None else []
++
++        # Keep unresolved coordinates distinct from invalid attachments.
++        missing = missing if missing is not None else []
++
++        # Derive the policy branch from the concrete IPEX route.
++        verb = serder.ked["r"].rsplit("/", 1)[-1]
++
++        # Only Grant accepts supplemental grantor evidence.
++        if verb == Ipex.grant:
++            # Collect endorsements tied to current endorser key states.
++            freshTsgs = []
++            for prefixer, number, diger, sigers in tsgs:
++                # Resolve the endorser's current verified state.
++                kever = self.hby.db.kevers.get(prefixer.qb64)
++                # Require exact current establishment coordinates.
++                if (kever is not None
++                        and number.sn == kever.lastEst.s
++                        and diger.qb64 == kever.lastEst.d):
++                    # Preserve this current transferable endorsement.
++                    freshTsgs.append((prefixer, number, diger, sigers))
++
++            # Collect source seals valid against current anchorer state.
++            freshSeals = []
++            for prefixer, number, diger in sourceSeals:
++                # Resolve the anchorer's current verified state.
++                kever = self.hby.db.kevers.get(prefixer.qb64)
++                # Drop unknown anchorers and stale references.
++                if kever is None or number.sn < kever.lastEst.s:
++                    continue
++                # Current establishment references must match lastEst.
++                if number.sn == kever.lastEst.s:
++                    if diger.qb64 != kever.lastEst.d:
++                        continue
++                else:
++                    # Later references may only name interaction events.
++                    event = self.hby.db.evts.get(keys=(prefixer.qb64b, diger.qb64b))
++                    if event is None or event.ilk != Ilks.ixn:
++                        continue
++                # Preserve this fresh source reference.
++                freshSeals.append((prefixer, number, diger))
++
++            # A valid current seal is the stronger factor for an AID, so do not
++            # retain a redundant signature endorsement from that same AID.
++            sealers = {prefixer.qb64 for prefixer, _, _ in freshSeals}
++            freshTsgs = [tsg for tsg in freshTsgs if tsg[0].qb64 not in sealers]
++            freshCigars = [cigar for cigar in cigars
++                           if cigar.verfer.qb64 not in sealers]
++
++            # Return only verified factors; unresolved extras are dropped.
++            return freshTsgs, freshCigars, freshSeals
++
++        # Reject supplemental evidence on every non-Grant IPEX verb.
++        if tsgs or cigars or sourceSeals or invalid or missing:
++            return None
++
++        # Accept an evidence-free non-Grant message.
++        return [], [], []
++
+     def response(self, serder):
+         """Look up the recorded response to a prior IPEX exchange.
+ 
+@@ -1011,7 +1678,8 @@
+ 
+         return None
+ 
+-    def handle(self, serder, attachments=None, nests=None):
++    def handle(self, serder, attachments=None, nests=None, sscs=None,
++               verification=None):
+         """Emit a notifier record for an accepted IPEX message.
+ 
+         Parameters:
+@@ -1020,18 +1688,37 @@
+                 current notifier path.
+             nests (list | None): Parsed V2 nested artifacts, unused by the
+                 notifier path.
++            sscs (list | None): Sender source-seal couples, unused after verify.
++            verification (dict | None): Verified registry snapshots produced
++                while authenticating this accepted Grant.
+ 
+         Returns:
+             None
+         """
+         attrs = serder.ked["a"]
+-        self.notifier.add(attrs=dict(
++        notice = dict(
+             r=f"/exn{serder.ked['r']}",
+             d=serder.said,
+             m=attrs["m"],
+-        ))
++        )
+ 
+-def apply(hab, recp, message, modifiers=None, attrs=None, dt=None, kind=None, gvrsn=None):
++        # Surface issuer lifecycle snapshots without applying authorization.
++        issuerStates = (verification or {}).get("issuerStates", {})
++        if issuerStates:
++            notice["issuerStates"] = [dict(node=said, **record._asdict())
++                                      for said, record in issuerStates.items()]
++
++        # Keep Grant-presentation snapshots separate from ACDC lifecycle state.
++        presentationStates = (verification or {}).get("presentationStates", {})
++        if presentationStates:
++            notice["presentationStates"] = [
++                dict(node=said, issuee=issuee, **record._asdict())
++                for (said, issuee, _), record in presentationStates.items()
++            ]
++
++        self.notifier.add(attrs=notice)
++
++def apply(hab, recp, message, modifiers=None, attrs=None, dt=None, kind=None, gvrsn=None, *, ax=None):
+     """Create a signed V2 IPEX ``apply`` exchange.
+ 
+     Parameters:
+@@ -1045,6 +1732,8 @@
+         modifiers (dict | None): Query-section fields for ``q``. ``apply``
+             requires an explicit single-DAG disclosure plan at
+             ``modifiers["dp"]``.
++        ax (list[bool] | None): Single-DAG anchoring requirement. None omits
++            the field; otherwise exactly one boolean is required.
+ 
+     Returns:
+         tuple[Serder, bytearray]: Outer exchange serder and detached attachment
+@@ -1057,6 +1746,10 @@
+         raise TypeError("attrs must be a dict when provided")
+ 
+     data = dict(attrs) if attrs is not None else {}
++
++    # ax should be passed as a separate parameter, not in the attrs
++    if "ax" in data:
++        raise ValueError("use the ax parameter instead of attrs['ax']")
+     data["m"] = message
+     mods = dict(modifiers) if modifiers else {}
+ 
+@@ -1065,9 +1758,11 @@
+             or not _validDisclosurePath(mods["dp"][0])):
+         raise ValueError("modifiers['dp'] is required and must carry one disclose-path list per DAG")
+ 
+-    # Validate ax field, must be a list of booleans, is allowed to be empty
+-    if "ax" in data and not _validSingleDagList(data["ax"], bool, allow_empty=True):
+-        raise ValueError("attrs['ax'] must be [] or a one-item list of booleans")
++    # Validate ax and add it to the body
++    if ax is not None:
++        if not _validSingleDagList(ax, bool):
++            raise ValueError("ax must be a one-item list of booleans")
++        data["ax"] = ax
+ 
+     # Build the body
+     serder = exchange(
+@@ -1093,7 +1788,7 @@
+ 
+ 
+ def offer(hab, message, origin, artifacts=None, apply=None, recp=None, dt=None,
+-          kind=None, gvrsn=None, modifiers=None, attrs=None):
++          kind=None, gvrsn=None, modifiers=None, attrs=None, *, ax=None):
+     """Create a signed V2 IPEX ``offer`` exchange.
+ 
+     Parameters:
+@@ -1115,6 +1810,8 @@
+         gvrsn (Versionage | None): Optional CESR genus version override.
+         modifiers (dict | None): Optional query-section fields for ``q``.
+         attrs (dict | None): Optional extra payload fields.
++        ax (list[bool] | None): Single-DAG anchoring requirement. None omits
++            the field; otherwise exactly one boolean is required.
+ 
+     Returns:
+         tuple[Serder, bytearray]: Outer exchange serder and detached attachment
+@@ -1144,6 +1841,8 @@
+         else:
+             xid = ""
+     data = dict(attrs) if attrs is not None else {}
++    if "ax" in data:
++        raise ValueError("use the ax parameter instead of attrs['ax']")
+     data["m"] = message
+ 
+     # Retrieve dp from modifiers if present. When the offer answers an apply,
+@@ -1165,10 +1864,24 @@
+     if apply is None and not mods["dp"][0]:
+         raise ValueError("offer-first modifiers['dp'] must include at least one disclosure-path entry")
+ 
+-    # Validate the ax field if present. It must be a list of booleans
+-    if "ax" in data and not _validSingleDagList(data["ax"], bool, allow_empty=True):
+-        raise ValueError("attrs['ax'] must be [] or a one-item list of booleans")
++    # Validate ax if present
++    if ax is not None:
++        if not _validSingleDagList(ax, bool):
++            raise ValueError("ax must be a one-item list of booleans")
++        data["ax"] = ax
+ 
++    # If prior apply is present, validate ax consistency between the offer and the prior
++    if apply is not None:
++
++        # Retrieve the ax field of the prior
++        applyAx = apply.ked.get("a", {}).get("ax", [False])
++        offerAx = data.get("ax", [False])
++        applyRequiresAnchor = applyAx[0] is True
++        offerRequiresAnchor = offerAx[0] is True
++
++        if applyRequiresAnchor and not offerRequiresAnchor:
++            raise ValueError("offer must echo the prior apply's anchoring requirement")
++
+     # Offer may either negotiate only via dp, name a metadata root SAID, or
+     # carry a full metadata DAG whose shape mirrors the later grant DAG.
+     nests = None
+@@ -1240,6 +1953,14 @@
+         xid = pxid
+     else:
+         xid = ""
++
++    data = dict(m=message)
++
++    offerAx = offer.ked.get("a", {}).get("ax", [False])
++    offerRequiresAnchor = offerAx[0] is True
++    if offerRequiresAnchor:
++        data["ax"] = [True]
++
+     serder = exchange(
+         sender=hab.pre,
+         receiver=receiver,
+@@ -1247,18 +1968,20 @@
+         prior=offer.said,
+         route="/ipex/agree",
+         stamp=dt,
+-        attributes=dict(m=message),
++        attributes=data,
+         pvrsn=Vrsn_2_0,
+         gvrsn=gvrsn if gvrsn is not None else Vrsn_2_0,
+         kind=kind if kind is not None else hab.kever.serder.kind,
+     )
+-    atc = bytearray(_sign(hab=hab, serder=serder, gvrsn=gvrsn))
++    atc = bytearray(_sign(hab=hab, serder=serder,
++                          anchor=offerRequiresAnchor, gvrsn=gvrsn))
+     del atc[:serder.size]
+     return serder, atc
+ 
+ 
+ def grant(hab, recp, message, origin, artifacts=None, agree=None,
+-          dt=None, kind=None, gvrsn=None, attrs=None):
++          dt=None, kind=None, gvrsn=None, attrs=None, *, apply=None, ax=None,
++          endorsers=None, anchorers=None):
+     """Create a signed V2 IPEX ``grant`` exchange with nested disclosure artifacts.
+ 
+     Parameters:
+@@ -1274,35 +1997,61 @@
+         kind (str | None): Optional serialization kind override.
+         gvrsn (Versionage | None): Optional CESR genus version override.
+         attrs (dict | None): Optional extra payload fields.
++        apply (Serder | None): Optional prior ``apply`` for a direct
++            apply-to-grant flow. Mutually exclusive with ``agree``.
++        ax (list[bool] | None): Single-DAG anchoring requirement. None omits
++            the field; otherwise exactly one boolean is required.
++        endorsers (list[Hab] | None): Additional local grantors that sign the
++            grant. The sender remains the KRAM-authenticated outer sender.
++        anchorers (list[Hab] | None): Explicit local AIDs that KEL-anchor the
++            grant. None preserves the truthy-``ax`` sender-anchor default; an
++            empty list leaves anchoring to a presentation registry.
+ 
+     Returns:
+         tuple[Serder, bytearray]: Outer exchange serder and detached attachment
+             bytes for the signed V2 stream.
+     """
+-    prior = agree.said if agree is not None else ""
+-    if agree is None:
++    # Make sure there is only one prior
++    if agree is not None and apply is not None:
++        raise ValueError("agree and apply are mutually exclusive grant priors")
++
++    previous = agree if agree is not None else apply
++    prior = previous.said if previous is not None else ""
++
++    if previous is None:
+         if not recp:
+-            raise ValueError("recp is required when no prior agree is provided")
++            raise ValueError("recp is required when no prior exchange is provided")
+         xid = Diger(ser=Noncer().qb64b).qb64
+     else:
+-        if not agree.ked.get("ri", ""):
++        if not previous.ked.get("ri", ""):
+             raise ValueError("prior exchange has no explicit receiver")
+-        if hab.pre != agree.ked["ri"]:
++        if hab.pre != previous.ked["ri"]:
+             raise ValueError("sender does not match prior exchange receiver")
+-        if recp != agree.ked["i"]:
++        if recp != previous.ked["i"]:
+             raise ValueError("recp does not match prior exchange sender")
+-        pxid = agree.ked.get("x", "")
++        pxid = previous.ked.get("x", "")
+         if pxid:
+             xid = pxid
+         else:
+             xid = ""
+     data = dict(attrs) if attrs is not None else {}
++    if "ax" in data:
++        raise ValueError("use the ax parameter instead of attrs['ax']")
+     data["m"] = message
+ 
+-    # Validate ax field, it must be a list of bool, it's allowed to be empty
+-    if "ax" in data and not _validSingleDagList(data["ax"], bool, allow_empty=True):
+-        raise ValueError("attrs['ax'] must be [] or a one-item list of booleans")
++    if ax is not None:
++        if not _validSingleDagList(ax, bool):
++            raise ValueError("ax must be a one-item list of booleans")
++        data["ax"] = ax
+ 
++    grantAx = data.get("ax", [False])
++    grantRequiresAnchor = grantAx[0] is True
++    if previous is not None:
++        previousAx = previous.ked.get("a", {}).get("ax", [False])
++        previousRequiresAnchor = previousAx[0] is True
++        if grantRequiresAnchor != previousRequiresAnchor:
++            raise ValueError("grant must echo the prior exchange's anchoring requirement")
++
+     # Grant mirrors offer framing: a.o[0] names the origin node, and any later
+     # nests are more disclosed ACDC nodes from that same origin DAG.
+     data["o"] = [_streamSerder(origin).said]
+@@ -1326,7 +2075,30 @@
+         gvrsn=gvrsn if gvrsn is not None else Vrsn_2_0,
+         kind=kind if kind is not None else hab.kever.serder.kind,
+     )
+-    atc = bytearray(_sign(hab=hab, serder=serder, nests=nests, gvrsn=gvrsn))
++    # Preserve None as the signal for default sender anchoring.
++    explicitAnchorers = None if anchorers is None else list(anchorers)
++
++    # Anchor with the sender only when ax is true and no list overrides it.
++    senderAnchor = grantRequiresAnchor and explicitAnchorers is None
++
++    # Allow callers to name the sender explicitly among anchorers.
++    if explicitAnchorers is not None:
++        # Iterate over a copy because the sender entry is removed in place.
++        for anchorer in list(explicitAnchorers):
++            # Convert an explicit sender entry into the implied source couple.
++            if anchorer.pre == hab.pre:
++                senderAnchor = True
++
++                # Avoid emitting a redundant explicit source triple.
++                explicitAnchorers.remove(anchorer)
++
++    # Sign and attach all selected sender, endorser, and anchorer factors.
++    atc = bytearray(_sign(hab=hab, serder=serder, nests=nests,
++                          anchor=senderAnchor,
++                          endorsers=endorsers,
++                          anchorers=explicitAnchorers,
++                          gvrsn=gvrsn))
++    # Return attachments separately from the immutable EXN body.
+     del atc[:serder.size]
+     return serder, atc
+ 
+@@ -1360,6 +2132,12 @@
+         xid = pxid
+     else:
+         xid = ""
++    grantAx = grant.ked.get("a", {}).get("ax", [False])
++    grantRequiresAnchor = grantAx[0] is True
++    data = dict(m=message)
++    if grantRequiresAnchor:
++        data["ax"] = [True]
++
+     serder = exchange(
+         sender=hab.pre,
+         receiver=receiver,
+@@ -1367,12 +2145,13 @@
+         prior=grant.said,
+         route="/ipex/admit",
+         stamp=dt,
+-        attributes=dict(m=message),
++        attributes=data,
+         pvrsn=Vrsn_2_0,
+         gvrsn=gvrsn if gvrsn is not None else Vrsn_2_0,
+         kind=kind if kind is not None else hab.kever.serder.kind,
+     )
+-    atc = bytearray(_sign(hab=hab, serder=serder, gvrsn=gvrsn))
++    atc = bytearray(_sign(hab=hab, serder=serder,
++                          anchor=grantRequiresAnchor, gvrsn=gvrsn))
+     del atc[:serder.size]
+     return serder, atc
+ 
+--- a/src/keri/acdc/regeventing.py
++++ b/src/keri/acdc/regeventing.py
+@@ -50,16 +50,15 @@
+     said (str): qb64 SAID of the head (latest verified) registry event
+     sn (int): sequence number of the head event
+     ilk (str): message type of the head event (rip or bup)
+-    acdc (str|None): qb64 SAID of the transaction ACDC the head state
+-        commits to; None when the registry has no update yet or the head is
+-        blinded and undisclosed
+-    state (str|None): transaction state string at the head; None when the
+-        registry has no update yet or the head is blinded and undisclosed
+-    stamp (str): the head event's issuer-relative ISO datetime (dt field)
++    acdc (str|None): qb64 SAID of the disclosed transaction target; None when
++        the registry has no disclosed non-vacuous update
++    state (str|None): disclosed transaction state string; None when unavailable
++    stamp (str): the head event's ISO datetime from vet(), or the latest
++        non-vacuous binding event's datetime from vetBinds()
+     binding (str|None): how the presented ACDC binds to the registry:
+         'mutual' when td == acdc.d and acdc.rd == rip.d both hold, 'oneway'
+-        when the ACDC carries no rd so only the registry commits to the ACDC
+-        (registry->ACDC), None when no ACDC was presented
++        when the ACDC carries no rd, 'presentation' when the target is a grant
++        SAID, and None when no target binding was requested
+     anchors (tuple): one (sn, said) couple per verified chain event, the
+         issuer KEL event in which that TEL event's anchoring seal was found
+ """
+@@ -643,8 +642,130 @@
+                           sn=Number(numh=head.sad['n']).num, ilk=head.ilk,
+                           acdc=acdcsaid, state=state, stamp=head.sad['dt'],
+                           binding=binding, anchors=tuple(anchors))
++
++
++def vetBinds(rip, updates=None, *, db, blinders, target, controller=None,
++             acdc=None, sources=None, cutoff=None, requireSource=False):
++    """Verify a TEL and a disclosed non-vacuous target binding.
++
++    Every blinded update from the verified head back through the latest
++    non-vacuous update must have exactly one matching disclosure, and that
++    non-vacuous update must bind ``target``.  When ``cutoff`` is provided, the
++    verified head is the latest event whose timestamp is at or before that
++    receiver-observed time.  Presentation registries use the grant's KRAM
++    acceptance time as this historical cutoff; issuer registries use the
++    current head by omitting it.
++
++    Parameters:
++        rip (SerderACDC | bytes): Registry inception event.
++        updates (Iterable | None): Registry update events.
++        db (Baser): Preloaded verifier KEL database.
++        blinders (Iterable[Blinder]): Node-local disclosed state blocks.
++        target (str): Expected transaction SAID.
++        controller (str | None): Required registry-controlling AID.
++        acdc (SerderACDC | bytes | None): ACDC for issuer-registry bindings.
++        sources (Mapping | None): Optional TEL-event anchor locations.
++        cutoff (str | None): Optional receiver-observed ISO datetime limiting
++            the verified TEL prefix.
++        requireSource (bool): True requires an explicit source claim for the
++            selected non-vacuous binding event.
++
++    Returns:
++        RegStateRecord: Verified TEL state resolved to the selected non-vacuous
++            binding.  ``binding`` is ``presentation`` when ``acdc`` is omitted.
++    """
++    # Normalize the registry inception into a TEL serder.
++    rip = _coerce(rip)
++
++    # Normalize every supplied registry update before filtering.
++    updates = updates if updates is not None else ()
++    updates = [_coerce(update) for update in updates]
++
++    sources = sources if sources is not None else {}
++
++    # Restrict presentation verification to receiver-known history.
++    if cutoff is not None:
++        try:
++            # Parse the receiver's KRAM acceptance timestamp.
++            cutoffTime = help.fromIso8601(cutoff)
++
++            # Reject a registry created after the historical cutoff.
++            if help.fromIso8601(rip.sad['dt']) > cutoffTime:
++                raise MisbindingError(
++                    f"Registry {rip.said} did not exist by cutoff {cutoff}.")
++
++            # Ignore updates that occurred after Grant acceptance.
++            updates = [
++                update for update in updates
++                if help.fromIso8601(update.sad["dt"]) <= cutoffTime
++            ]
++
++        # Convert malformed timestamp input into a registry validation error.
++        except (TypeError, ValueError) as ex:
++            raise ValidationError(
++                f"Invalid registry historical cutoff {cutoff}.") from ex
++
++    # Verify the selected contiguous TEL prefix and all KEL anchors.
++    record = vet(rip=rip, updates=updates, db=db, sources=sources)
++
++    blinders = list(blinders)
++
++    # Check that the registry's controlling AID matches
++    if controller is not None and record.issuer != controller:
++        raise MisbindingError(f"Registry controller {record.issuer} does not match "
++                              f"required controller {controller}.")
++
++    # Search backward from the latest update in the verified prefix.
++    newestFirst = sorted(
++        updates,
++        key=lambda update: Number(numh=update.sad['n']).num,
++        reverse=True,
++    )
+ 
++    # Inspect each update until the latest non-vacuous state is found.
++    for update in newestFirst:
+ 
++        # Match this blinded update to exactly one disclosed state block.
++        matches = [blinder for blinder in blinders
++                   if blinder.said == update.sad['b']]
++
++        # Missing or duplicate disclosures cannot prove this update.
++        if len(matches) != 1:
++            raise UnverifiedBlindError(
++                f"Registry update {update.said} requires exactly one disclosure "
++                f"for blid={update.sad['b']}.")
++
++        # Verify and disclose this update's target and state.
++        td, state = vetBlind(blinder=matches[0], blid=update.sad['b'])
++
++        # Skip vacuous updates while retaining their chain validation.
++        if not td and not state:
++            continue
++
++        # Require the latest non-vacuous update to bind the expected target.
++        if td != target:
++            raise MisbindingError(f"Registry state's transaction said td={td} "
++                                  f"does not bind expected target {target}.")
++
++        # Presentation timing requires the Grant to carry this bup's KEL source.
++        if requireSource and update.said not in sources:
++            raise MisanchorError(
++                f"Registry binding event {update.said} has no attached KEL source.")
++
++        # Apply ACDC binding rules only for issuer registries.
++        binding = (vetBindings(acdc=acdc, regid=record.regid,
++                               issuer=record.issuer, td=td)
++                   if acdc is not None else 'presentation')
++
++        # Return state from the selected non-vacuous binding event.
++        return record._replace(acdc=td, state=state, stamp=update.sad['dt'],
++                               binding=binding)
++
++    # No disclosed non-vacuous update authenticated the requested target.
++    raise MisbindingError(f"Registry {record.regid} has no disclosed non-vacuous "
++                          f"state binding target {target}.")
++
++
+ # Issuer-side local TEL engine
+ class _RegEventer:
+     """Private issuer-side TEL event engine for one local registry.
+@@ -854,12 +975,6 @@
+                 this registry or issuer, or if a caller-supplied ``blinder``
+                 override is provided.
+         """
+-        # Build the next bup off the effective staged frontier, not just the
+-        # last committed head, so pipelined local issuance chains correctly.
+-        tip = self._effectiveFrontier()
+-        if tip is None:
+-            raise ConfigurationError("registry must be anchored before updates")
+-
+         # The issuer-side blind path only accepts a full, self-verifying ACDC.
+         if not isinstance(acdc, SerderACDC):
+             raise ConfigurationError("acdc must be a SerderACDC")
+@@ -879,27 +994,62 @@
+             issuer = acdc.sad.get("i")
+         if issuer != self.hab.pre:
+             raise ConfigurationError(f"acdc {acdc.said} has issuer {issuer} not {self.hab.pre}")
++
++        return self._blind(target=acdc.said, state=state, **kwa)
++
++    def present(self, grant, state="presented", **kwa):
++        """Create a blinded update that binds this registry to a grant SAID."""
++        # Accept either a Grant serder or its qb64 SAID.
++        target = grant.said if hasattr(grant, "said") else grant
++        # Require a syntactically valid self-addressing target.
++        try:
++            Diger(qb64=target)
++        except Exception as ex:
++            raise ConfigurationError("presentation target must be a valid grant SAID") from ex
++        # Reuse the shared blinded-update workflow.
++        return self._blind(target=target, state=state, **kwa)
++
++    def vacate(self, **kwa):
++        """Create a vacuous blinded update that preserves the prior binding."""
++        # Empty target and state mark an intentionally vacuous update.
++        return self._blind(target="", state="", **kwa)
++
++    def _blind(self, target, state, **kwa):
++        """Create the next staged blinded update for a validated target SAID."""
++        # Build from the staged frontier so callers may pipeline local updates.
++        tip = self._effectiveFrontier()
++        # Updates require an accepted or staged predecessor.
++        if tip is None:
++            raise ConfigurationError("registry must be anchored before updates")
++        # Always derive the blinder from validated inputs internally.
+         if "blinder" in kwa:
+             raise ConfigurationError("caller-supplied blinder overrides are not supported")
+ 
++        # Separate blinder options from TEL event options.
+         blindkwa = {}
++        # Move each supported blinder-only option out of the event arguments.
+         for key in ("raw", "salt", "tier", "bound", "bsn", "bd"):
+             if key in kwa:
+                 # These options belong to blinder construction, not the TEL
+                 # event body, so peel them off before calling blindate().
+                 blindkwa[key] = kwa.pop(key)
+ 
++        # Normalize the frontier before deriving the next sequence number.
+         tipEvent = _normalizeEventRecord(tip)
++        # Advance exactly one TEL sequence number.
+         sn = tipEvent.sn + 1
+         # Derive the blinder from the next TEL sequence number so the bup and
+         # blinded state commit to the same step in the chain.
+-        blinder = Blinder.blind(sn=sn, acdc=acdc.said, state=state, **blindkwa)
++        blinder = Blinder.blind(sn=sn, acdc=target, state=state, **blindkwa)
++        # Create the bup that commits to the derived BLID.
+         serder = messaging.blindate(regid=self.regk,
+                                     prior=tipEvent.said,
+                                     blid=blinder.said,
+                                     sn=sn,
+                                     **kwa)
++        # Stage or accept the new event through normal TEL processing.
+         self.processEvent(serder)
++        # Return both the disclosure proof and its committed event.
+         return blinder, serder
+ 
+     # Shared local validation and acceptance helpers
+--- a/src/keri/acdc/registraring.py
++++ b/src/keri/acdc/registraring.py
+@@ -329,6 +329,16 @@
+         # Blind issuance remains a Registry method for callers, but the staged
+         # frontier walk and TEL event creation now live in regeventing.py.
+         return self._eventer.blind(acdc=acdc, state=state, **kwa)
++
++    def present(self, grant, state="presented", **kwa):
++        """Create a blinded registry update binding a grant message SAID."""
++        # Delegate event construction to this registry's TEL engine.
++        return self._eventer.present(grant=grant, state=state, **kwa)
++
++    def vacate(self, **kwa):
++        """Create a vacuous update that leaves the prior registry state in force."""
++        # Delegate vacuous event construction to the TEL engine.
++        return self._eventer.vacate(**kwa)
+ 
+ 
+ class Registrar:
+@@ -398,3 +408,17 @@
+         """
+         reg = self._registry(registry)
+         return reg.blind(acdc=acdc, state=state, **kwa)
++
++    def present(self, registry, grant, state="presented", **kwa):
++        """Bind a grant message SAID in an issuee-controlled registry."""
++        # Resolve an instance, registry key, or local alias.
++        reg = self._registry(registry)
++        # Build the presentation update through the resolved registry.
++        return reg.present(grant=grant, state=state, **kwa)
++
++    def vacate(self, registry, **kwa):
++        """Append a vacuous blinded update through the public facade."""
++        # Resolve an instance, registry key, or local alias.
++        reg = self._registry(registry)
++        # Build the vacuous update through the resolved registry.
++        return reg.vacate(**kwa)
+--- a/src/keri/core/kraming.py
++++ b/src/keri/core/kraming.py
+@@ -500,11 +500,7 @@
+             return AuthTypes.AttachedSignatureMultiKey, False
+ 
+         if hasSealRef and hasSigs:
+-            try:
+-                sealValid = self._validateSenderSeal(
+-                    msg, senderId, kwa)
+-            except MissingSenderKeyStateError:
+-                sealValid = False
++            sealValid = self._validateSenderSeal(msg, senderId, kwa)
+ 
+             if sealValid:
+                 return AuthTypes.AttachedSealReference, True
+@@ -626,6 +622,17 @@
+             kwa['tsgs'] = newTsgs
+             if not kwa['tsgs']:
+                 kwa.pop('tsgs', None)
++
++    @staticmethod
++    def _setVerifiedSenderTsg(senderId, kever, sigers, kwa):
++        """Replace sender groups with one verified last-establishment group."""
++        tsgs = [tsg for tsg in kwa.get('tsgs', [])
++                if tsg[0].qb64 != senderId]
++        tsgs.insert(0, (kever.prefixer,
++                        Number(sn=kever.lastEst.s),
++                        Diger(qb64=kever.lastEst.d),
++                        list(sigers)))
++        kwa['tsgs'] = tsgs
+ 
+     def _verifyAttachedSigs(self, *, msg, senderId, kever, kwa):
+         """Verify attached signatures using cigar gate then oset pooling.
+@@ -709,11 +716,28 @@
+             raw=msg.raw, sigers=poolSigers, verfers=kever.verfers)
+         verified = {s.qb64 for s in vsigers}
+         self._scrubFailedVerification(senderId, kever, kwa, verified)
++        if msg.ilk == Ilks.exn and vsigers:
++            self._setVerifiedSenderTsg(senderId, kever, vsigers, kwa)
+ 
+         return SigVerifyResult(
+             verified=True if vsigers else False,
+             sigers=vsigers,
+             stale_tsgs=stale_tsgs)
++
++    def _cueMissingSenderKeyState(self, senderId, sn, error):
++        """Request the exact sender KEL event required by a seal reference."""
++        self.cues.append({
++            "kin": "keystate",
++            "aid": senderId,
++            "sn": sn,
++        })
++        logger.info(
++            "Cueing keystate retrieval: missing key state in seal reference "
++            "for sender=%s, sn=%s, error=%s",
++            senderId,
++            sn,
++            error,
++        )
+ 
+     def _validateSenderSeal(self, msg, senderId, kwa):
+         """Validate seal reference attachments against sender's KEL.
+@@ -739,7 +763,8 @@
+ 
+         Raises:
+             MissingSenderKeyStateError: when a referenced event is not
+-                found in the sender's KEL (caller should drop + cue)
++                found in the sender's KEL; queues the exact missing event
++                before raising so the caller can drop the message
+         """
+         # Build list of (number, diger) candidates to check.
+         # sscs first (implicit sender KEL ref), then sender-matching ssts.
+@@ -761,8 +786,10 @@
+         sdig = self.db.kels.getLast(keys=prefixer.qb64b, on=number.sn)
+ 
+         if sdig is None:
+-            raise MissingSenderKeyStateError(
++            error = MissingSenderKeyStateError(
+                 f"Event at sn={number.sn} not in KEL for sender {senderId}")
++            self._cueMissingSenderKeyState(senderId, number.sn, error)
++            raise error
+ 
+         # Verify the event SAID matches the seal reference
+         if bytes(sdig, "utf-8") != diger.qb64b:
+@@ -771,8 +798,10 @@
+         # Fetch the actual event
+         evtSerder = self.db.evts.get(keys=(prefixer.qb64b, bytes(sdig, "utf-8")))
+         if evtSerder is None:
+-            raise MissingSenderKeyStateError(
++            error = MissingSenderKeyStateError(
+                 f"Event data missing for sender {senderId} at sn={number.sn}")
++            self._cueMissingSenderKeyState(senderId, number.sn, error)
++            raise error
+ 
+         # Search event's seal list for a seal whose 'd' field matches msg SAID
+         for seal in (evtSerder.seals or []):
+@@ -785,7 +814,7 @@
+         """Idempotently store non-authenticator attachments for a partially
+         signed multi-key message pending threshold satisfaction.
+ 
+-        Handles parser kwa attachment keys except lsgs, essrs, sscs, and
++        Handles parser kwa attachment keys except essrs, sscs, and
+         sender-matching ssts. Seal couples (sscs) and source triples whose
+         prefix is the message sender are anchoring-seal-reference material
+         for this AID and are not stored here. Only ssts whose prefix differs
+@@ -794,8 +823,13 @@
+ 
+         Sender-addressed tsgs quads are not written to kramTSGS (they are
+         authenticator material, not non-auth forwarding); other prefixers'
+-        tsgs are stored. The live kwa dict is not mutated by this method;
+-        signature scrubbing may already have run in _verifyAttachedSigs.
++        tsgs are stored. A foreign last-establishment signature group is
++        resolved to that endorser's current establishment event at receipt
++        and stored in the same explicit form. This freezes the establishment
++        reference so a later endorser rotation before the sender reaches its
++        signature threshold does not reinterpret the escrowed signatures. The
++        live kwa dict is not mutated by this method; signature scrubbing may
++        already have run in _verifyAttachedSigs.
+ 
+         Parameters:
+             key (tuple): (AID, MID) partial db key
+@@ -806,9 +840,24 @@
+             self.db.kramTRQS.add(key, item)
+         for prefixer, number, diger, sigers in kwa.get('tsgs', []):
+             if prefixer.qb64 == senderId:
++                continue
++            for siger in sigers:
++                self.db.kramTSGS.add(key, (prefixer, number, diger, siger))
++        for prefixer, sigers in kwa.get('lsgs', []):
++            if prefixer.qb64 == senderId:
++                continue
++            kever = self.db.kevers.get(prefixer.qb64)
++            if kever is None:
++                self.db.kramULGS.add(key, prefixer)
+                 continue
++            self.db.kramULGS.rem(keys=key, val=prefixer)
++            number = Number(sn=kever.lastEst.s)
++            diger = Diger(qb64=kever.lastEst.d)
+             for siger in sigers:
+                 self.db.kramTSGS.add(key, (prefixer, number, diger, siger))
++        for cigar in kwa.get('cigars', []):
++            if cigar.verfer.qb64 != senderId:
++                self.db.kramCIGS.add(key, (cigar.verfer, cigar))
+         for prefixer, number, diger in kwa.get('ssts', []):
+             if prefixer.qb64 != senderId:
+                 self.db.kramSSTS.add(key, (prefixer, number, diger))
+@@ -834,6 +883,8 @@
+         """
+         self.db.kramTRQS.rem(key)
+         self.db.kramTSGS.rem(key)
++        self.db.kramULGS.rem(key)
++        self.db.kramCIGS.rem(key)
+         self.db.kramSSCS.rem(key)
+         self.db.kramSSTS.rem(key)
+         self.db.kramFRCS.rem(key)
+@@ -874,7 +925,8 @@
+ 
+         After threshold is satisfied on a later delivery, ``kwa`` reflects only
+         that parse; ``kramPMKS`` and non-auth attachment DBs hold the union of
+-        state accumulated across deliveries.
++        state accumulated across deliveries. The caller removes that partial
++        state after this method copies it into the accepted delivery.
+ 
+         Parameters:
+             partialKey (tuple): ``(AID, MID)`` escrow key
+@@ -919,6 +971,17 @@
+         else:
+             kwa.pop('tsgs', None)
+ 
++        ulgsEsc = list(self.db.kramULGS.get(partialKey) or [])
++        kwa['ulgs'] = self._dedupeAttachmentItems(
++            ulgsEsc + kwa.get('ulgs', []))
++
++        cigarsEsc = []
++        for verfer, cigar in self.db.kramCIGS.get(partialKey) or []:
++            cigar.verfer = verfer
++            cigarsEsc.append(cigar)
++        kwa['cigars'] = self._dedupeAttachmentItems(
++            cigarsEsc + kwa.get('cigars', []))
++
+         sstsEsc = list(self.db.kramSSTS.get(partialKey) or [])
+         kwa['ssts'] = self._dedupeAttachmentItems(
+             sstsEsc + kwa.get('ssts', []))
+@@ -947,8 +1010,8 @@
+         kwa['tmqs'] = self._dedupeAttachmentItems(
+             tmqsEsc + kwa.get('tmqs', []))
+ 
+-        for name in ('trqs', 'ssts', 'frcs', 'tdcs', 'ptds', 'bsqs', 'bsss',
+-                     'tmqs'):
++        for name in ('trqs', 'ulgs', 'cigars', 'ssts', 'frcs', 'tdcs', 'ptds',
++                     'bsqs', 'bsss', 'tmqs'):
+             if not kwa.get(name):
+                 kwa.pop(name, None)
+ 
+@@ -1072,7 +1135,12 @@
+ 
+                 # "Both attached" case, try seal validation first
+                 if hasSealRef and hasSigs:
+-                    if self._validateSenderSeal(msg, senderId, kwa):
++                    try:
++                        sealValidated = self._validateSenderSeal(
++                            msg, senderId, kwa)
++                    except MissingSenderKeyStateError:
++                        return None
++                    if sealValidated:
+                         # Seal valid -> treat as seal auth -> idempotent drop
+                         return None
+                     # Seal invalid -> fall through to signature auth below
+@@ -1086,13 +1154,6 @@
+                 # Reached from both "pure sig multi-key" and
+                 # "both attached with invalid seal, multi-key" paths.
+ 
+-                # Verify attached sigs using type-appropriate dispatch
+-                sigResult = self._verifyAttachedSigs(
+-                    msg=msg, senderId=senderId, kever=kever, kwa=kwa)
+-
+-                if not sigResult.verified:
+-                    return None  # no valid sigs in this delivery
+-
+                 # Key state change detection:
+                 # Compare stored key state ref against current kever state
+                 currentKeyState = (Number(num=kever.lastEst.s),
+@@ -1102,8 +1163,21 @@
+                     storedSn, storedSaid = storedKeyState
+                     if (storedSn.num != currentKeyState[0].num or
+                             storedSaid.qb64 != currentKeyState[1].qb64):
++                        # Keep the timeliness cache to block this stale SAID.
++                        self.db.kramPMKM.rem(key)
++                        self.db.kramPMKS.rem(key)
++                        self.db.kramPMSK.rem(key)
++                        self._remNonAuthAttachments(key)
+                         return None  # drop, key state changed
+ 
++                # Verify attached sigs using type-appropriate dispatch only
++                # after confirming that the accumulated pool is still usable.
++                sigResult = self._verifyAttachedSigs(
++                    msg=msg, senderId=senderId, kever=kever, kwa=kwa)
++
++                if not sigResult.verified:
++                    return None  # no valid sigs in this delivery
++
+                 # Idempotently accumulate newly verified signatures
+                 existingSigs = self.db.kramPMKS.get(key)
+                 if existingSigs is None:
+@@ -1124,8 +1198,9 @@
+                     if storedKeyState is None:
+                         self.db.kramPMSK.pin(key, currentKeyState)
+ 
+-                    # Store non-auth attachments alongside new sigs
+-                    self._storeNonAuthAttachments(key, senderId, kwa)
++                # A repeated valid sender signature may carry new non-auth
++                # attachments. Preserve them even when the signature exists.
++                self._storeNonAuthAttachments(key, senderId, kwa)
+ 
+                 # Check threshold using current kever's tholder
+                 allSigs = existingSigs + newSigs
+@@ -1134,6 +1209,15 @@
+ 
+                     if kever.tholder.satisfy(indices=sigIndices):
+                         self._rehydrateKwaFromEscrow(key, senderId, kwa)
++                        if msg.ilk == Ilks.exn:
++                            self._setVerifiedSenderTsg(
++                                senderId, kever, allSigs, kwa)
++                        # The cache remains as the replay marker. Partial state
++                        # is no longer retryable after the accepted handoff.
++                        self.db.kramPMKM.rem(key)
++                        self.db.kramPMKS.rem(key)
++                        self.db.kramPMSK.rem(key)
++                        self._remNonAuthAttachments(key)
+                         return msg
+ 
+                 # Threshold not satisfied, message remains pending
+@@ -1160,8 +1244,11 @@
+ 
+                 # Resolve auth type before timeliness check per spec.
+                 # Ensures "both attached" fallback to multi-key gets long lag.
+-                authType, sealValidated = self._resolveAuthType(
+-                    msg, kwa, kever, hasSealRef, hasSigs, senderId)
++                try:
++                    authType, sealValidated = self._resolveAuthType(
++                        msg, kwa, kever, hasSealRef, hasSigs, senderId)
++                except MissingSenderKeyStateError:
++                    return None
+ 
+                 # Select lag values based on resolved auth type
+                 d = cacheTypeRecord.d
+@@ -1189,24 +1276,15 @@
+                         try:
+                             sealValidated = self._validateSenderSeal(
+                                 msg, senderId, kwa)
+-                        except MissingSenderKeyStateError as e:
+-                            logger.info("Missing sender key state for "
+-                                        "%s: %s", senderId, e)
+-                            # Append the cue for the keystate retrieval notification including the senderID and the sn
+-                            self.cues.append({
+-                                "kin": "keystate",
+-                                "aid": senderId,
+-                                "sn": kever.sn,
+-                            })
+-                            logger.info(
+-                                "Cueing keystate retrieval: missing key state in seal reference for sender=%s, current_sn=%s, error=%s",
+-                                senderId,
+-                                kever.sn,
+-                            )
++                        except MissingSenderKeyStateError:
+                             return None
+                         if not sealValidated:
+                             return None
+ 
++                    if hasSigs and msg.ilk == Ilks.exn:
++                        self._verifyAttachedSigs(
++                            msg=msg, senderId=senderId, kever=kever, kwa=kwa)
++
+                     # Create cache and accept
+                     mcr = MsgCacheRecord(
+                         mdt=mdts, d=d, ml=ml, pml=pml,
+@@ -1304,7 +1382,12 @@
+ 
+                 # "Both attached" case, try seal validation first
+                 if hasSealRef and hasSigs:
+-                    if self._validateSenderSeal(msg, senderId, kwa):
++                    try:
++                        sealValidated = self._validateSenderSeal(
++                            msg, senderId, kwa)
++                    except MissingSenderKeyStateError:
++                        return None
++                    if sealValidated:
+                         # Seal valid -> treat as seal auth -> idempotent drop
+                         return None
+                     # Seal invalid -> fall through to signature auth below
+@@ -1318,13 +1401,6 @@
+                 # Reached from both "pure sig multi-key" and
+                 # "both attached with invalid seal, multi-key" paths.
+ 
+-                # Verify attached sigs using type-appropriate dispatch
+-                sigResult = self._verifyAttachedSigs(
+-                    msg=msg, senderId=senderId, kever=kever, kwa=kwa)
+-
+-                if not sigResult.verified:
+-                    return None  # no valid sigs in this delivery
+-
+                 # Key state change detection:
+                 # Compare stored key state ref against current kever state.
+                 # Partial dbs use (AID.MID) key per spec, not (AID.XID.MID).
+@@ -1335,8 +1411,21 @@
+                     storedSn, storedSaid = storedKeyState
+                     if (storedSn.num != currentKeyState[0].num or
+                             storedSaid.qb64 != currentKeyState[1].qb64):
++                        # Keep the timeliness cache to block this stale SAID.
++                        self.db.kramPMKM.rem(partialKey)
++                        self.db.kramPMKS.rem(partialKey)
++                        self.db.kramPMSK.rem(partialKey)
++                        self._remNonAuthAttachments(partialKey)
+                         return None  # drop, key state changed
+ 
++                # Verify attached sigs using type-appropriate dispatch only
++                # after confirming that the accumulated pool is still usable.
++                sigResult = self._verifyAttachedSigs(
++                    msg=msg, senderId=senderId, kever=kever, kwa=kwa)
++
++                if not sigResult.verified:
++                    return None  # no valid sigs in this delivery
++
+                 # Idempotently accumulate newly verified signatures
+                 existingSigs = self.db.kramPMKS.get(partialKey)
+                 if existingSigs is None:
+@@ -1357,8 +1446,9 @@
+                     if storedKeyState is None:
+                         self.db.kramPMSK.pin(partialKey, currentKeyState)
+ 
+-                    # Store non-auth attachments alongside new sigs
+-                    self._storeNonAuthAttachments(partialKey, senderId, kwa)
++                # A repeated valid sender signature may carry new non-auth
++                # attachments. Preserve them even when the signature exists.
++                self._storeNonAuthAttachments(partialKey, senderId, kwa)
+ 
+                 # Check threshold using current kever's tholder
+                 allSigs = existingSigs + newSigs
+@@ -1367,6 +1457,17 @@
+ 
+                     if kever.tholder.satisfy(indices=sigIndices):
+                         self._rehydrateKwaFromEscrow(partialKey, senderId, kwa)
++                        if msg.ilk == Ilks.exn:
++                            self._setVerifiedSenderTsg(
++                                senderId, kever, allSigs, kwa)
++                        cache.rdt = helping.nowIso8601()
++                        self.db.kramTMSC.pin(key, cache)
++                        # The cache remains as the replay marker. Partial state
++                        # is no longer retryable after the accepted handoff.
++                        self.db.kramPMKM.rem(partialKey)
++                        self.db.kramPMKS.rem(partialKey)
++                        self.db.kramPMSK.rem(partialKey)
++                        self._remNonAuthAttachments(partialKey)
+                         return msg
+ 
+                 # Threshold not satisfied, message remains pending
+@@ -1392,8 +1493,11 @@
+                         f"Sender KEL unavailable for {senderId}")
+ 
+                 # Resolve auth type before timeliness check per spec.
+-                authType, sealValidated = self._resolveAuthType(
+-                    msg, kwa, kever, hasSealRef, hasSigs, senderId)
++                try:
++                    authType, sealValidated = self._resolveAuthType(
++                        msg, kwa, kever, hasSealRef, hasSigs, senderId)
++                except MissingSenderKeyStateError:
++                    return None
+ 
+                 d = cacheTypeRecord.d
+                 if authType == AuthTypes.AttachedSignatureMultiKey:
+@@ -1438,8 +1542,8 @@
+                             raise KramError("Unexpected transactioned message type while kraming.")
+ 
+                     xdt = helping.fromIso8601(xdts).timestamp() * 1000  # ms
+-                    rdt = helping.fromIso8601(
+-                        helping.nowIso8601()).timestamp() * 1000  # ms
++                    rdts = helping.nowIso8601()
++                    rdt = helping.fromIso8601(rdts).timestamp() * 1000  # ms
+ 
+                     # Timeliness window
+                     if not (rdt - d - ml) <= mdt <= (rdt + d):
+@@ -1458,27 +1562,18 @@
+                             try:
+                                 sealValidated = self._validateSenderSeal(
+                                     msg, senderId, kwa)
+-                            except MissingSenderKeyStateError as e:
+-                                logger.info("Missing sender key state for "
+-                                            "%s: %s", senderId, e)
+-                                # Append the cue for the keystate retrieval notification including the senderID and the sn
+-                                self.cues.append({
+-                                    "kin": "keystate",
+-                                    "aid": senderId,
+-                                    "sn": kever.sn,
+-                                })
+-                                logger.info(
+-                                    "Cueing keystate retrieval: missing key state in seal reference for sender=%s, current_sn=%s, error=%s",
+-                                    senderId,
+-                                    kever.sn,
+-                                )
++                            except MissingSenderKeyStateError:
+                                 return None
+                             if not sealValidated:
+                                 return None
+ 
++                        if hasSigs and msg.ilk == Ilks.exn:
++                            self._verifyAttachedSigs(
++                                msg=msg, senderId=senderId, kever=kever, kwa=kwa)
++
+                         # Create txn cache and accept
+                         mcr = TxnMsgCacheRecord(
+-                            mdt=mdts, xdt=xdts, d=d, ml=ml, pml=pml,
++                            mdt=mdts, xdt=xdts, rdt=rdts, d=d, ml=ml, pml=pml,
+                             xl=cacheTypeRecord.xl, pxl=cacheTypeRecord.pxl)
+                         self.db.kramTMSC.pin(key, mcr)
+                         # Keep the xid-level opener time in sync so later
+@@ -1496,7 +1591,7 @@
+ 
+                         # Create txn cache and accept
+                         mcr = TxnMsgCacheRecord(
+-                            mdt=mdts, xdt=xdts, d=d, ml=ml, pml=pml,
++                            mdt=mdts, xdt=xdts, rdt=rdts, d=d, ml=ml, pml=pml,
+                             xl=cacheTypeRecord.xl, pxl=cacheTypeRecord.pxl)
+                         self.db.kramTMSC.pin(key, mcr)
+                         # Single-key transactional replies also refresh the
+@@ -1506,8 +1601,8 @@
+ 
+                 elif authType == AuthTypes.AttachedSignatureMultiKey:
+                     # Per spec: for multi-key, mdt timeliness check comes before xdt resolution
+-                    rdt = helping.fromIso8601(
+-                        helping.nowIso8601()).timestamp() * 1000  # ms
++                    rdts = helping.nowIso8601()
++                    rdt = helping.fromIso8601(rdts).timestamp() * 1000  # ms
+ 
+                     if not (rdt - d - ml) <= mdt <= (rdt + d):
+                         return None  # outside mdt timeliness window
+@@ -1556,19 +1651,22 @@
+                     if not sigResult.verified:
+                         return None  # no sigs verified at all
+ 
+-                    # At least one sig verified, create txn cache entry
++                    sigIndices = [sig.index for sig in sigResult.sigers]
++                    accepted = bool(kever.tholder and
++                                    kever.tholder.satisfy(indices=sigIndices))
++
++                    # A partial cache is only a replay marker. Receiver time is
++                    # recorded once the complete threshold is accepted.
+                     mcr = TxnMsgCacheRecord(
+-                        mdt=mdts, xdt=xdts, d=d, ml=ml, pml=pml,
++                        mdt=mdts, xdt=xdts, rdt=rdts if accepted else '',
++                        d=d, ml=ml, pml=pml,
+                         xl=cacheTypeRecord.xl, pxl=cacheTypeRecord.pxl)
+                     self.db.kramTMSC.pin(key, mcr)
+                     # Record the shared opener time once the transaction row is
+                     # accepted so later cross-sender replies reuse the same xdt.
+                     self.db.kramXDT.pin(keys=(exId,), val=Dater(dts=xdts))
+ 
+-                    # Check if threshold is immediately satisfied
+-                    sigIndices = [sig.index for sig in sigResult.sigers]
+-
+-                    if kever.tholder and kever.tholder.satisfy(indices=sigIndices):
++                    if accepted:
+                         return msg
+ 
+                     # Threshold not met, store partials for accumulation.
+--- a/src/keri/db/basing.py
++++ b/src/keri/db/basing.py
+@@ -3,19 +3,23 @@
+ KERI
+ keri.db.basing module
+ """
++import importlib
+ import os
+ import shutil
++from collections import namedtuple
+ from contextlib import contextmanager
+ import lmdb
++import semver
++from ordered_set import OrderedSet as oset
+ 
+ from hio.base import doing
+ from hio.help import ogler
+ 
+-from .dbing import LMDBer, openLMDB
+-from .basebasing import (BaserBase, MIGRATIONS as MIGRATIONS,
+-                         _strip_prerelease as _strip_prerelease,
+-                         statedict as statedict)
+-from ..kering import Version
++from keri import __version__
++from .dbing import LMDBer, dgKey, openLMDB
++from ..kering import (MissingEntryError, DatabaseError, SerializeError,
++                      ConfigurationError, ValidationError, Version,
++                      Vrsn_1_0, Vrsn_2_0)
+ from ..recording import (KeyStateRecord, EventSourceRecord,
+                          HabitatRecord, TopicsRecord,
+                          OobiRecord, EndpointRecord,
+@@ -27,11 +31,107 @@
+ logger = ogler.getLogger()
+ 
+ 
++def _strip_prerelease(version_str):
++    """Strip prerelease and build metadata from a semver string.
++
++    Semver compares alphanumeric prerelease identifiers lexicographically,
++    so 'dev4' > 'dev10' (because '4' > '1'). Stripping prerelease ensures
++    dev releases within the same version cycle compare as equal.
++    See: https://github.com/WebOfTrust/keripy/issues/820
++    """
++    ver = semver.VersionInfo.parse(version_str)
++    return str(semver.Version(ver.major, ver.minor, ver.patch))
++
++
++MIGRATIONS = [
++    ("0.6.8", ["hab_data_rename"]),
++    ("1.0.0", ["add_key_and_reg_state_schemas"]),
++    ("1.2.0", ["rekey_habs"]),
++]
++
++
++# ToDo XXXX maybe
++'''
++class komerdict(dict):
++    """
++    Subclass of dict that has db as attribute and employs read through cache
++    from db Baser.stts of kever states to reload kever from state in database
++    when not found in memory as dict item.
++
++    add method that answers is a given pre a group hab pre .localGroup(pre)
++
++    Todo add wrapper decorator to update attributes
++    on class that injects instance attributes when class is instanced
++    one of the injected parameters is function that that maps returned Komer to
++    object class
++    parameters are subdb (must be Komer) and function that maps retrieved dataclass
++    record  from dataabase to class instance. if no mapping function then just
++    return the dataclass record as value.
++    """
++
++'''
++
++
++class statedict(dict):
++    """
++    Subclass of dict that has db as attribute and employs read through cache
++    from db Baser.stts of kever states to reload kever from state in database
++    when not found in memory as dict item.
++    """
++    __slots__ = ('db')  # no .__dict__ just for db reference
++
++    def __init__(self, *pa, **kwa):
++        super(statedict, self).__init__(*pa, **kwa)
++        self.db = None
++
++    def __getitem__(self, k):
++        try:
++            return super(statedict, self).__getitem__(k)
++        except KeyError as ex:
++            if not self.db:
++                raise ex  # reraise KeyError
++            if (ksr := self.db.states.get(keys=k)) is None:
++                raise ex  # reraise KeyError
++            try:
++                from ..core.eventing import Kever
++                kever = Kever(state=ksr, db=self.db)
++            except MissingEntryError:  # no kel event for keystate
++                raise ex  # reraise KeyError
++            self.__setitem__(k, kever)
++            return kever
++
++    def __contains__(self, k):
++        if not super(statedict, self).__contains__(k):
++            try:
++                self.__getitem__(k)
++                return True
++            except KeyError:
++                return False
++        else:
++            return True
++
++    def get(self, k, default=None):
++        """Override of dict get method
++
++        Parameters:
++            k (str): key for dict
++            default: default value to return if not found
++
++        Returns:
++            kever: converted from underlying dict or database
++
++        """
++        if not super(statedict, self).__contains__(k):
++            return default
++        else:
++            return self.__getitem__(k)
++
++
+ def openDB(*, cls=None, name="test", **kwa):
+     """
+     Returns contextmanager generated by openLMDB but with Baser instance as default
+     """
+-    if cls is None:  # can't reference class before its defined below
++    if cls == None:  # can't reference class before its defined below
+         cls = Baser
+     return openLMDB(cls=cls, name=name, **kwa)
+ 
+@@ -63,7 +163,7 @@
+ KERIBaserMapSizeKey = "KERI_BASER_MAP_SIZE"
+ 
+ 
+-class Baser(BaserBase, LMDBer):
++class Baser(LMDBer):
+     """
+     Baser sets up named sub databases with Keri Event Logs within main database
+ 
+@@ -478,6 +578,19 @@
+         .essrs is named subDB instance of CesrIoSetSuber (klas=Texter) for
+             exchange message event source records.
+             subkey 'essrs.'
++            Multiple values per key.
++
++        .ests is named subDB instance of CatCesrIoSetSuber
++            (klas=(Number, Diger)) for resolved exchange source seals.
++            subkey 'ests.'
++            Key: exchange message SAID and sealing AID.
++            Value: sealing KEL event sequence number and SAID.
++            Multiple values per key are allowed. The exchange message in
++            ``exns`` remains the acceptance marker.
++
++        .eidx is named subDB instance of CesrIoSetSuber (klas=Diger) mapping
++            an accepted exchange endorser AID to exchange message SAIDs.
++            subkey 'eidx.'
+             Multiple values per key.
+ 
+         .chas is named subDB instance of CesrIoSetSuber (klas=Diger) for
+@@ -679,7 +792,8 @@
+             Value is (Prefixer, Number, Diger, Siger) tuple. Sourced from
+             parser kwa key 'trqs'.
+             Multiple values per key stored as ordered set (duplicates ignored).
+-            Entries persist until removed by the KRAM pruner.
++            KRAM removes entries after it forwards the message, detects a sender
++            key-state change, or prunes the incomplete message.
+ 
+         .kramTSGS is named subDB instance of CatCesrIoSetSuber for KRAM partially
+             signed multi-key trans last sig group attachments. Each group is
+@@ -689,8 +803,28 @@
+             Value is (Prefixer, Number, Diger, Siger) tuple. Sourced from
+             parser kwa key 'tsgs'.
+             Multiple values per key stored as ordered set (duplicates ignored).
+-            Entries persist until removed by the KRAM pruner.
++            KRAM removes entries after it forwards the message, detects a sender
++            key-state change, or prunes the incomplete message.
+ 
++        .kramULGS is named subDB instance of CesrIoSetSuber (klas=Prefixer) for
++            foreign last signature groups that KRAM could not resolve when a
++            partial message was received.
++            subkey 'ulgs.'
++            DB is keyed by (AID, MID): sender identifier prefix plus message SAID.
++            Values identify unresolved foreign signer prefixes. Multiple values
++            per key are allowed.
++            KRAM removes entries after it forwards the message, detects a sender
++            key-state change, or prunes the incomplete message.
++
++        .kramCIGS is named subDB instance of CatCesrIoSetSuber
++            (klas=(Verfer, Cigar)) for foreign nontransferable signatures on
++            partially signed multi-key messages.
++            subkey 'cigs.'
++            DB is keyed by (AID, MID): sender identifier prefix plus message SAID.
++            Multiple values per key are allowed.
++            KRAM removes entries after it forwards the message, detects a sender
++            key-state change, or prunes the incomplete message.
++
+         .kramSSCS is named subDB instance of CatCesrIoSetSuber for KRAM partially
+             signed multi-key first seen seal couple attachments from issuing or
+             delegating events.
+@@ -698,7 +832,8 @@
+             DB is keyed by (AID, MID): sender identifier prefix plus message SAID
+             Value is (Number, Diger) tuple. Sourced from parser kwa key 'sscs'.
+             Multiple values per key stored as ordered set (duplicates ignored).
+-            Entries persist until removed by the KRAM pruner.
++            KRAM removes entries after it forwards the message, detects a sender
++            key-state change, or prunes the incomplete message.
+ 
+         .kramSSTS is named subDB instance of CatCesrIoSetSuber for KRAM partially
+             signed multi-key source seal triple attachments from issued or
+@@ -708,7 +843,8 @@
+             Value is (Prefixer, Number, Diger) tuple. Sourced from parser kwa
+             key 'ssts'.
+             Multiple values per key stored as ordered set (duplicates ignored).
+-            Entries persist until removed by the KRAM pruner.
++            KRAM removes entries after it forwards the message, detects a sender
++            key-state change, or prunes the incomplete message.
+ 
+         .kramFRCS is named subDB instance of CatCesrIoSetSuber for KRAM partially
+             signed multi-key first seen replay couple attachments.
+@@ -716,7 +852,8 @@
+             DB is keyed by (AID, MID): sender identifier prefix plus message SAID
+             Value is (Number, Dater) tuple. Sourced from parser kwa key 'frcs'.
+             Multiple values per key stored as ordered set (duplicates ignored).
+-            Entries persist until removed by the KRAM pruner.
++            KRAM removes entries after it forwards the message, detects a sender
++            key-state change, or prunes the incomplete message.
+ 
+         .kramTDCS is named subDB instance of CatCesrIoSetSuber for KRAM partially
+             signed multi-key typed digest seal couple attachments.
+@@ -724,7 +861,8 @@
+             DB is keyed by (AID, MID): sender identifier prefix plus message SAID
+             Value is (Verser, Diger) tuple. Sourced from parser kwa key 'tdcs'.
+             Multiple values per key stored as ordered set (duplicates ignored).
+-            Entries persist until removed by the KRAM pruner.
++            KRAM removes entries after it forwards the message, detects a sender
++            key-state change, or prunes the incomplete message.
+ 
+         .kramPTDS is named subDB instance of IoSetSuber for KRAM partially signed
+             multi-key pathed stream attachments.
+@@ -733,7 +871,8 @@
+             Value is raw bytes of pathed CESR stream. Sourced from parser kwa
+             key 'ptds'.
+             Multiple values per key stored as ordered set (duplicates ignored).
+-            Entries persist until removed by the KRAM pruner.
++            KRAM removes entries after it forwards the message, detects a sender
++            key-state change, or prunes the incomplete message.
+ 
+         .kramBSQS is named subDB instance of CatCesrIoSetSuber for KRAM partially
+             signed multi-key blind state quadruple attachments.
+@@ -742,7 +881,8 @@
+             Value is (Diger, Noncer, Noncer, Labeler) tuple. Sourced from
+             parser kwa key 'bsqs'.
+             Multiple values per key stored as ordered set (duplicates ignored).
+-            Entries persist until removed by the KRAM pruner.
++            KRAM removes entries after it forwards the message, detects a sender
++            key-state change, or prunes the incomplete message.
+ 
+         .kramBSSS is named subDB instance of CatCesrIoSetSuber for KRAM partially
+             signed multi-key bound state sextuple attachments.
+@@ -751,7 +891,8 @@
+             Value is (Diger, Noncer, Noncer, Labeler, Number, Noncer) tuple.
+             Sourced from parser kwa key 'bsss'.
+             Multiple values per key stored as ordered set (duplicates ignored).
+-            Entries persist until removed by the KRAM pruner.
++            KRAM removes entries after it forwards the message, detects a sender
++            key-state change, or prunes the incomplete message.
+ 
+         .kramTMQS is named subDB instance of CatCesrIoSetSuber for KRAM partially
+             signed multi-key type media quadruple attachments.
+@@ -760,7 +901,8 @@
+             Value is (Diger, Noncer, Labeler, Texter) tuple. Sourced from
+             parser kwa key 'tmqs'.
+             Multiple values per key stored as ordered set (duplicates ignored).
+-            Entries persist until removed by the KRAM pruner.
++            KRAM removes entries after it forwards the message, detects a sender
++            key-state change, or prunes the incomplete message.
+ 
+     Properties:
+         kevers (statedict): read through cache of kevers of states for KELs in db
+@@ -785,7 +927,10 @@
+ 
+ 
+         """
+-        BaserBase.__init__(self)
++        self.prefixes = oset()  # should change to hids for hab ids
++        self.groups = oset()  # group hab ids
++        self._kevers = statedict()
++        self._kevers.db = self  # assign db for read through cache of kevers
+ 
+         if (mapSize := os.getenv(KERIBaserMapSizeKey)) is not None:
+             try:
+@@ -794,8 +939,15 @@
+                 logger.error("KERI_BASER_MAP_SIZE must be an integer value >1!")
+                 raise
+ 
+-        LMDBer.__init__(self, headDirPath=headDirPath, reopen=reopen, **kwa)
++        super(Baser, self).__init__(headDirPath=headDirPath, reopen=reopen, **kwa)
+ 
++    @property
++    def kevers(self):
++        """
++        Returns .db.kevers
++        """
++        return self._kevers
++
+     def reopen(self, **kwa):
+         """
+         Open sub databases
+@@ -815,7 +967,7 @@
+         from . import koming, subing
+         from ..core import coring, indexing
+ 
+-        LMDBer.reopen(self, **kwa)
++        super(Baser, self).reopen(**kwa)
+ 
+         # Create by opening first time named sub DBs within main DB instance
+         # Names end with "." as sub DB name must include a non Base64 character
+@@ -995,6 +1147,13 @@
+ 
+         self.essrs = subing.CesrIoSetSuber(db=self, subkey="essrs.", klas=coring.Texter)
+ 
++        # resolved exchange source seals indexed by message and sealing AID
++        self.ests = subing.CatCesrIoSetSuber(db=self, subkey="ests.",
++                                             klas=(coring.Number, coring.Diger))
++
++        # reverse lookup from authenticated AIDs to accepted exchange messages
++        self.eidx = subing.CesrIoSetSuber(db=self, subkey="eidx.", klas=coring.Diger)
++
+         # accepted signed 12-word challenge response exn messages keys by prefix of signer
+         # TODO: clean
+         self.chas = subing.CesrIoSetSuber(db=self, subkey='chas.', klas=coring.Diger)
+@@ -1190,6 +1349,14 @@
+         self.kramTSGS = subing.CatCesrIoSetSuber(db=self, subkey='tsgs.',
+                                                   klas=(coring.Prefixer, coring.Number,
+                                                         coring.Diger, indexing.Siger))
++
++        # ulgs: foreign last signature groups unresolved at receipt
++        self.kramULGS = subing.CesrIoSetSuber(db=self, subkey='ulgs.',
++                                             klas=coring.Prefixer)
++
++        # cigs: foreign nontransferable signatures (verfer, cigar)
++        self.kramCIGS = subing.CatCesrIoSetSuber(
++            db=self, subkey='cigs.', klas=(coring.Verfer, coring.Cigar))
+ 
+         # sscs: first seen seal couples (number, diger) issuing or delegating
+         self.kramSSCS = subing.CatCesrIoSetSuber(db=self, subkey='sscs.',
+@@ -1230,8 +1397,192 @@
+         self.reload()
+ 
+         return self.env
++
++
++    def reload(self):
++        """
++        Reload stored prefixes and Kevers from .habs
++
++        """
++        # Check migrations to see if this database is up to date.  Error otherwise
++        if not self.current:
++            raise DatabaseError(f"Database migrations must be run. DB version {self.version}; current {__version__}")
++
++        removes = []
++        for keys, data in self.habs.getTopItemIter():
++            if (ksr := self.states.get(keys=data.hid)) is not None:
++                try:
++                    from ..core.eventing import Kever
++                    kever = Kever(state=ksr,
++                                           db=self,
++                                           local=True)
++                except MissingEntryError as ex:  # no kel event for keystate
++                    removes.append(keys)  # remove from .habs
++                    continue
++                self.kevers[kever.prefixer.qb64] = kever
++                self.prefixes.add(kever.prefixer.qb64)
++                if data.mid:  # group hab
++                    self.groups.add(data.hid)
++
++            elif data.mid is None:  # in .habs but no corresponding key state and not a group so remove
++                removes.append(keys)  # no key state or KEL event for .hab record
++
++        for keys in removes:  # remove bare .habs records
++            self.habs.rem(keys=keys)
++
++    def migrate(self):
++        """ Run all migrations required
++
++        Run all migrations  that are required from the current version of database up to the current version
++         of the software that have not already been run.
++
++         Sets the version of the database to the current version of the software after successful completion
++         of required migrations
++
++        """
++        from ..core import coring
++
++        escrows_cleared = False
++
++        for (version, migrations) in MIGRATIONS:
++            # Only run migration if current source code version is at or below the migration version
++            ver = semver.VersionInfo.parse(__version__)
++            ver_no_prerelease = semver.Version(ver.major, ver.minor, ver.patch)
++            if self.version is not None and semver.compare(version, str(ver_no_prerelease)) > 0:
++                print(
++                    f"Skipping migration {version} as higher than the current KERI version {__version__}")
++                continue
++            # Skip migrations already run - where version less than (-1) or equal to (0) database version
++            # Strip prerelease from DB version to avoid lexicographic comparison bugs (#820)
++            if self.version is not None and semver.compare(version, _strip_prerelease(self.version)) != 1:
++                continue
++
++            # Clear all escrows before first migration to prevent old key
++            # format crashes (e.g. qnfs keys without insertion-order suffix).
++            # Uses .trim() which bypasses key parsing. See #863.
++            if not escrows_cleared:
++                self._trimAllEscrows()
++                escrows_cleared = True
++
++            print(f"Migrating database v{self.version} --> v{version}")
++            for migration in migrations:
++                modName = f"keri.db.migrations.{migration}"
++                if self.migs.get(keys=(migration,)) is not None:
++                    continue
++
++                mod = importlib.import_module(modName)
++                try:
++                    print(f"running migration {modName}")
++                    mod.migrate(self)
++                except Exception as e:
++                    print(f"\nAbandoning migration {migration} at version {version} with error: {e}")
++                    return
++
++                self.migs.pin(keys=(migration,), val=coring.Dater())
++
++            # update database version after successful migration
++            self.version = version
++
++        self.version = __version__
++
++    def _trimAllEscrows(self):
++        """Trim all escrow databases via low-level .trim().
++
++        Safe for old key formats that would crash higher-level iterators
++        (e.g., qnfs keys without insertion-order suffix from pre-1.2.0).
++        Called at the beginning of migration per spec call guidance.
++        See: https://github.com/WebOfTrust/keripy/issues/863
++        """
++        escrows = [
++            self.ures, self.vres, self.pses, self.pwes, self.ooes,
++            self.qnfs, self.uwes, self.misfits, self.delegables,
++            self.pdes, self.udes, self.rpes, self.ldes, self.epsd,
++            self.eoobi, self.dpub, self.gpwe, self.gdee, self.dpwe,
++            self.gpse, self.epse, self.dune,
++        ]
++        total = 0
++        for escrow in escrows:
++            count = escrow.cnt()
++            if count > 0:
++                escrow.trim()
++                total += count
++        if total > 0:
++            print(f"Cleared {total} escrow entries before migration")
+ 
++    def clearEscrows(self):
++        """
++        Clear all escrows
++        """
++        for escrow in [self.ures, self.vres, self.pses, self.pwes, self.ooes,
++                       self.qnfs, self.uwes,
++                       self.qnfs, self.misfits, self.delegables, self.pdes,
++                       self.udes, self.rpes, self.ldes, self.epsd, self.eoobi,
++                       self.dpub, self.gpwe, self.gdee, self.dpwe, self.gpse,
++                       self.epse, self.dune]:
++            count = escrow.cntAll()
++            escrow.trim()
++            logger.info(f"KEL: Cleared {count} escrows from ({escrow}")
+ 
++    @property
++    def current(self):
++        """ Current property determines if we are at the current database migration state.
++
++        If the database version matches the library version return True
++        If the current database version is behind the current library version, check for migrations
++
++           - If there are migrations to run, return False
++           - If there are no migrations to run, reset database version to library version and return True
++
++        If the current database version is ahead of the current library version, raise exception
++
++        """
++        if self.version == __version__:
++            return True
++
++        ver = semver.VersionInfo.parse(__version__)
++        ver_no_prerelease = semver.Version(ver.major, ver.minor, ver.patch)
++        # Strip prerelease from DB version to avoid lexicographic comparison bugs (#820)
++        if self.version is not None and semver.compare(_strip_prerelease(self.version), str(ver_no_prerelease)) == 1:
++            raise ConfigurationError(
++                f"Database version={self.version} is ahead of library version={__version__}")
++
++        last = MIGRATIONS[-1]
++        # If we aren't at latest version, but there are no outstanding migrations,
++        # reset version to latest (rightmost (-1) migration is latest)
++        if self.migs.get(keys=(last[1][-1],)) is not None:
++            return True
++
++        # We have migrations to run
++        return False
++
++    def complete(self, name=None):
++        """ Returns list of tuples of migrations completed with date of completion
++
++        Parameters:
++            name(str): optional name of migration to check completeness
++
++        Returns:
++            list: tuples of migration,date of completed migration names and the date of completion
++
++        """
++        migrations = []
++        if not name:
++            for version, migs in MIGRATIONS:
++                # Print entries only for migrations that have been run
++                # Strip prerelease from DB version to avoid lexicographic comparison bugs (#820)
++                if self.version is not None and semver.compare(version, _strip_prerelease(self.version)) <= 0:
++                    for mig in migs:
++                        dater = self.migs.get(keys=(mig,))
++                        migrations.append((mig, dater))
++        else:
++            for version, migs in MIGRATIONS:  # check all migrations for each version
++                if name not in migs or not self.migs.get(keys=(name,)):
++                    raise ValueError(f"No migration named {name}")
++            migrations.append((name, self.migs.get(keys=(name,))))
++
++        return migrations
++
++
+     def clean(self, gvrsn=Version, *, version=None):
+         """
+         Clean database by creating re-verified cleaned cloned copy
+@@ -1290,11 +1641,17 @@
+                 # This is the list of set based databases that are not created as part of event processing.
+                 # for now we are just copying them from self to copy without worrying about being able to
+                 # reprocess them.  We need a more secure method in the future
+-                sets = ["esigs", "ecigs", "epath", "enst", "chas", "reps", "wkas", "meids", "maids"]
++                evidence = ["esigs", "ecigs", "epath", "enst", "essrs", "ests"]
++                accepted = {said for (said,), _ in self.exns.getTopItemIter()}
++                sets = evidence + ["eidx", "chas", "reps", "wkas", "meids", "maids"]
+                 for name in sets:
+                     srcdb = getattr(self, name)
+                     cpydb = getattr(copy, name)
+                     for keys, val in srcdb.getTopItemIter():
++                        if name in evidence and keys[0] not in accepted:
++                            continue
++                        if name == "eidx" and val.qb64 not in accepted:
++                            continue
+                         cpydb.add(keys=keys, val=val)
+ 
+                 # Copy imgs (blinded media for remote identifiers)
+@@ -1353,18 +1710,424 @@
+             shutil.rmtree(os.path.join(os.path.sep, "usr", "local", "var", "keri", "clean"))
+ 
+         if not dst:  # move failed leave new in place so can manually fix
+-            raise ValueError(f"Error cloning, unable to move {copy.path} "
+-                             f"to {self.path}.")
++            raise ValueError("Error cloning, unable to move {} to {}."
++                             "".format(copy.path, self.path))
+ 
+         with reopenDB(db=self, reuse=True):  # make sure can reopen
+             if not isinstance(self.env, lmdb.Environment):
+-                raise ValueError(f"Error cloning, unable to reopen {self.path}.")
++                raise ValueError("Error cloning, unable to reopen."
++                                 "".format(self.path))
+ 
+         # clone success so remove if still there
+         if os.path.exists(copy.path):
+             shutil.rmtree(copy.path)
+ 
+ 
++    def clonePreIter(self, pre, fn=0, gvrsn=Version, *, version=None):
++        """
++        Returns iterator of first seen event messages with attachments for the
++        identifier prefix pre starting at first seen order number, fn.
++        Essentially a replay in first seen order with attachments
++
++        Parameters:
++            pre is bytes of itdentifier prefix
++            fn is int fn to resume replay. Earliset is fn=0
++            gvrsn (Versionage): CESR genus version for attachments
++            version (Versionage): legacy alias for gvrsn
++
++        Returns:
++           msgs (Iterator): over all items with pre starting at fn
++        """
++        #if hasattr(pre, 'encode'):
++            #pre = pre.encode("utf-8")
++
++        if version is not None:
++            gvrsn = version
++        for keys, fn, dig in self.fels.getAllItemIter(keys=pre, on=fn):
++            try:
++                msg = self.cloneEvtMsg(pre=pre, fn=fn, dig=dig, gvrsn=gvrsn)
++            except (MissingEntryError, SerializeError) as ex:
++                continue  # skip this event
++            yield msg
++
++
++    def cloneAllPreIter(self, gvrsn=Version, *, version=None):
++        """
++        Returns iterator of first seen event messages with attachments for all
++        identifier prefixes starting at key. If key == b'' then start at first
++        key in databse. Use key to resume replay.
++        Essentially a replay in first seen order with attachments of entire
++        set of FELs.
++
++        Parameters:
++            gvrsn (Versionage): CESR genus version for attachments
++            version (Versionage): legacy alias for gvrsn
++
++        Returns:
++           msgs (Iterator): over all items in db
++
++        """
++        if version is not None:
++            gvrsn = version
++        for keys, fn, dig in self.fels.getAllItemIter(keys=b'', on=0):
++            pre = keys[0].encode() if isinstance(keys[0], str) else keys[0]
++            try:
++                msg = self.cloneEvtMsg(pre=pre, fn=fn, dig=dig, gvrsn=gvrsn)
++            except (MissingEntryError, SerializeError) as ex:
++                continue  # skip this event
++            yield msg
++
++
++
++    def cloneEvtMsg(self, pre, fn, dig, gvrsn=Version, *, version=None):
++        """
++        Clones Event as Serialized CESR Message with Body and attached Foot
++
++        Parameters:
++            pre (bytes): identifier prefix of event
++            fn (int): first seen number (ordinal) of event
++            dig (bytes): digest of event
++            gvrsn (Versionage): CESR genus version for attachments
++            version (Versionage): legacy alias for gvrsn
++
++        Returns:
++            msg (bytearray): message body with attachments
++        """
++        from ..core import Prefixer, Number, Diger, SealSource, FirstSeen, messagize
++
++        if version is not None:
++            gvrsn = version
++
++        keys = (pre, dig)
++
++        # get serder
++        if not (serder := self.evts.get(keys=keys)):
++            raise MissingEntryError("Missing event for dig={}.".format(dig))
++
++        # get indexed signatures
++        if not (sigers := self.sigs.get(keys=keys)):
++            raise MissingEntryError("Missing sigs for dig={}.".format(dig))
++
++        # get indexed witness signatures if any
++        wigers = self.wigs.get(keys=keys)
++
++        # get nontrans endorsement couples not witnesses
++        # may have been originally key event attachments or receipted endorsements
++        cigars = []
++        if coups := self.rcts.get(keys=keys):
++            for prefixer, cigar in coups:
++                cigar.verfer = prefixer  # assign verfer
++                cigars.append(cigar)
++
++        # get trans receipt/endorsement attachments not controller
++        # vrcsNew get non-controller trans receipt attachments
++        # may have been originally non-controller sigs or receipted endorsements
++        topkeys = (pre, dig)
++        rsets = dict()  # collate  by triple of rpre,rsnh,rdig
++        for quintkeys, siger in self.vrcs.getTopItemIter(keys=topkeys):
++            epre, edig, rpre, rsnh, rdig = quintkeys  # expand quintkeys tuple
++            triple = (rpre, rsnh, rdig)  # create triple of receiptor/endorser
++            if triple not in rsets:
++                rsets[triple] = [siger]
++            else:
++                rsets[triple].append(siger)
++
++        rsgs = []
++        if rsets:  # convert rsets dict to rsgs list of tuples
++            for triple, rigers in rsets.items():
++                rpre, rsnh, rdig = triple
++                rsgs.append((Prefixer(qb64=rpre),
++                             Number(snh=rsnh),
++                             Diger(qb64=rdig),
++                             rigers))
++
++
++        # get authorizer (delegator/issuer) source seal event couple if any
++        bonds = []
++        if couple := self.aess.get(keys=keys):
++            number, diger = couple
++            bonds.append(SealSource(s=number, d=diger))
++
++        # get first seen replay couples
++        if not (dater := self.dtss.get(keys=keys)):
++            raise MissingEntryError("Missing datetime for dig={}.".format(dig))
++
++        bonds.append(FirstSeen(f=Number(num=fn), dt=dater))
++
++
++        msg = messagize(serder=serder, sigers=sigers, wigers=wigers,
++                        cigars=cigars, rsgs=rsgs, bonds=bonds, gvrsn=gvrsn)
++        return msg
++
++
++    def cloneDelegation(self, kever, gvrsn=Version, *, version=None):
++        """
++        Recursively clone delegation chain from AID of Kever if one exists.
++
++        Parameters:
++            kever (Kever): Kever from which to clone the delegator's AID.
++            gvrsn (Versionage): CESR genus version for attachments. Default
++                ``Version`` means library-default attachment framing even when
++                cloning bodies with a different pvrsn. Pass ``Vrsn_1_0`` only
++                when the peer requires that attachment genus.
++                Present-but-``None`` is treated as ``Version``.
++            version (Versionage): legacy alias for gvrsn
++
++        """
++        if version is not None:
++            gvrsn = version
++        if gvrsn is None:
++            gvrsn = Version
++        if kever.delegated and kever.delpre in self.kevers:
++            dkever = self.kevers[kever.delpre]
++            yield from self.cloneDelegation(dkever, gvrsn=gvrsn)
++
++            for dmsg in self.clonePreIter(pre=kever.delpre, fn=0, gvrsn=gvrsn):
++                yield dmsg
++
++    def fetchAllSealingEventByEventSeal(self, pre, seal, sn=0):
++        """
++        Search through a KEL for the event that contains a specific anchored
++        SealEvent type of provided seal but in dict form and is also fully
++        witnessed. Searches from sn forward (default = 0). Searches all events in
++        KEL of pre including disputed and/or superseded events.
++        Returns the Serder of the first event with the anchored SealEvent seal,
++
++            None if not found
++
++        Parameters:
++            pre (bytes|str): identifier of the KEL to search
++            seal (dict): dict form of Seal of any type SealEvent to find in anchored
++                seals list of each event
++            sn (int): beginning sn to search
++
++        """
++        from ..core.structing import SealEvent
++
++        if tuple(seal) != SealEvent._fields:  # wrong type of seal
++            return None
++
++        seal = SealEvent(**seal)  #convert to namedtuple
++
++        for srdr in self.getEvtPreIter(pre=pre, sn=sn):  # includes disputed & superseded
++            for eseal in srdr.seals or []:  # or [] for seals 'a' field missing
++                if tuple(eseal) == SealEvent._fields:
++                    eseal = SealEvent(**eseal)  # convert to namedtuple
++                    if seal == eseal and self.fullyWitnessed(srdr):
++                        return srdr
++        return None
++
++    # use alias here until can change everywhere for  backwards compatibility
++    findAnchoringSealEvent = fetchAllSealingEventByEventSeal  # alias
++
++    def fetchLastSealingEventByEventSeal(self, pre, seal, sn=0):
++        """
++        Search through a KEL for the last event at any sn but that contains a
++        specific anchored event seal of namedtuple SealEvent type that matches
++        the provided seal in dict form and is also fully witnessed.
++        Searchs from provided sn forward (default = 0).
++        Searches only last events in KEL of pre so does not include disputed
++        and/or superseded events.
++
++        Returns:
++            srdr (Serder): instance of the first event with the matching
++                anchoring SealEvent seal,
++                None if not found
++
++        Parameters:
++            pre (bytes|str): identifier of the KEL to search
++            seal (dict): dict form of Seal of any type SealEvent to find in anchored
++                seals list of each event
++            sn (int): beginning sn to search
++
++        """
++        from ..core.structing import SealEvent
++
++        if tuple(seal) != SealEvent._fields:  # wrong type of seal
++            return None
++
++        seal = SealEvent(**seal)  #convert to namedtuple
++
++        for srdr in self.getEvtLastPreIter(pre=pre, sn=sn):  # no disputed or superseded
++            for eseal in srdr.seals or []:  # or [] for seals 'a' field missing
++                if tuple(eseal) == SealEvent._fields:
++                    eseal = SealEvent(**eseal)  # convert to namedtuple
++                    if seal == eseal and self.fullyWitnessed(srdr):
++                        return srdr
++        return None
++
++
++
++    def fetchLastSealingEventBySeal(self, pre, seal, sn=0):
++        """Only searches last event at any sn therefore does not search
++        any disputed or superseded events.
++        Search through last event at each sn in KEL for the event that contains
++        an anchored Seal with same Seal type as provided seal but in dict form.
++        Searchs from sn forward (default = 0).
++        Returns the Serder of the first found event with the anchored Seal seal,
++
++            None if not found
++
++        Parameters:
++            pre (bytes|str): identifier of the KEL to search
++            seal (dict): dict form of Seal of any type to find in anchored
++                seals list of each event
++            sn (int): beginning sn to search
++
++        """
++        # create generic Seal namedtuple class using keys from provided seal dict
++        Seal = namedtuple('Seal', list(seal))  # matching type
++
++        for srdr in self.getEvtLastPreIter(pre=pre, sn=sn):  # only last evt at sn
++            for eseal in srdr.seals or []:  # or [] for seals 'a' field missing
++                if tuple(eseal) == Seal._fields:  # same type of seal
++                    eseal = Seal(**eseal)  #convert to namedtuple
++                    if seal == eseal and self.fullyWitnessed(srdr):
++                        return srdr
++        return None
++
++    def signingMembers(self, pre: str):
++        """ Find signing members of a multisig group aid.
++
++        Using the pubs index to find members of a signing group
++
++        Parameters:
++            pre (str): qb64 identifier prefix to find members
++
++        Returns:
++            list: qb64 identifier prefixes of signing members for provided aid
++
++        """
++        if (habord := self.habs.get(keys=(pre,))) is None:
++            return None
++
++        return habord.smids
++
++    def rotationMembers(self, pre: str):
++        """ Find rotation members of a multisig group aid.
++
++        Using the digs index to lookup member pres of a group aid
++
++        Parameters:
++            pre (str): qb64 identifier prefix to find members
++
++        Returns:
++            list: qb64 identifier prefixes of rotation members for provided aid
++        """
++        if (habord := self.habs.get(keys=(pre,))) is None:
++            return None
++
++        return habord.rmids
++
++    def fullyWitnessed(self, serder):
++        """ Verify the witness threshold on the event
++
++        Parameters:
++            serder (Serder): event serder to validate witness threshold
++
++        Returns:
++
++        """
++        # Verify fully receipted, because this witness may have persisted before all receipts
++        # have been gathered if this ius a witness for serder.pre
++        # get unique verified wigers and windices lists from wigers list
++        wigers = self.wigs.get(keys=(serder.preb, serder.saidb))
++        kever = self.kevers[serder.pre]
++        toad = kever.toader.num
++
++        return not len(wigers) < toad
++
++    def resolveVerifiers(self, pre=None, sn=0, dig=None):
++        """
++        Returns the Tholder and Verfers for the provided identifier prefix.
++        Default pre is own .pre
++
++        Parameters:
++            pre(str) is qb64 str of bytes of identifier prefix.
++            sn(int) is the sequence number of the est event
++            dig(str) is qb64 str of digest of est event
++
++        """
++        from ..core import coring
++
++        prefixer = coring.Prefixer(qb64=pre)
++        if prefixer.transferable:
++            # receipted event and receipter in database so get receipter est evt
++            # retrieve dig of last event at sn of est evt of receipter.
++            sdig = self.kels.getLast(keys=prefixer.qb64b, on=sn)
++            if sdig is None:
++                # receipter's est event not yet in receipters's KEL
++                raise ValidationError("key event sn {} for pre {} is not yet in KEL"
++                                             "".format(sn, pre))
++            sdig = sdig.encode("utf-8")
++            # retrieve last event itself of receipter est evt from sdig
++            sserder = self.evts.get(keys=(prefixer.qb64b, bytes(sdig)))
++            # assumes db ensures that sserder must not be none because sdig was in KE
++            if dig is not None and not sserder.compare(said=dig):  # endorser's dig not match event
++                raise ValidationError("Bad proof sig group at sn = {}"
++                                             " for ksn = {}."
++                                             "".format(sn, sserder.sad))
++
++            verfers = sserder.verfers
++            tholder = sserder.tholder
++
++        else:
++            verfers = [coring.Verfer(qb64=pre)]
++            tholder = coring.Tholder(sith="1")
++
++        return tholder, verfers
++
++    def getEvtPreIter(self, pre, sn=0):
++        """
++        Returns iterator of event messages without attachments
++        in sn order from the KEL of identifier prefix pre.
++        Essentially a replay of all event messages without attachments
++        for each sn from the KEL of pre including superseded duplicates
++
++        Parameters:
++            pre (bytes|str): identifier prefix
++            sn (int): sequence number (default 0) to begin interation
++        """
++        if hasattr(pre, 'encode'):
++            pre = pre.encode("utf-8")
++
++        for dig in self.kels.getAllIter(keys=pre, on=sn):
++            try:
++                if not (serder := self.evts.get(keys=(pre, dig))):
++                    raise MissingEntryError("Missing event for dig={}.".format(dig))
++
++            except Exception:
++                continue  # skip this event
++
++            yield serder  # event as Serder
++
++
++    def getEvtLastPreIter(self, pre, sn=0):
++        """
++        Returns iterator of event messages without attachments
++        in sn order from the KEL of identifier prefix pre.
++        Essentially a replay of all event messages without attachments
++        for each sn from the KEL of pre including superseded duplicates
++
++        Parameters:
++            pre (bytes|str): identifier prefix
++            sn (int): sequence number (default 0) to begin interation
++        """
++        if hasattr(pre, 'encode'):
++            pre = pre.encode("utf-8")
++
++        for dig in self.kels.getLastIter(keys=pre, on=sn):
++            try:
++
++                if not (serder := self.evts.get(keys=(pre, dig) )):
++                    raise MissingEntryError("Missing event for dig={}.".format(dig))
++
++            except Exception:
++                continue  # skip this event
++
++            yield serder  # event as Serder
++
++
+ class BaserDoer(doing.Doer):
+     """
+     Basic Baser Doer ( LMDB Database )
+--- a/src/keri/peer/exchanging.py
++++ b/src/keri/peer/exchanging.py
+@@ -10,13 +10,12 @@
+ 
+ from ..kering import (Vrsn_1_0, Vrsn_2_0, Ilks,
+                       Kinds, Version, versify,
+-                      ValidationError, MissingChainError,
+-                      MissingSignatureError)
+-from ..core import (Counter, Pather, Dater, Diger,
++                      ValidationError, MissingChainError, MissingSignatureError)
++from ..core import (Counter, Pather, Dater, Diger, Number,
+                     Prefixer, Seqner, Saider,
+-                    Noncer, Sadder, Serder, SerderKERI, Texter,
+-                    Saids, Codens, BlindState, BoundState, FirstSeen, Parser,
+-                    messagize,
++                    Serder, SerderKERI, Texter,
++                    Saids, Codens, BlindState, BoundState, FirstSeen, SealEvent,
++                    SealKind, SealSource, TypeMedia, Parser, messagize,
+                     verifySigs)
+ from ..db import fetchTsgs
+ from ..help import helping
+@@ -61,6 +60,40 @@
+ 
+         self.routes[handler.resource] = handler
+ 
++    def _cueMissingKeyState(self, missing):
++        """Request each missing KEL coordinate once."""
++        # Deduplicate repeated references in this processing attempt.
++        seen = set()
++        # Convert each missing coordinate into one logs query.
++        for prefixer, number in missing:
++            # Omit SN when even the latest establishment state is unknown.
++            sn = number.snh if number is not None else None
++            # Identify one request by signer and optional sequence number.
++            key = (prefixer.qb64, sn)
++            # Skip a coordinate already requested by another attachment.
++            if key in seen:
++                continue
++            # Mark this coordinate before emitting its query.
++            seen.add(key)
++
++            # Build the base KEL-log query for this signer.
++            query = dict(r="logs", pre=prefixer.qb64)
++            # Request one event when its sequence number is known.
++            if sn is not None:
++                query["sn"] = sn
++            # Queue retrieval for the application layer.
++            self.cues.append(dict(kin="query", q=query))
++
++    def _raiseMissingKeyState(self, serder, missing):
++        """Request missing KEL events and reject the current exchange."""
++        # Request the evidence before preserving strict rejection behavior.
++        self._cueMissingKeyState(missing)
++
++        msg = f"Missing key state for attached evidence on evt={serder.said}"
++        logger.info(msg)
++        logger.debug("Exchange message body=\n%s\n", serder.pretty())
++        raise MissingSignatureError(msg)
++
+     def processEvent(self, serder, tsgs=None, cigars=None, ptds=None, essrs=None, **kwa):
+         """ Process one serder event with attached indexed signatures representing a Peer to Peer exchange message.
+ 
+@@ -75,7 +108,12 @@
+             cigars (list): of Cigar instances of attached non-trans sigs
+             ptds (list[bytes]): pathed Cesr Streams
+             essrs (list[Texter]): ESSR streams as Texters
+-            kwa: optional parsed V2 nested substreams under ``nests``
++            kwa (dict): optional parsed attachment groups:
++                nests contains parsed V2 nested substreams
++                lsgs contains last-establishment signature groups
++                ulgs contains unresolved foreign signer prefixes
++                sscs contains sender-implied source seal couples
++                ssts contains explicit source seal triples
+ 
+         Returns:
+             bool | None: ``True`` when the exchange verified and was persisted,
+@@ -89,20 +127,97 @@
+         route = serder.ked["r"]
+         sender = serder.ked["i"]
+         nests = kwa.get("nests")
++        lsgs = list(kwa.get("lsgs", []))
++        unresolvedLsgs = list(kwa.get("ulgs", []))
++        sscs = kwa.get("sscs", [])
++        ssts = kwa.get("ssts", [])
+ 
+-
++        # Resolve route policy before classifying supplemental evidence.
+         behavior = self.routes[route] if route in self.routes else None
+-        if tsgs:
+-            for prefixer, snumber, sdiger, sigers in tsgs:  # iterate over each tsg
+-                if sender != prefixer.qb64:  # sig not by aid
+-                    msg = (f"Skipped signature not from aid = "
+-                           f"{sender}, from {prefixer.qb64} on exn msg = {serder.said}")
+-                    logger.info(msg)
+-                    logger.debug("Exchange message body=\n%s\n", serder.pretty())
+-                    raise MissingSignatureError(msg)
++        # Read the route's optional evidence-selection hook.
++        evidenceVerifier = getattr(behavior, "verifyEvidence", None)
++        # Read whether unresolved extras may be dropped after querying.
++        acceptsMissingEvidence = getattr(behavior, "acceptsMissingEvidence", False)
++        tsgs = list(tsgs or [])
++        cigars = list(cigars or [])
+ 
++        # Freeze foreign last-establishment references before sender escrow
++        # can return, so replay retains the evidence and its original keys.
++        missing = [(prefixer, None) for prefixer in unresolvedLsgs]
++        for prefixer, sigers in lsgs:
++            if prefixer.qb64 == sender:
++                continue
++            kever = self.kevers.get(prefixer.qb64)
++            if kever is None:
++                missing.append((prefixer, None))
++                continue
++            tsgs.append((prefixer,
++                         Number(sn=kever.lastEst.s),
++                         Diger(qb64=kever.lastEst.d),
++                         sigers))
++        # Preserve unresolved parsed groups for route-level policy.
++        missingEvidence = list(missing)
++        # Apply strict or optional handling before sender escrow can return.
++        if missingEvidence:
++            # Non-opted routes reject unresolved attached evidence.
++            if not acceptsMissingEvidence:
++                self._raiseMissingKeyState(serder, missingEvidence)
++            # Opted routes request the KEL and continue with known factors.
++            self._cueMissingKeyState(missingEvidence)
++
++        # A seal couple implies the sender AID. Store both attachment forms as
++        # an explicit sealing AID and historical event reference.
++        sourceSeals = [(Prefixer(qb64=sender), number, diger)
++                       for number, diger in sscs]
++        sourceSeals.extend(ssts)
++
++        senderTsgs = [tsg for tsg in tsgs if tsg[0].qb64 == sender]
++        extraTsgs = [tsg for tsg in tsgs if tsg[0].qb64 != sender]
++        senderSourceSeals = [seal for seal in sourceSeals
++                             if seal[0].qb64 == sender]
++        extraSourceSeals = [seal for seal in sourceSeals
++                            if seal[0].qb64 != sender]
++
++        if senderTsgs and evidenceVerifier is None:
++            # Routes without an evidence policy preserve the existing
++            # TSG-over-cigar precedence. A sender TSG causes all cigars to be
++            # ignored.
++            senderCigars = []
++            extraCigars = []
++        else:
++            senderCigars = [cigar for cigar in cigars
++                            if cigar.verfer.qb64 == sender]
++            extraCigars = [cigar for cigar in cigars
++                           if cigar.verfer.qb64 != sender]
++        if evidenceVerifier is None:
++            extraSourceSeals = []
++
++        (_, _, validSenderSourceSeals, _,
++         missingSenderSourceSeals) = verifyAttachments(
++            hby=self.hby, serder=serder, sourceSeals=senderSourceSeals)
++        if missingSenderSourceSeals:
++            # IPEX uses sender seals as required workflow evidence, so retain
++            # the complete message until the referenced sender KEL arrives.
++            if getattr(behavior, "acceptsSscs", False):
++                self.escrowPSEvent(serder=serder, tsgs=tsgs, pathed=ptds,
++                                   cigars=cigars, sourceSeals=sourceSeals,
++                                   nests=nests)
++            self._raiseMissingKeyState(serder, missingSenderSourceSeals)
++
++        validSenderTsgs = []
++        validSenderCigars = []
++        if validSenderSourceSeals:
++            # A valid sender seal authenticates the EXN. Retain only valid
++            # optional sender TSGs and do not fail on invalid ones.
++            validSenderTsgs, _, _, _, _ = verifyAttachments(
++                hby=self.hby, serder=serder, tsgs=senderTsgs)
++
++        elif senderTsgs:
++            for tsg in senderTsgs:
++                prefixer, snumber, sdiger, sigers = tsg
+                 if prefixer.qb64 not in self.kevers or self.kevers[prefixer.qb64].sn < snumber.sn:
+                     if self.escrowPSEvent(serder=serder, tsgs=tsgs, pathed=ptds,
++                                          cigars=cigars, sourceSeals=sourceSeals,
+                                           nests=nests):
+                         self.cues.append(dict(kin="query", q=dict(r="logs", pre=prefixer.qb64, sn=snumber.snh)))
+                     msg = f"Unable to find sender {prefixer.qb64} in kevers for evt = {serder.said}"
+@@ -110,12 +225,12 @@
+                     logger.debug("Exchange message body=\n%s\n", serder.pretty())
+                     raise MissingSignatureError(msg)
+ 
+-                # Verify the signatures are valid and that the signature threshold as of the signing event is met
+-                tholder, verfers = self.hby.db.resolveVerifiers(pre=prefixer.qb64, sn=snumber.sn, dig=sdiger.qb64)
+-                _, indices = verifySigs(serder.raw, sigers, verfers)
+-
+-                if not tholder.satisfy(indices):  # We still don't have all the sigers, need to escrow
++                tholder, verfers = self.hby.db.resolveVerifiers(
++                    pre=prefixer.qb64, sn=snumber.sn, dig=sdiger.qb64)
++                vsigers, indices = verifySigs(serder.raw, sigers, verfers)
++                if not tholder.satisfy(indices):
+                     if self.escrowPSEvent(serder=serder, tsgs=tsgs, pathed=ptds,
++                                          cigars=cigars, sourceSeals=sourceSeals,
+                                           nests=nests):
+                         self.cues.append(dict(kin="query", q=dict(r="logs", pre=prefixer.qb64, sn=snumber.snh)))
+                     msg = (f"Not enough signatures in idx={indices} route={route} "
+@@ -124,31 +239,73 @@
+                     logger.debug("Exchange message body=\n%s\n", serder.pretty())
+                     raise MissingSignatureError(msg)
+ 
+-        elif cigars:
+-            for cigar in cigars:
+-                if sender != cigar.verfer.qb64:  # cig not by aid
+-                    msg = (f"Skipped cig not from aid={sender} route={route} "
+-                           f"for exn evt = {serder.said} receiver={serder.ked.get('rp', '')}")
+-                    logger.info(msg)
+-                    logger.debug("Exchange message body=\n%s\n", serder.pretty())
+-                    raise MissingSignatureError(msg)
++                validSenderTsgs.append(
++                    (prefixer, snumber, sdiger, vsigers))
+ 
+-                if not cigar.verfer.verify(cigar.raw, serder.raw):  # cig not verify
++        elif senderCigars:
++            for cigar in senderCigars:
++                if (cigar.verfer.transferable or
++                        not cigar.verfer.verify(cigar.raw, serder.raw)):
+                     msg = (f"Failure satisfying exn on cigs for {cigar} route={route} "
+                            f"for evt = {serder.said} receiver={serder.ked.get('rp', '')}")
+                     logger.info(msg)
+                     logger.debug("Exchange message body=\n%s\n", serder.pretty())
+                     raise MissingSignatureError(msg)
+-        else:
+-            self.escrowPSEvent(serder=serder, tsgs=[], pathed=ptds,
++
++                validSenderCigars.append(cigar)
++
++        elif not validSenderSourceSeals:
++            # Do not escrow unsupported foreign-only evidence as missing sender
++            # authentication on routes without an evidence policy.
++            if (evidenceVerifier is None and
++                    (extraTsgs or extraCigars)):
++                msg = (f"Skipped evidence not from aid={sender} route={route} "
++                       f"for exn evt={serder.said}")
++                logger.info(msg)
++                logger.debug("Exchange message body=\n%s\n", serder.pretty())
++                raise MissingSignatureError(msg)
++
++            self.escrowPSEvent(serder=serder, tsgs=tsgs, pathed=ptds,
++                               cigars=cigars, sourceSeals=sourceSeals,
+                                nests=nests)
+             msg = (
+-                f"Failure satisfying exn, no cigs or sigs for evt = {serder.said} "
++                f"Failure satisfying exn, no sender authentication for evt = {serder.said} "
+                 f"on route {route} receiver = {serder.ked.get('rp', '')}")
+             logger.info(msg)
+             logger.debug("Exchange message body=\n%s\n", serder.pretty())
+             raise MissingSignatureError(msg)
+ 
++        # A sender authenticated above may still carry unsupported foreign
++        # evidence, which routes without an evidence policy must reject before
++        # persistence.
++        if (evidenceVerifier is None and
++                (extraTsgs or extraCigars)):
++            msg = (f"Skipped evidence not from aid={sender} route={route} "
++                   f"for exn evt={serder.said}")
++            logger.info(msg)
++            logger.debug("Exchange message body=\n%s\n", serder.pretty())
++            raise MissingSignatureError(msg)
++
++        (validExtraTsgs,
++         validExtraCigars,
++         validExtraSourceSeals,
++         invalidExtra,
++         missingExtra) = verifyAttachments(
++             hby=self.hby,
++             serder=serder,
++             tsgs=extraTsgs,
++             cigars=extraCigars,
++             sourceSeals=extraSourceSeals,
++         )
++        if missingExtra:
++            # Non-opted routes retain fail-closed behavior.
++            if not acceptsMissingEvidence:
++                self._raiseMissingKeyState(serder, missingExtra)
++            # Request every explicitly referenced missing KEL event.
++            self._cueMissingKeyState(missingExtra)
++            # Combine parser-level and verifier-level missing coordinates.
++            missingEvidence.extend(missingExtra)
++
+         e = Pather(parts=["e"])
+ 
+         kwa = dict()
+@@ -176,17 +333,72 @@
+             if not diger.verify(ser=essr):
+                 raise ValidationError(f"essr diger={diger.qb64} is invalid against content")
+ 
++        if evidenceVerifier is None:
++            # Routes without a policy accept no non-sender evidence.
++            acceptedExtras = ([], [], [])
++        else:
++            # Pass verified extras and invalid status into route policy.
++            evidenceKwa = dict(tsgs=validExtraTsgs,
++                               cigars=validExtraCigars,
++                               sourceSeals=validExtraSourceSeals,
++                               invalid=invalidExtra)
++            # Preserve older hook signatures unless the route opts in.
++            if acceptsMissingEvidence:
++                evidenceKwa["missing"] = missingEvidence
++            # Let the route select the supplemental factors to retain.
++            acceptedExtras = evidenceVerifier(serder=serder, **evidenceKwa)
++            # None signals permanent route-level evidence rejection.
++            if acceptedExtras is None:
++                logger.error("exn evidence for route %s failed behavior verification. said=%s",
++                             route, serder.said)
++                logger.debug("Exn Event Body=\n%s\n", serder.pretty())
++                return False
++
++        # Unpack only the supplemental factors approved by route policy.
++        acceptedTsgs, acceptedCigars, acceptedSourceSeals = acceptedExtras
++        # Recombine approved extras with authenticated sender signatures.
++        tsgs = validSenderTsgs + acceptedTsgs
++        cigars = validSenderCigars + acceptedCigars
++        sourceSeals = validSenderSourceSeals + acceptedSourceSeals
++        # Index each approved transferable endorser.
++        endorsers = {prefixer.qb64 for prefixer, _, _, _ in acceptedTsgs}
++        # Include each approved non-transferable endorser.
++        endorsers.update(cigar.verfer.qb64 for cigar in acceptedCigars)
++        # Include each approved source-seal anchorer.
++        endorsers.update(prefixer.qb64 for prefixer, _, _ in acceptedSourceSeals)
++
++        # Only opted-in V2 handlers receive the validated sender seal couples;
++        # legacy handlers keep their existing verify and handle signatures.
++        if validSenderSourceSeals and getattr(behavior, "acceptsSscs", False):
++            kwa["sscs"] = [(number, diger)
++                           for _, number, diger in validSenderSourceSeals]
++
+         # Perform behavior specific verification, think IPEX chaining requirements
++        verifier = getattr(behavior, "verify", None)
++        # Isolate verification-only arguments from handler arguments.
++        verifyKwa = dict(kwa)
++        # Share derived verification results only with handlers that opt in.
++        verification = {}
++        acceptsVerificationContext = getattr(
++            behavior, "acceptsVerificationContext", False)
++        if acceptsVerificationContext:
++            verifyKwa["verification"] = verification
++        # Pass selected evidence only to handlers that advertise support.
++        if getattr(behavior, "acceptsEvidence", False):
++            # Only an opted-in V2 behavior sees the post-KRAM evidence selected
++            # by its policy.  Legacy handlers retain their existing signatures.
++            verifyKwa["evidence"] = acceptedExtras
+         try:
+-            if not behavior.verify(serder=serder, **kwa):
++            if verifier is not None and not verifier(serder=serder, **verifyKwa):
+                 logger.error("exn event for route %s failed behavior verification. said=%s", route, serder.said)
+-                logger.debug(f"Event=\n%s\n", serder.pretty())
++                logger.debug("Event=\n%s\n", serder.pretty())
+                 return False
+         except MissingChainError as ex:
+             # Registry-backed IPEX grants may arrive before the disclosee has
+             # fetched the issuer's TEL history from observers. Keep those
+             # messages in exchange escrow and cue the app to fetch proof data.
+-            if self.escrowPSEvent(serder=serder, tsgs=tsgs or [], pathed=ptds,
++            if self.escrowPSEvent(serder=serder, tsgs=tsgs, pathed=ptds,
++                                  cigars=cigars, sourceSeals=sourceSeals,
+                                   nests=nests):
+                 self.cues.append(dict(kin="proof", said=serder.said))
+             logger.info("Escrowed exchange awaiting proof evidence: said=%s reason=%s",
+@@ -194,17 +406,19 @@
+             logger.debug("Exchange message body=\n%s\n", serder.pretty())
+             return None
+ 
+-        except AttributeError:
+-            logger.debug("Behavior for %s missing or does not have verify for said %s", route, serder.said)
+-            logger.debug("Exn Event Body=\n%s\n", serder.pretty())
+-
+         # Always persist events
+-        self.logEvent(serder, ptds, tsgs, cigars, essrs, nests=nests)
++        # Persist only sender authentication and policy-approved extras.
++        self.logEvent(serder, ptds, tsgs, cigars, essrs,
++                      sourceSeals=sourceSeals, nests=nests,
++                      endorsers=endorsers)
+         self.cues.append(dict(kin="saved", said=serder.said))
+ 
+         # Execute any behavior specific handling, not sure if this should be different than verify
+         try:
+-            behavior.handle(serder=serder, **kwa)
++            handleKwa = dict(kwa)
++            if acceptsVerificationContext:
++                handleKwa["verification"] = verification
++            behavior.handle(serder=serder, **handleKwa)
+         except AttributeError:
+             logger.debug("Behavior for %s missing or does not have handle for SAID=%s", route, serder.said)
+             logger.debug("Event=\n%s\n", serder.pretty())
+@@ -215,21 +429,35 @@
+         """ Process all escrows for `exn` messages"""
+         self.processEscrowPartialSigned()
+ 
+-    def escrowPSEvent(self, serder, tsgs, pathed, nests=None):
++    def escrowPSEvent(self, serder, tsgs, pathed, cigars=None,
++                      sourceSeals=None, nests=None):
+         """ Escrow event that does not have enough signatures.
+ 
+         Parameters:
+             serder (Serder): instance of event
+             tsgs (list): quadlet of prefixer seqner, saider, sigers
+             pathed (list): list of bytes of attached paths
++            cigars (list | None): nontransferable signatures to preserve
++            sourceSeals (list | None): source seal triples to preserve
+             nests (list | None): parsed V2 nested substreams to preserve
+ 
+         """
+         dig = serder.said
+-        for prefixer, seqner, ssaider, sigers in tsgs:  # iterate over each tsg
+-            quadkeys = (serder.said, prefixer.qb64, f"{seqner.sn:032x}", ssaider.qb64)
++        if self.hby.db.exns.get(keys=(dig,)) is not None:
++            return False
++
++        cigars = cigars or []
++        sourceSeals = sourceSeals or []
++        for prefixer, seqner, ssaider, sigers in tsgs:
++            quadkeys = (serder.said, prefixer.qb64,
++                        f"{seqner.sn:032x}", ssaider.qb64)
+             for siger in sigers:
+                 self.hby.db.esigs.add(keys=quadkeys, val=siger)
++        for cigar in cigars:
++            self.hby.db.ecigs.add(keys=(dig,), val=(cigar.verfer, cigar))
++        for prefixer, number, diger in sourceSeals:
++            self.hby.db.ests.add(keys=(serder.said, prefixer.qb64),
++                                 val=(number, diger))
+ 
+         self.hby.db.epsd.put(keys=(dig,), val=Dater())
+         self.hby.db.epath.pin(keys=(dig,), vals=[bytes(p) for p in pathed])
+@@ -241,6 +469,11 @@
+     def processEscrowPartialSigned(self):
+         """ Process escrow of partially signed messages"""
+         for (dig,), serder in self.hby.db.epse.getTopItemIter():
++            if self.hby.db.exns.get(keys=(dig,)) is not None:
++                self.hby.db.epse.rem(dig)
++                self.hby.db.epsd.rem(dig)
++                continue
++
+             try:
+                 tsgs = []
+                 klases = (Prefixer, Seqner, Saider)
+@@ -276,21 +509,50 @@
+ 
+                 pathed = [bytearray(p.encode("utf-8")) for p in self.hby.db.epath.get(keys=(dig,))]
+                 essrs = [texter for texter in self.hby.db.essrs.get(keys=(dig,))]
++                cigars = []
++                for verfer, cigar in self.hby.db.ecigs.get(keys=(dig,)):
++                    cigar.verfer = verfer
++                    cigars.append(cigar)
++                sourceSeals = []
++                for keys, (number, diger) in self.hby.db.ests.getTopItemIter(
++                        keys=(dig, "")):
++                    sourceSeals.append((Prefixer(qb64=keys[1]), number, diger))
+                 nests = loadParsedNestedSubstreams(self.hby, dig)
+ 
+-                result = self.processEvent(serder=serder, tsgs=tsgs, ptds=pathed,
+-                                           essrs=essrs, nests=nests)
++                # The same stores hold escrowed and accepted evidence. Remove
++                # the temporary branches so processEvent writes back only the
++                # evidence that passes current verification and policy.
++                self.hby.db.esigs.trim(keys=(dig, ""))
++                self.hby.db.ecigs.rem(keys=(dig,))
++                self.hby.db.ests.trim(keys=(dig, ""))
++                result = self.processEvent(serder=serder, tsgs=tsgs, cigars=cigars,
++                                           ptds=pathed,
++                                           essrs=essrs, ssts=sourceSeals, nests=nests)
+ 
+             except MissingSignatureError as ex:
++                for prefixer, seqner, ssaider, sigers in tsgs:
++                    quadkeys = (serder.said, prefixer.qb64,
++                                f"{seqner.sn:032x}", ssaider.qb64)
++                    for siger in sigers:
++                        self.hby.db.esigs.add(keys=quadkeys, val=siger)
++                for cigar in cigars:
++                    self.hby.db.ecigs.add(
++                        keys=(serder.said,), val=(cigar.verfer, cigar))
++                for prefixer, number, diger in sourceSeals:
++                    self.hby.db.ests.add(
++                        keys=(serder.said, prefixer.qb64),
++                        val=(number, diger))
+                 if logger.isEnabledFor(logging.TRACE):
+                     logger.trace("Exchange partially signed unescrow failed: %s\n", ex.args[0])
+-                    logger.debug(f"Event body=\n%s\n", serder.pretty())
++                    logger.debug("Event body=\n%s\n", serder.pretty())
+             except Exception as ex:
+                 saved = self.hby.db.exns.get(keys=(dig,)) is not None
+                 self.hby.db.epse.rem(dig)
+                 self.hby.db.epsd.rem(dig)
+-                self.hby.db.esigs.rem(dig)
+                 if not saved:
++                    self.hby.db.esigs.trim(keys=(dig, ""))
++                    self.hby.db.ecigs.rem(keys=(dig,))
++                    self.hby.db.ests.trim(keys=(dig, ""))
+                     self.hby.db.epath.rem(keys=(dig,))
+                     self.hby.db.enst.rem(keys=(dig,))
+                 if logger.isEnabledFor(logging.DEBUG):
+@@ -306,8 +568,10 @@
+                 saved = self.hby.db.exns.get(keys=(dig,)) is not None
+                 self.hby.db.epse.rem(dig)
+                 self.hby.db.epsd.rem(dig)
+-                self.hby.db.esigs.rem(dig)
+                 if not saved:
++                    self.hby.db.esigs.trim(keys=(dig, ""))
++                    self.hby.db.ecigs.rem(keys=(dig,))
++                    self.hby.db.ests.trim(keys=(dig, ""))
+                     self.hby.db.epath.rem(keys=(dig,))
+                     self.hby.db.enst.rem(keys=(dig,))
+                     logger.info("Exchanger unescrow rejected exchange: said=%s", serder.said)
+@@ -315,32 +579,58 @@
+                 logger.info("Exchanger unescrow succeeded in valid exchange: creder=%s", serder.said)
+                 logger.debug("Event=\n%s\n", serder.pretty())
+ 
+-    def logEvent(self, serder, pathed=None, tsgs=None, cigars=None, essrs=None, nests=None):
++    def logEvent(self, serder, pathed=None, tsgs=None, cigars=None, essrs=None,
++                 sourceSeals=None, nests=None, endorsers=None):
+         dig = serder.said
+         pdig = serder.ked['p']
+         pathed = pathed or []
+         tsgs = tsgs or []
+         cigars = cigars or []
+         essrs = essrs or []
++        sourceSeals = sourceSeals or []
++        # Normalize the optional reverse-index input.
++        endorsers = endorsers or []
+ 
+-        for prefixer, seqner, ssaider, sigers in tsgs:  # iterate over each tsg
+-            quadkeys = (serder.said, prefixer.qb64, f"{seqner.sn:032x}", ssaider.qb64)
++        escrowed = (self.hby.db.exns.get(keys=(dig,)) is None and
++                    self.hby.db.epse.get(keys=(dig,)) is not None)
++        if escrowed:
++            self.hby.db.esigs.trim(keys=(dig, ""))
++            self.hby.db.ecigs.rem(keys=(dig,))
++            self.hby.db.ests.trim(keys=(dig, ""))
++            self.hby.db.epath.rem(keys=(dig,))
++            self.hby.db.enst.rem(keys=(dig,))
++
++        for prefixer, seqner, ssaider, sigers in tsgs:
++            quadkeys = (serder.said, prefixer.qb64,
++                        f"{seqner.sn:032x}", ssaider.qb64)
+             for siger in sigers:
+                 self.hby.db.esigs.add(keys=quadkeys, val=siger)
+         for cigar in cigars:
+             self.hby.db.ecigs.add(keys=(dig,), val=(cigar.verfer, cigar))
+ 
+-        diger = Diger(qb64=serder.said)
++        exnDiger = Diger(qb64=serder.said)
+         self.hby.db.epath.pin(keys=(dig,), vals=[bytes(p) for p in pathed])
+         if nests:
+             self.hby.db.enst.pin(keys=(dig,),
+                                  vals=[bytes(serializeParsedSubstream(nest)) for nest in nests])
+         for texter in essrs:
+             self.hby.db.essrs.add(keys=(dig,), val=texter)
++        for prefixer, number, diger in sourceSeals:
++            self.hby.db.ests.add(keys=(serder.said, prefixer.qb64),
++                                 val=(number, diger))
++
++        # Only behavior-approved non-sender endorsements enter this durable
++        # reverse index; sender authentication and escrow evidence do not.
++        # Add one Grant SAID entry under each accepted grantor AID.
++        for endorser in endorsers:
++            self.hby.db.eidx.add(keys=(endorser,), val=exnDiger)
+         if pdig:
+-            self.hby.db.erpy.pin(keys=(pdig,), val=diger)
++            self.hby.db.erpy.pin(keys=(pdig,), val=exnDiger)
+ 
+         self.hby.db.exns.put(keys=(dig,), val=serder)
++        if escrowed:
++            self.hby.db.epse.rem(dig)
++            self.hby.db.epsd.rem(dig)
+ 
+     def lead(self, hab, said):
+         """ Determines is current member represented by hab is the lead of an exn message
+@@ -682,21 +972,27 @@
+     tsgs, cigars = verify(hby=hby, serder=exn)
+     pathed = hby.db.epath.get(keys=(exn.said,))
+     nests = hby.db.enst.get(keys=(exn.said,))
++    sourceSeals = []
++    for keys, (number, diger) in hby.db.ests.getTopItemIter(keys=(exn.said, "")):
++        _, pre = keys
++        sourceSeals.append(SealEvent(i=Prefixer(qb64=pre), s=number, d=diger))
+ 
+     if exn.pvrsn.major >= Vrsn_2_0.major and not pathed:
+         return messagize(serder=exn,
+                          tsgs=tsgs or None,
+                          cigars=cigars or None,
++                         bonds=sourceSeals or None,
+                          nests=[bytearray(nest.encode("utf-8") if hasattr(nest, "encode") else nest)
+                                 for nest in nests] or None,
+                          framed=framed,
+                          gvrsn=exn.gvrsn if exn.gvrsn else exn.pvrsn)
+ 
+     aims = bytearray()
+-    if tsgs or cigars:
++    if tsgs or cigars or sourceSeals:
+         # Authenticator attachments via messagize; framed=True so we can append
+         # pathed embeds after (pathed material is outside messagize support).
+         full = messagize(exn, tsgs=tsgs or None, cigars=cigars or None,
++                         bonds=sourceSeals or None,
+                          framed=True, gvrsn=Vrsn_1_0)
+         aims.extend(full[exn.size:])
+ 
+@@ -734,15 +1030,115 @@
+         return acc
+ 
+ 
++def verifyAttachments(hby, serder, *, tsgs=None, cigars=None,
++                      sourceSeals=None):
++    """Cryptographically verify exchange authentication attachments.
++
++    Parameters:
++        hby (Habery): database environment with signer key state
++        serder (Serder): exchange message signed or sealed by the attachments
++        tsgs (list): transferable signature groups with establishment references
++        cigars (list): non-transferable signatures
++        sourceSeals (list): source seal triples
++
++    Returns:
++        tuple: Valid transferable signature groups, non-transferable signatures,
++            source seal triples, an invalid attachment flag, and missing KEL
++            coordinates.
++    """
++    tsgs = list(tsgs or [])
++    cigars = cigars or []
++    sourceSeals = sourceSeals or []
++    invalid = False
++    missing = []
++
++    validTsgs = []
++    for prefixer, number, diger, sigers in tsgs:
++        if not prefixer.transferable:
++            invalid = True
++            continue
++
++        sdig = hby.db.kels.getLast(keys=prefixer.qb64b, on=number.sn)
++        if sdig is None:
++            missing.append((prefixer, number))
++            continue
++
++        aserder = hby.db.evts.get(
++            keys=(prefixer.qb64b, bytes(sdig, "utf-8")))
++        if aserder is None:
++            missing.append((prefixer, number))
++            continue
++
++        if sdig != diger.qb64 or not aserder.estive:
++            invalid = True
++            continue
++
++        try:
++            tholder, verfers = hby.db.resolveVerifiers(
++                pre=prefixer.qb64, sn=number.sn, dig=diger.qb64)
++        except ValidationError:
++            invalid = True
++            continue
++
++        vsigers, indices = verifySigs(serder.raw, sigers, verfers)
++        if not tholder.satisfy(indices):
++            invalid = True
++            continue
++
++        validTsgs.append((prefixer, number, diger, vsigers))
++
++    validCigars = []
++    for cigar in cigars:
++        if (cigar.verfer.transferable or
++                not cigar.verfer.verify(cigar.raw, serder.raw)):
++            invalid = True
++            continue
++
++        validCigars.append(cigar)
++
++    validSourceSeals = []
++    for prefixer, number, diger in sourceSeals:
++        if not prefixer.transferable:
++            invalid = True
++            continue
++
++        sdig = hby.db.kels.getLast(keys=prefixer.qb64b, on=number.sn)
++        if sdig is None:
++            missing.append((prefixer, number))
++            continue
++
++        aserder = hby.db.evts.get(
++            keys=(prefixer.qb64b, bytes(sdig, "utf-8")))
++        if aserder is None:
++            missing.append((prefixer, number))
++            continue
++
++        if (sdig != diger.qb64 or
++                not any(isinstance(seal, dict) and
++                        seal.get("d") == serder.said
++                        for seal in aserder.seals or [])):
++            invalid = True
++            continue
++
++        validSourceSeals.append((prefixer, number, diger))
++
++    return validTsgs, validCigars, validSourceSeals, invalid, missing
++
++
+ def verify(hby, serder):
+-    """  Verify that the signatures in the database are valid for the provided exn
++    """Verify all stored authentication and evidence for an exchange message.
+ 
++    Any invalid stored attachment fails verification. Source seals are
++    verified but omitted from the legacy two-item return tuple;
++    ``serializeMessage`` reloads them for wire reconstruction.
++
+     Parameters:
+         hby (Habery): database environment from which to verify message
+         serder (Serder): exn serder to load and verify signatures for
+ 
+     Returns:
+-        bool: True means threshold satisfyig signatures were loaded and verified successfully"""
++        tuple: Transferable signature groups and non-transferable signatures.
++    """
+     tsgs = []
+     klases = (Prefixer, Seqner, Saider)
+     args = ("qb64", "snh", "qb64")
+@@ -762,36 +1158,39 @@
+         prefixer, seqner, saider = helping.klasify(sers=old, klases=klases, args=args)
+         tsgs.append((prefixer, seqner, saider, sigers))
+ 
+-    accepted = False
+-    for prefixer, seqner, ssaider, sigers in tsgs:
+-        if prefixer.qb64 not in hby.kevers or hby.kevers[prefixer.qb64].sn < seqner.sn:
+-            msg = f"Unable to find sender {prefixer.qb64} in kevers for evt = {serder.said}"
+-            logger.info(msg)
+-            logger.debug("Exn Body=\n%s\n", serder.pretty())
+-            raise MissingSignatureError(msg)
++    sourceSeals = []
++    for keys, (number, diger) in hby.db.ests.getTopItemIter(
++            keys=(serder.said, "")):
++        _, pre = keys
++        sourceSeals.append((Prefixer(qb64=pre), number, diger))
+ 
+-        # Verify the signatures are valid and that the signature threshold as of the signing event is met
+-        tholder, verfers = hby.db.resolveVerifiers(pre=prefixer.qb64, sn=seqner.sn, dig=ssaider.qb64)
+-        _, indices = verifySigs(serder.raw, sigers, verfers)
++    cigars = []
++    for verfer, cigar in hby.db.ecigs.get(keys=(serder.said,)):
++        cigar.verfer = verfer
++        cigars.append(cigar)
+ 
+-        if not tholder.satisfy(indices):  # We still don't have all the sigers, need to escrow
+-            msg = f"Not enough signatures in idx={indices} for evt = {serder.said}"
+-            logger.info(msg)
+-            logger.debug("Exn Body=\n%s\n", serder.pretty())
+-            raise MissingSignatureError(msg)
+-        accepted = True
++    tsgs, cigars, sourceSeals, invalid, missing = verifyAttachments(
++        hby=hby,
++        serder=serder,
++        tsgs=tsgs,
++        cigars=cigars,
++        sourceSeals=sourceSeals,
++    )
++    if invalid or missing:
++        msg = f"Invalid stored authentication or evidence for evt = {serder.said}"
++        logger.info(msg)
++        logger.debug("Exn Body=\n%s\n", serder.pretty())
++        raise MissingSignatureError(msg)
+ 
+-    cigars = hby.db.ecigs.get(keys=(serder.said,))
+-    for cigar in cigars:
+-        if not cigar.verfer.verify(cigar.raw, serder.raw):  # cig not verify
+-            msg = f"Failure satisfying exn on cigs for {cigar} for evt = {serder.said}"
+-            logger.info(msg)
+-            logger.debug("Exn Body=\n%s\n", serder.pretty())
+-            raise MissingSignatureError(msg)
+-        accepted = True
++    authenticated = any(prefixer.qb64 == serder.pre
++                        for prefixer, _, _, _ in tsgs)
++    authenticated |= any(cigar.verfer.qb64 == serder.pre
++                         for cigar in cigars)
++    authenticated |= any(prefixer.qb64 == serder.pre
++                         for prefixer, _, _ in sourceSeals)
+ 
+-    if not accepted:
+-        msg = f"No valid signatures stored for evt = {serder.said}"
++    if not authenticated:
++        msg = f"No valid sender authentication stored for evt = {serder.said}"
+         logger.info(msg)
+         logger.debug("Exn Body=\n%s\n", serder.pretty())
+         raise MissingSignatureError(msg)
+@@ -813,17 +1212,26 @@
+     if sigers and (tsgs or lsgs):
+         raise ValueError("Unsupported mixed signature groups for nested substream serialization")
+ 
+-    bonds = []
+-    for name in ("sscs", "ssts", "tdcs"):
+-        bonds.extend(parsed.get(name) or [])
+-    # Parsed blind-state proof groups come back as plain tuples of primitive
+-    # instances, but messagize() expects namedtuple bond records when it
+-    # reserializes the nested node into storage.
++    # Parsed bond groups come back as plain tuples of primitive instances, but
++    # messagize() needs their namedtuple clans to select the correct counters.
++    # Rebuild sender-implied source couples.
++    bonds = [item if isinstance(item, SealSource) else SealSource(*item)
++             for item in (parsed.get("sscs") or [])]
++    # Rebuild explicit source triples.
++    bonds.extend(item if isinstance(item, SealEvent) else SealEvent(*item)
++                 for item in (parsed.get("ssts") or []))
++    # Rebuild typed digest couples.
++    bonds.extend(item if isinstance(item, SealKind) else SealKind(*item)
++                 for item in (parsed.get("tdcs") or []))
++    # Rebuild sequenced blind-state proofs.
+     bonds.extend(item if isinstance(item, BlindState) else BlindState(*item)
+                  for item in (parsed.get("bsqs") or []))
++    # Rebuild bound blind-state proofs.
+     bonds.extend(item if isinstance(item, BoundState) else BoundState(*item)
+                  for item in (parsed.get("bsss") or []))
+-    bonds.extend(parsed.get("tmqs") or [])
++    # Rebuild type-and-media couples.
++    bonds.extend(item if isinstance(item, TypeMedia) else TypeMedia(*item)
++                 for item in (parsed.get("tmqs") or []))
+     for item in parsed.get("frcs") or []:
+         bonds.append(item if isinstance(item, FirstSeen) else FirstSeen(*item))
+ 
+--- a/src/keri/recording.py
++++ b/src/keri/recording.py
+@@ -502,6 +502,7 @@
+     Attributes:
+         mdt (str): message datetime stamp ISO-8601 from msg dt field
+         xdt (str): exchange transaction start datetime ISO-8601 from xip dt field
++        rdt (str): receiver datetime when KRAM accepted the complete message
+         d (int): drift in ms from cache-type at creation time
+         ml (int): message lag in ms (sl or ll from cache-type)
+         pml (int): prune message lag in ms (psl or pll from cache-type)
+@@ -510,6 +511,7 @@
+     """
+     mdt: str = ''
+     xdt: str = ''
++    rdt: str = ''
+     d: int = 0
+     ml: int = 0
+     pml: int = 0

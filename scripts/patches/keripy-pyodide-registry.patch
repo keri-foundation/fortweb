@@ -1,0 +1,60 @@
+--- a/src/keri/acdc/registering.py
++++ b/src/keri/acdc/registering.py
+@@ -8,11 +8,13 @@
+ """
+
+ from dataclasses import dataclass
++import sys
+
+ from ..db import Komer
+ from ..kering import ConfigurationError
+ from ..core import Saider
+-from .regbasing import RegBaser
++if sys.platform != "emscripten":
++    from .regbasing import RegBaser
+ from .webregbasing import WebRegBaser
+
+
+@@ -27,6 +29,8 @@
+     """Open the backing store used by the V2 ACDC registry service."""
+     if web:
+         raise ConfigurationError("web registry backend is not yet supported by V2 Regery")
++    if sys.platform == "emscripten":
++        raise ConfigurationError("native registry backend is unavailable in Pyodide")
+     return RegBaser(reopen=reopen, **kwa)
+
+
+@@ -34,8 +37,8 @@
+     """Small convenience wrapper around RegBaser/WebRegBaser."""
+
+     def __init__(self, baser):
+-        if isinstance(baser, WebRegBaser):
+-            raise ConfigurationError("web registry backend is not yet supported by V2 Regery")
++        if isinstance(baser, WebRegBaser) and (sys.platform != "emscripten" or not baser.opened or "regs." not in baser.db._stores):
++            raise ConfigurationError("web registry backend must be opened with alias storage")
+         self.baser = baser
+         self.records = Komer(db=self.baser, subkey='regs.', klas=RegistryRecord)
+
+--- a/src/keri/acdc/webregbasing.py
++++ b/src/keri/acdc/webregbasing.py
+@@ -90,6 +90,7 @@
+             "heds.",
+             "maes.",
+             "ooes.",
++            "regs.",
+         ]
+         self.SubDbNames = SubDbNames
+
+--- a/src/keri/db/subing.py
++++ b/src/keri/db/subing.py
+@@ -3471,6 +3471,10 @@
+
+
+
++    if sys.platform == "emscripten":
++        getLastIter = getAllLastIter
++
++
+     def getAllItemBackIter(self, keys: str|bytes|memoryview|Iterable="",
+                                 on: int|None=None):
+         """Iterates backwards over all set items for all on <= on at key.

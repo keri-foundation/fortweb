@@ -6,6 +6,13 @@ These files were vendored from the pinned PyScript release at:
 - `https://pyscript.net/releases/2025.11.2/core.js`
 - the release-local hashed JS chunks that `core.js` and its imports reference
 
+`core-DSF9czGY.js` contains a local, fail-closed worker-hook change generated
+by `patch_pyscript` in `scripts/prepare_csp_runtime_source.py`. It preserves the
+bundled default hook without JavaScript string evaluation and rejects other
+worker hooks; custom worker-hook support requires a separately reviewed change.
+The unmodified input must match SHA-256
+`29d0aa103b85b8f17fb3ccaf5b1a2788bdb851378655ff9f39dd1c50270b171d`.
+
 Fortweb does not vendor the release source maps. The vendored `.js` files have
 their `sourceMappingURL` trailers stripped so the app does not request missing
 `.map` files at runtime.

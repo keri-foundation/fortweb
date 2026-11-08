@@ -21,17 +21,19 @@ The eventual pull request description must retain this attribution and the no-ch
 ## Current producer inputs
 
 The public producer captures FortWeb's current source, including working
-changes. Use the published HIO 0.7.20 source archive, whose release tag points
-to commit `92cd92e3c7dbf34577c2128c68eec75669ff833f`, and Keripy webbaser commit
-`8ec740aec6dd349471056fea909828fbb6c3ea1b` with its direct `hio==0.7.20`
-dependency. Both source inputs build without a patch. The compiled baseline remains the
-accepted Pyodide 314 wheelhouse. See the build document for the input format
-and commands.
+changes. It uses the published HIO 0.7.20 source archive, whose release tag
+points to commit `92cd92e3c7dbf34577c2128c68eec75669ff833f`, and Keripy
+webbaser commit `8ec740aec6dd349471056fea909828fbb6c3ea1b` with its direct
+`hio==0.7.20` dependency. HIO builds without a patch. Keripy carries the two
+browser patches plus the upstream IPEX proof-reparse hunk from
+[`1914bce5ab4ba0cca7c0806bf998f1bf54d78364`](https://github.com/WebOfTrust/keripy/commit/1914bce5ab4ba0cca7c0806bf998f1bf54d78364).
+The compiled baseline remains the accepted Pyodide 314 wheelhouse. See the
+build document for the input format and commands.
 
 `tools/package-runtime.mjs` verifies current source and runtime bytes before it
 produces the ZIP, sidecar, and release metadata. A source, runtime, wheel,
 harness, or package change requires fresh products and evidence. The
-[runtime source archive](https://github.com/keri-foundation/fortweb/releases/tag/runtime-source-pyodide-314-hio-0.7.20-20260910)
+[runtime source archive](https://github.com/keri-foundation/fortweb/releases/tag/runtime-source-pyodide-314-hio-0.7.20-20261102)
 is published. CI pins its URL and both archive and manifest digests.
 
 ## Mobile consumer handoff

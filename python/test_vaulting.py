@@ -21,6 +21,97 @@ def _load_module():
     return module
 
 
+class ProtectedVaultRecordTest(unittest.TestCase):
+    def test_missing_salt_and_changed_storage_name_are_rejected(self):
+        vaulting = _load_module()
+        vaulting._CONFIG.update(wallet_storage_prefix="fortweb-vault-", passcode_kdf_defaults={
+            "algorithm": "argon2id13", "salt": "salt", "opslimit": 2,
+            "memlimit": 67108864, "outlen": 16,
+        })
+        record = vaulting._vault_record(vault_id="test", alias="test", encrypted=False, root_salt="fresh")
+        self.assertEqual(vaulting._coerce_vault_record(record)["rootSalt"], "fresh")
+        for change in ({"rootSalt": ""}, {"storageName": "legacy"}):
+            with self.subTest(change=change), self.assertRaises(vaulting.RuntimeFault) as error:
+                vaulting._coerce_vault_record({**record, **change})
+            self.assertEqual(error.exception.code, "BAD_STATE")
+
+
+class FailedPersistenceTest(unittest.IsolatedAsyncioTestCase):
+    async def test_flush_failure_blocks_use_and_success_flushes_keeper_first(self):
+        vaulting = _load_module()
+        calls = []
+
+        class Store:
+            def __init__(self, name, fail=False):
+                self.name, self.fail = name, fail
+
+            async def flush(self):
+                calls.append(self.name)
+                if self.fail:
+                    raise RuntimeError("sync failed")
+
+        keeper, baser = Store("keeper"), Store("baser")
+        vaulting._STATE = {"vault": {"id": "vault"}, "hby": SimpleNamespace(ks=keeper, db=baser)}
+        await vaulting.flush_open_state()
+        self.assertEqual(calls, ["keeper", "baser"])
+        for store in (keeper, baser):
+            with self.subTest(store=store.name):
+                store.fail = True
+                with self.assertRaisesRegex(RuntimeError, "sync failed"):
+                    await vaulting.flush_open_state()
+                with self.assertRaises(vaulting.RuntimeFault) as error:
+                    vaulting.require_open_state("vault")
+                self.assertEqual(error.exception.code, "BAD_STATE")
+                store.fail = False
+                vaulting._STATE.pop("persistence_failed")
+
+    async def test_failed_close_blocks_use_until_a_successful_retry(self):
+        vaulting = _load_module()
+        record = {"id": "vault"}
+        state = {"vault": record, "hby": object()}
+        vaulting._STATE = state
+        calls = 0
+
+        async def close_habery(_hby, *, clear=False):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("sync failed")
+
+        vaulting.close_habery = close_habery
+        with self.assertRaisesRegex(RuntimeError, "sync failed"):
+            await vaulting.close_state()
+        self.assertIs(vaulting._STATE, state)
+
+        for operation in (
+            lambda: vaulting.open_vault_state(record),
+            lambda: vaulting.dispatch("identifiers.create", {"vaultId": "vault", "alias": "new"}),
+            lambda: vaulting.dispatch("credentials.issueSigned", {"vaultId": "vault"}),
+        ):
+            with self.subTest(operation=operation), self.assertRaises(vaulting.RuntimeFault) as error:
+                await operation()
+            self.assertEqual(error.exception.code, "BAD_STATE")
+
+        self.assertEqual(await vaulting.dispatch("vaults.close", {"vaultId": "vault"}),
+                         {"vault": {"id": "vault", "opened": False}})
+        self.assertIsNone(vaulting._STATE)
+        self.assertEqual(calls, 2)
+
+    async def test_cancelled_close_also_blocks_use(self):
+        vaulting = _load_module()
+        vaulting._STATE = {"vault": {"id": "vault"}, "hby": object()}
+
+        async def close_habery(_hby, *, clear=False):
+            raise asyncio.CancelledError()
+
+        vaulting.close_habery = close_habery
+        with self.assertRaises(asyncio.CancelledError):
+            await vaulting.close_state()
+        with self.assertRaises(vaulting.RuntimeFault) as error:
+            vaulting.require_open_state("vault")
+        self.assertEqual(error.exception.code, "BAD_STATE")
+
+
 class VaultlessSettingsTest(unittest.TestCase):
     def setUp(self):
         self.vaulting = _load_module()
@@ -41,7 +132,6 @@ class VaultlessSettingsTest(unittest.TestCase):
             wallet_storage_prefix="fortweb-vault-",
             registry_name="fortweb-vault-registry",
             registry_store="vaults.",
-            legacy_root_salt="0AAwMTIzNDU2Nzg5YWJjZGVm",
             passcode_kdf_defaults={},
             default_settings={"tempDatastore": False, "keyTier": "low"},
             kf_state_subdb="kfst.",
@@ -134,6 +224,23 @@ class IdentifierNamespaceTest(unittest.TestCase):
         self.assertEqual(raised.exception.code, "NOT_FOUND")
         self.assertIs(hby.habByPre("internal"), internal)
 
+        vaulting._STATE = {
+            "vault": {"id": "vault"},
+            "hby": hby,
+            "modules": {"organizing": SimpleNamespace(Organizer=lambda **_: None)},
+        }
+        exported = []
+        vaulting._identifier_introduction = lambda hab, _: exported.append(hab) or b"public CESR"
+        result = asyncio.run(vaulting.dispatch("identifiers.export", {"vaultId": "vault", "aid": "public"}))
+        self.assertEqual(result, {"cesr": "cHVibGljIENFU1I="})
+        for vault_id, aid, code in (("vault", "internal", "NOT_FOUND"), ("vault", "missing", "NOT_FOUND"),
+                                    ("other", "public", "LOCKED")):
+            with self.subTest(vault_id=vault_id, aid=aid):
+                with self.assertRaises(vaulting.RuntimeFault) as error:
+                    asyncio.run(vaulting.dispatch("identifiers.export", {"vaultId": vault_id, "aid": aid}))
+                self.assertEqual(error.exception.code, code)
+        self.assertEqual(exported, [public])
+
 
 class VaultSetupTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -164,6 +271,9 @@ class VaultSetupTest(unittest.IsolatedAsyncioTestCase):
         self.baser = Store()
         self.cf = self.vaulting.NullConfiger()
         self.vaulting.NullConfiger = lambda: self.cf
+        async def validate_open_kels(_baser, _modules, *, keeper=None):
+            pass
+        self.vaulting._validate_open_kels = validate_open_kels
         self.setup_error = None
 
         def habery(**kwargs):
@@ -177,6 +287,7 @@ class VaultSetupTest(unittest.IsolatedAsyncioTestCase):
         modules = {
             "webkeeping": SimpleNamespace(WebKeeper=lambda **_kwargs: self.keeper),
             "webbasing": SimpleNamespace(WebBaser=lambda **_kwargs: self.baser),
+            "webdbing": object(),
             "habbing": SimpleNamespace(Habery=habery),
         }
         self.vaulting._CONFIG.update(

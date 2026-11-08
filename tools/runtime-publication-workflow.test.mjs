@@ -8,6 +8,7 @@
 // tests inspect declared structure; they do not execute GitHub Actions, and they do not
 // replace a hosted run.
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
@@ -244,5 +245,23 @@ test('the producer CI path runs the publication and CLI contracts', () => {
     assert.ok(contractStep, 'expected the producer source-contract step');
     for (const suite of ['tools/runtime-publication-workflow.test.mjs', 'tools/direct-cli.test.mjs']) {
         assert.ok(contractStep.run.includes(suite), `the producer source-contract step must run ${suite}`);
+    }
+});
+
+test('the lifecycle suite selects ACDC expectations for the pinned SEDI source', () => {
+    const { acceptanceAction } = loadContract();
+    const step = findStep(acceptanceAction.runs.steps, (item) => item.name === 'Run runtime lifecycle tests');
+    const selection = step.run.match(/expect_browser_acdc=0\n[\s\S]*?\nfi/);
+    assert.ok(selection, 'expected the runtime source selector');
+    assert.ok(step.run.includes('FORTWEB_EXPECT_BROWSER_ACDC="$expect_browser_acdc"'));
+    for (const [digest, expected] of [
+        ['f76cf23f5cdaa5fe3f7a0e264c862290f9c8b6be2aafca6622926e1869731431', '1'],
+        ['d00ad7c4dc2fcce08904562bb50dd2ace53cf226027d376b41e42cbb69410023', '0'],
+    ]) {
+        const result = spawnSync('bash', ['-c', `${selection[0]}\nprintf '%s' "$expect_browser_acdc"`], {
+            encoding: 'utf8', env: { ...process.env, FORTWEB_RUNTIME_SOURCE_MANIFEST_SHA256: digest },
+        });
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(result.stdout, expected);
     }
 });

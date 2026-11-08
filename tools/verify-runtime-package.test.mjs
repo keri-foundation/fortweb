@@ -41,13 +41,20 @@ test('provenance rejects malformed toolchain identities', () => {
     }
 });
 
-test('Keripy provenance accepts an absent metadata patch and validates older patch digests', () => {
+test('Keripy provenance accepts optional source patches and rejects malformed patch evidence', () => {
     const candidate = provenance();
     assert.equal(validateProvenance(candidate), candidate);
     candidate.packages.keripy.metadata_patch_sha256 = 'bad';
     assert.throws(() => validateProvenance(candidate), /metadata_patch_sha256/);
     delete candidate.packages.keripy.metadata_patch_sha256;
     assert.equal(validateProvenance(candidate), candidate);
+    candidate.packages.hio.source_archive_sha256 = digest;
+    candidate.packages.keripy.source_archive_sha256 = digest;
+    candidate.packages.keripy.patches = [{ path: 'patches/keripy.patch', sha256: digest }];
+    assert.equal(validateProvenance(candidate), candidate);
+    candidate.packages.keripy.patches = [{ path: '../outside.patch', sha256: digest }];
+    assert.throws(() => validateProvenance(candidate), /patch/i);
+    candidate.packages.keripy.patches = [{ path: 'patches/keripy.patch', sha256: digest }];
     candidate.packages.keripy.unexpected = digest;
     assert.throws(() => validateProvenance(candidate), /Provenance package keripy/);
 });
