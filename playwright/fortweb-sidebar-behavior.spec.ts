@@ -80,8 +80,150 @@ test.describe('FortWeb sidebar behavior', () => {
         await page.getByRole('button', { name: 'Open navigation' }).click();
         await expect(navigation).toBeVisible();
         await expect(navigation.getByRole('link', { name: 'KERI Foundation', exact: true })).toBeVisible();
-        await page.getByRole('button', { name: 'Close navigation' }).click();
+        await page.getByRole('banner').getByRole('button', { name: 'Close navigation' }).click();
         await expect(navigation).not.toBeVisible();
+    });
+
+    test('mobile navigation toggle reflects state and supports each close path', async ({ page }) => {
+        await page.goto('/fortweb/app/index.html#/_fixtures/identifiers/populated');
+
+        const toggle = page.locator('.topbar__menu');
+        const navigation = page.getByRole('navigation', { name: 'Vault navigation' });
+        const sidebar = page.locator('.lk-sidebar-shell');
+        const overlay = page.locator('.lk-sidebar-overlay');
+        const responsiveWidths = [
+            { width: 390, height: 844, closeWith: 'toggle' },
+            { width: 360, height: 800, closeWith: 'overlay' },
+            { width: 768, height: 1024, closeWith: 'escape' },
+        ] as const;
+
+        for (const viewport of responsiveWidths) {
+            await page.setViewportSize({ width: viewport.width, height: viewport.height });
+            await expect(toggle).toBeVisible();
+            await expect(toggle).toHaveAttribute('aria-label', 'Open navigation');
+            await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+            await expect(toggle.locator('img')).toHaveAttribute('src', './assets/icons/menu.svg');
+            await expect(sidebar).not.toHaveClass(/is-open/);
+            await expect(overlay).not.toHaveClass(/is-open/);
+
+            await toggle.click();
+            await expect(toggle).toHaveAttribute('aria-label', 'Close navigation');
+            await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+            await expect(toggle.locator('img')).toHaveAttribute('src', './assets/icons/close.svg');
+            await expect.poll(() => toggle.locator('img').evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
+            await expect(toggle).toBeFocused();
+            await expect(navigation).toBeVisible();
+            await expect(sidebar).toHaveClass(/is-open/);
+            await expect(overlay).toHaveClass(/is-open/);
+
+            if (viewport.closeWith === 'toggle') {
+                await toggle.click();
+            } else if (viewport.closeWith === 'overlay') {
+                const overlayBox = await overlay.boundingBox();
+                if (!overlayBox) {
+                    throw new Error('Expected the open navigation overlay to have a visible bounding box.');
+                }
+                await overlay.click({ position: { x: overlayBox.width - 2, y: 20 } });
+            } else {
+                await page.keyboard.press('Escape');
+            }
+
+            await expect(toggle).toHaveAttribute('aria-label', 'Open navigation');
+            await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+            await expect(toggle.locator('img')).toHaveAttribute('src', './assets/icons/menu.svg');
+            await expect(navigation).not.toBeVisible();
+            await expect(sidebar).not.toHaveClass(/is-open/);
+            await expect(overlay).not.toHaveClass(/is-open/);
+            await expect(toggle).toBeFocused();
+        }
+
+        await page.setViewportSize({ width: 1280, height: 720 });
+        await expect(navigation).toBeVisible();
+        await expect(toggle).not.toBeVisible();
+        await expect(overlay).not.toBeVisible();
+    });
+
+    test('desktop keeps persistent navigation and makes the mobile overlay inert', async ({ page }) => {
+        await page.setViewportSize({ width: 1280, height: 720 });
+        await page.goto('/fortweb/app/index.html#/_fixtures/identifiers/populated');
+
+        const toggle = page.locator('.topbar__menu');
+        const navigation = page.getByRole('navigation', { name: 'Vault navigation' });
+        const sidebar = page.locator('.lk-sidebar-shell');
+        const overlay = page.locator('.lk-sidebar-overlay');
+
+        await expect(navigation).toBeVisible();
+        await expect(toggle).not.toBeVisible();
+        await expect(sidebar).toHaveCSS('position', 'static');
+        await expect(sidebar).toHaveCSS('transform', 'none');
+        await expect(overlay).not.toBeVisible();
+        await expect(overlay).toHaveCSS('display', 'none');
+        await expect(overlay).toHaveCSS('pointer-events', 'none');
+
+        await overlay.evaluate((element) => element.classList.add('is-open'));
+        await expect(overlay).not.toBeVisible();
+        await expect(overlay).toHaveCSS('pointer-events', 'none');
+        await overlay.evaluate((element) => (element as HTMLButtonElement).focus());
+        await expect(overlay).not.toBeFocused();
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+    });
+
+    test('navigation switches cleanly at the 920/921px boundary', async ({ page }) => {
+        await page.goto('/fortweb/app/index.html#/_fixtures/identifiers/populated');
+
+        const toggle = page.locator('.topbar__menu');
+        const navigation = page.getByRole('navigation', { name: 'Vault navigation' });
+        const sidebar = page.locator('.lk-sidebar-shell');
+        const overlay = page.locator('.lk-sidebar-overlay');
+
+        await page.setViewportSize({ width: 920, height: 900 });
+        await expect(toggle).toBeVisible();
+        await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+        await expect(navigation).not.toBeVisible();
+        await expect(sidebar).not.toBeVisible();
+        await expect(overlay).not.toBeVisible();
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+
+        await page.setViewportSize({ width: 921, height: 900 });
+        await expect(toggle).not.toBeVisible();
+        await expect(navigation).toBeVisible();
+        await expect(sidebar).toHaveCSS('position', 'static');
+        await expect(overlay).not.toBeVisible();
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+    });
+
+    test('resizing from an open drawer to desktop resets mobile navigation state', async ({ page }) => {
+        await page.setViewportSize({ width: 390, height: 844 });
+        await page.goto('/fortweb/app/index.html#/_fixtures/identifiers/populated');
+
+        const toggle = page.locator('.topbar__menu');
+        const navigation = page.getByRole('navigation', { name: 'Vault navigation' });
+        const sidebar = page.locator('.lk-sidebar-shell');
+        const overlay = page.locator('.lk-sidebar-overlay');
+
+        await expect(toggle).toHaveAttribute('aria-label', 'Open navigation');
+        await toggle.click();
+        await expect(toggle).toHaveAttribute('aria-label', 'Close navigation');
+        await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+        await expect(navigation).toBeVisible();
+        await expect(overlay).toBeVisible();
+
+        await page.setViewportSize({ width: 1280, height: 720 });
+        await expect(toggle).not.toBeVisible();
+        await expect(toggle).toHaveAttribute('aria-label', 'Open navigation');
+        await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+        await expect(navigation).toBeVisible();
+        await expect(sidebar).not.toHaveClass(/is-open/);
+        await expect(overlay).not.toBeVisible();
+        await expect(overlay).not.toHaveClass(/is-open/);
+
+        await page.setViewportSize({ width: 390, height: 844 });
+        await expect(toggle).toBeVisible();
+        await expect(toggle).toHaveAttribute('aria-label', 'Open navigation');
+        await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+        await expect(navigation).not.toBeVisible();
+        await expect(sidebar).not.toBeVisible();
+        await expect(overlay).not.toBeVisible();
     });
 
     for (const startup of ['delayed', 'failed'] as const) {
