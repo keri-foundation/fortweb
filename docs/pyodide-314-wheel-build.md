@@ -321,12 +321,9 @@ SHA-256, and manifest SHA-256 together in
 `.github/actions/produce-runtime-package/action.yml`. Do not point the default
 pin at an unpublished archive. Retain the prior three values for rollback.
 
-The shared browser acceptance action runs the lifecycle suite without
-`FORTWEB_EXPECT_BROWSER_ACDC`. When promoting this patch, set that variable to
-`1` for its lifecycle step in the same reviewed pin change; otherwise the suite
-expects the unpatched runtime to reject credential construction. The shared
-acceptance action selects this expectation for the pinned SEDI manifest and
-retains the unpatched expectation for other source overrides.
+The shared browser acceptance action enables `FORTWEB_EXPECT_BROWSER_ACDC` for
+the pinned SEDI manifest and retains the unpatched expectation for other source
+overrides.
 Verify the produced runtime and its complete browser acceptance sequence before
 using it as a release candidate. Tag-based releases reject source overrides and
 consume the reviewed default pin.
