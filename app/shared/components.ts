@@ -391,7 +391,7 @@ export function floatingInputHtml({ label, name, type = "text", password = false
         <div class="lk-float-field">
             <input class="lk-float-field__input" type="${inputType}" name="${escapeHtml(name)}" id="${escapeHtml(inputId)}" placeholder=" " autocomplete="off">
             <label class="lk-float-field__label" for="${escapeHtml(inputId)}">${escapeHtml(label)}</label>
-            ${password ? `<button type="button" class="lk-float-field__toggle" data-toggle-password="${escapeHtml(name)}" aria-label="Toggle password visibility"><img src="./assets/icons/browse.svg" alt="" width="20" height="20"></button>` : ""}
+            ${password ? `<button type="button" class="lk-float-field__toggle" data-toggle-password="${escapeHtml(name)}" aria-label="Toggle password visibility" aria-pressed="false"><img src="./assets/icons/visibility.svg" alt="" width="20" height="20"></button>` : ""}
         </div>
     `;
 }
@@ -418,8 +418,19 @@ export function setupFloatingInputs(root: ParentNode | null): void {
             }
 
             input.type = input.type === "password" ? "text" : "password";
+            syncPasswordToggle(button, input);
         });
     });
+}
+
+/** Eye icon when the passcode is hidden (tap to show); crossed eye when it is shown. */
+export function syncPasswordToggle(button: HTMLElement, input: HTMLInputElement): void {
+    const shown = input.type !== "password";
+    button.setAttribute("aria-pressed", String(shown));
+    const icon = button.querySelector("img");
+    if (icon) {
+        icon.setAttribute("src", shown ? "./assets/icons/visibility_off.svg" : "./assets/icons/visibility.svg");
+    }
 }
 
 export function renderPaginatedTable<Row>(opts: PaginatedTableOptions<Row>): PaginatedTableController {
