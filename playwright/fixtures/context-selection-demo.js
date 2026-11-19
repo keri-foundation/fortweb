@@ -12,7 +12,7 @@
   const explanation = "A context is a part of your life, such as work or family. Keeping contexts separate can help reduce how easily separate interactions are linked. This does not prevent all tracking.";
   const expandedExplanation = "Some presentations can use different identifiers or credentials. Other information may still connect interactions.";
   const root = document.querySelector("#context-demo");
-  const suggestedMode = document.documentElement.dataset.mode !== "first-use";
+  const suggestedMode = new URLSearchParams(location.search).get("mode") !== "first-use";
   const model = {
     state: suggestedMode ? STATES.SUGGESTED_CONTEXT : STATES.NO_CONTEXTS,
     contexts: suggestedMode ? ["Work", "Family"] : [],
@@ -56,13 +56,14 @@
     root.dataset.state = model.state;
     root.innerHTML = `<section class="context-demo__surface" role="dialog" aria-modal="true" aria-labelledby="context-demo-title" tabindex="-1">${renderState()}</section>`;
     const surface = root.querySelector(".context-demo__surface");
+    const title = surface.querySelector("#context-demo-title");
     surface.addEventListener("keydown", (event) => {
       if (event.key !== "Tab") return;
       const focusable = [...surface.querySelectorAll("button:not(:disabled), input:not(:disabled), summary")]
         .filter((element) => element.getClientRects().length > 0);
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
-      if (event.shiftKey && (document.activeElement === first || document.activeElement === surface)) {
+      if (event.shiftKey && last && [first, surface, title].includes(document.activeElement)) {
         event.preventDefault();
         last?.focus();
       } else if (!event.shiftKey && document.activeElement === last) {
@@ -79,7 +80,7 @@
       root.querySelector("[data-error]")?.remove();
       root.querySelector("#context-name")?.removeAttribute("aria-invalid");
     });
-    root.querySelector("#context-demo-title")?.focus({ preventScroll: true });
+    title.focus({ preventScroll: true });
   }
 
   function renderState() {

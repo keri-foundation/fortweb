@@ -1,17 +1,4 @@
 import { expect, test, type Page } from '@playwright/test';
-import { readFile } from 'node:fs/promises';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const specDir = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(specDir, '..');
-const fixtureDir = path.join(specDir, 'fixtures');
-const htmlPath = path.join(fixtureDir, 'context-selection-demo.html');
-const scriptPath = path.join(fixtureDir, 'context-selection-demo.js');
-const cssPath = path.join(fixtureDir, 'context-selection-demo.css');
-const tokenPath = path.join(repoRoot, 'app/styles/tokens.css');
-const baseStylesPath = path.join(repoRoot, 'app/styles/base.css');
-const html = await readFile(htmlPath, 'utf8');
 const diagnostics = new WeakMap<Page, { errors: string[]; requests: string[] }>();
 
 test.afterEach(async ({ page }) => {
@@ -29,14 +16,14 @@ async function openDemo(page: Page, mode: 'suggested' | 'first-use' = 'suggested
   page.on('console', (message) => {
     if (message.type() === 'error') errors.push(message.text());
   });
-  page.on('request', (request) => requests.push(request.url()));
+  page.on('request', (request) => {
+    if (!request.url().startsWith('file:')) requests.push(request.url());
+  });
+  await page.route(/^https?:/, (route) => route.abort());
   diagnostics.set(page, { errors, requests });
-  await page.setContent(html);
-  await page.evaluate((initialMode) => { document.documentElement.dataset.mode = initialMode; }, mode);
-  await page.addStyleTag({ path: tokenPath });
-  await page.addStyleTag({ path: baseStylesPath });
-  await page.addStyleTag({ path: cssPath });
-  await page.addScriptTag({ path: scriptPath });
+  const preview = new URL('./fixtures/context-selection-demo.html', import.meta.url);
+  if (mode === 'first-use') preview.searchParams.set('mode', mode);
+  await page.goto(preview.href);
   return { errors, requests };
 }
 
@@ -140,6 +127,9 @@ test('Change returns to selection, and Continue only completes the demo boundary
 test('Why contexts? is keyboard operable and shows only the approved explanation', async ({ page }) => {
   await openDemo(page);
   const disclosure = page.getByText('Why contexts?', { exact: true });
+  await expect(page.getByRole('heading', { name: 'Choose a context' })).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(page.getByRole('button', { name: 'Choose another' })).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(disclosure).toBeFocused();
   await page.keyboard.press('Enter');
