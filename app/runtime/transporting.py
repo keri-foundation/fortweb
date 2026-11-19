@@ -723,7 +723,7 @@ async def _ensure_surface_keystate(hab, *, surface_name: str, surface_url: str, 
     state = vaulting.require_open_state()
     cache = state.setdefault("kfSurfaceKeyState", {})
     cache_key = (surface_name, hab.pre)
-    synced_sn = int(cache.get(cache_key, -1) or -1)
+    synced_sn = cache.get(cache_key, -1)
     if synced_sn >= current_sn:
         return
 

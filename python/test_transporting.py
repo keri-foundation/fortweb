@@ -87,6 +87,28 @@ class ProxyUrlTest(unittest.TestCase):
                 )
 
 
+class SurfaceKeystateSyncTest(unittest.IsolatedAsyncioTestCase):
+    async def test_cached_inception_is_sent_only_once(self):
+        transporting = _load_module()
+        state = {}
+        transporting.vaulting.require_open_state = lambda: state
+        transporting._CONFIG["cesr_timeout_ms"] = 1_000
+        transporting._iter_surface_keystate_messages = lambda **_: [(0, b"inception")]
+        sent = []
+
+        async def send(_, msg, **kwargs):
+            sent.append(msg)
+
+        transporting.send_kf_event = send
+        hab = types.SimpleNamespace(pre="controller", kever=types.SimpleNamespace(sn=0))
+        for _ in range(2):
+            await transporting._ensure_surface_keystate(
+                hab, surface_name="account", surface_url="https://example.invalid"
+            )
+
+        self.assertEqual(sent, [b"inception"])
+
+
 class WalletServiceTrafficTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.transporting = _load_module()
