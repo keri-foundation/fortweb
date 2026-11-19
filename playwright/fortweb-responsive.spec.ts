@@ -43,7 +43,7 @@ async function readLayout(page: import('@playwright/test').Page) {
         };
 
         return {
-            scrollWidth: document.documentElement.scrollWidth,
+            scrollWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
             clientWidth: document.documentElement.clientWidth,
             viewportWidth: window.innerWidth,
             shell: getBounds(document.querySelector('.shell')),
@@ -187,12 +187,12 @@ test('mobile populated identifiers use the stacked table layout', async ({ page 
     await expect(page.locator('.lk-table-stack')).toBeVisible();
 });
 
-test('document overflow validator catches an injected page-level overflow', async ({ page }) => {
+test('document overflow validator catches an overflow clipped by the body', async ({ page }) => {
     const viewport = viewports[2];
     await openFixture(page, '/_fixtures/settings', viewport);
     await page.addStyleTag({
         content: `
-            html, body { overflow-x: visible !important; }
+            body { position: relative; }
             .responsive-negative-control { position: absolute; left: 0; top: 1px; width: calc(100vw + 48px); height: 2px; }
         `,
     });
@@ -203,6 +203,7 @@ test('document overflow validator catches an injected page-level overflow', asyn
     });
 
     const layout = await readLayout(page);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(layout.clientWidth);
     expect(layout.scrollWidth).toBeGreaterThan(layout.clientWidth);
     expect(() => assertNoDocumentOverflow(layout, 'settings', viewport)).toThrow(
         /settings @ 390x844: document horizontal overflow: scrollWidth=\d+, clientWidth=\d+/,
