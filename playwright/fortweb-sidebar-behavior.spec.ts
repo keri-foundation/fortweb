@@ -143,6 +143,20 @@ test.describe('FortWeb sidebar behavior', () => {
         await expect(overlay).not.toBeVisible();
     });
 
+    test('Escape restores navigation toggle focus from the header', async ({ page }) => {
+        await page.setViewportSize({ width: 390, height: 844 });
+        await page.goto('/fortweb/app/index.html#/_fixtures/identifiers/populated');
+        const toggle = page.locator('.topbar__menu');
+        const brand = page.getByRole('banner').getByRole('link', { name: 'FortWeb' });
+        await toggle.click();
+        await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+        await brand.focus();
+        await expect(brand).toBeFocused();
+        await page.keyboard.press('Escape');
+        await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+        await expect(toggle).toBeFocused();
+    });
+
     test('desktop keeps persistent navigation and makes the mobile overlay inert', async ({ page }) => {
         await page.setViewportSize({ width: 1280, height: 720 });
         await page.goto('/fortweb/app/index.html#/_fixtures/identifiers/populated');

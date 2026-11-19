@@ -181,9 +181,12 @@ export function renderShell(root: HTMLElement, { route, page, state, vault, acti
     const mobileNavOpen = Boolean(state.mobileNavOpen);
     const sidebarMarkup = isVaultShell && vault ? sidebarNav(route, vault.id, state) : "";
     const activeElement = document.activeElement;
-    const shouldRestoreNavigationFocus = activeElement instanceof HTMLElement
+    const mobileNavClosed = !mobileNavOpen && root.querySelector('.topbar__menu[aria-expanded="true"]') !== null;
+    const shouldRestoreNavigationFocus = mobileNavClosed || (
+        activeElement instanceof HTMLElement
         && root.contains(activeElement)
-        && (activeElement.matches(".topbar__menu, .lk-sidebar-overlay") || Boolean(activeElement.closest(".lk-sidebar")));
+        && Boolean(activeElement.closest(".topbar__menu, .lk-sidebar-overlay, .lk-sidebar"))
+    );
     const navigationToggleLabel = mobileNavOpen ? "Close navigation" : "Open navigation";
     const navigationToggleIcon = mobileNavOpen ? "close.svg" : "menu.svg";
 
