@@ -710,9 +710,12 @@ def _iter_surface_keystate_messages(*, hab, start_sn: int, end_sn: int):
         messages[sn] = raw
 
     for sn in range(start_sn, end_sn + 1):
+        if sn in messages:
+            yield sn, messages[sn]
+            continue
         msg_own_event = getattr(hab, "msgOwnEvent", None)
         msg = msg_own_event(sn=sn) if callable(msg_own_event) else hab.makeOwnEvent(sn=sn)
-        yield sn, messages.get(sn, bytes(msg))
+        yield sn, bytes(msg)
 
 
 async def _ensure_surface_keystate(hab, *, surface_name: str, surface_url: str, destination: str = ""):
@@ -720,7 +723,7 @@ async def _ensure_surface_keystate(hab, *, surface_name: str, surface_url: str, 
     state = vaulting.require_open_state()
     cache = state.setdefault("kfSurfaceKeyState", {})
     cache_key = (surface_name, hab.pre)
-    synced_sn = int(cache.get(cache_key, -1) or -1)
+    synced_sn = cache.get(cache_key, -1)
     if synced_sn >= current_sn:
         return
 

@@ -55,6 +55,12 @@ test('the current publication wiring satisfies the contract', () => {
     assert.deepEqual(violationsFor(), []);
 });
 
+test('both browser acceptance jobs use the pinned Ubuntu runner', () => {
+    const { packageWorkflow, playwrightWorkflow } = loadContract();
+    assert.equal(packageWorkflow.jobs.package['runs-on'], 'ubuntu-24.04');
+    assert.equal(playwrightWorkflow.jobs['fortweb-runtime-playwright']['runs-on'], 'ubuntu-24.04');
+});
+
 test('the release gate is bound to the acceptance step output, not to a literal', () => {
     assertRejected(
         violationsFor(({ packageWorkflow }) => {
