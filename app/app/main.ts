@@ -449,6 +449,20 @@ actions = {
     },
 };
 
+const mobileNavigationMedia = window.matchMedia("(max-width: 920px)");
+mobileNavigationMedia.addEventListener("change", (event) => {
+    if (!event.matches) {
+        actions.closeNav();
+    }
+});
+
+document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && currentState().mobileNavOpen) {
+        event.preventDefault();
+        actions.closeNav();
+    }
+});
+
 /** Incremented on every render(); stale renders bail so tab taps do not stack concurrent bridge calls. */
 let renderGeneration = 0;
 

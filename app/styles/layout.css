@@ -56,7 +56,7 @@
     gap: 4px;
 }
 
-.topbar__menu {
+.topbar .topbar__menu {
     display: none;
 }
 
@@ -98,6 +98,12 @@
 
 .nav-overlay {
     display: none;
+}
+
+.lk-sidebar-overlay {
+    display: none;
+    visibility: hidden;
+    pointer-events: none;
 }
 
 .nav-rail {
@@ -208,7 +214,7 @@
         grid-template-columns: 1fr;
     }
 
-    .topbar__menu {
+    .topbar .topbar__menu {
         display: inline-flex;
     }
 
@@ -256,6 +262,8 @@
 
     .lk-sidebar-overlay.is-open {
         display: block;
+        visibility: visible;
+        pointer-events: auto;
     }
 
     .lk-sidebar-shell {

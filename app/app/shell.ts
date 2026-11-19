@@ -180,6 +180,15 @@ export function renderShell(root: HTMLElement, { route, page, state, vault, acti
     const isVaultShell = route.shellMode === "vault" && Boolean(vault);
     const mobileNavOpen = Boolean(state.mobileNavOpen);
     const sidebarMarkup = isVaultShell && vault ? sidebarNav(route, vault.id, state) : "";
+    const activeElement = document.activeElement;
+    const mobileNavClosed = !mobileNavOpen && root.querySelector('.topbar__menu[aria-expanded="true"]') !== null;
+    const shouldRestoreNavigationFocus = mobileNavClosed || (
+        activeElement instanceof HTMLElement
+        && root.contains(activeElement)
+        && Boolean(activeElement.closest(".topbar__menu, .lk-sidebar-overlay, .lk-sidebar"))
+    );
+    const navigationToggleLabel = mobileNavOpen ? "Close navigation" : "Open navigation";
+    const navigationToggleIcon = mobileNavOpen ? "close.svg" : "menu.svg";
 
     root.innerHTML = `
         <div class="shell">
@@ -187,8 +196,8 @@ export function renderShell(root: HTMLElement, { route, page, state, vault, acti
                 <div class="topbar__leading">
                     ${isVaultShell
                         ? `
-                            <button class="icon-button topbar__menu" data-action="toggle-nav" aria-label="Open navigation" aria-expanded="${mobileNavOpen ? "true" : "false"}">
-                                <img src="./assets/icons/menu.svg" alt="">
+                            <button class="icon-button topbar__menu" data-action="toggle-nav" aria-label="${navigationToggleLabel}" aria-expanded="${mobileNavOpen ? "true" : "false"}">
+                                <img src="./assets/icons/${navigationToggleIcon}" alt="">
                             </button>
                         `
                         : ""}
@@ -297,4 +306,11 @@ export function renderShell(root: HTMLElement, { route, page, state, vault, acti
     });
 
     page.setup?.(pageRoot);
+
+    if (shouldRestoreNavigationFocus) {
+        const navigationToggle = root.querySelector(".topbar__menu");
+        if (navigationToggle instanceof HTMLButtonElement && navigationToggle.getClientRects().length > 0) {
+            navigationToggle.focus();
+        }
+    }
 }
