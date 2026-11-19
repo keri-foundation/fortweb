@@ -25,7 +25,7 @@ interface FixtureRoute {
 
 interface StaticAssetFailure {
     resourceType: string;
-    status: number;
+    status: number | string;
     url: string;
 }
 
@@ -81,23 +81,25 @@ function isStaticFrontendRequest(request: Request): boolean {
 function collectStaticAssetFailures(page: Page, route: string): StaticAssetFailure[] {
     const failures: StaticAssetFailure[] = [];
     const seen = new Set<string>();
-    page.on('response', (response) => {
-        const request = response.request();
-        const status = response.status();
-        if (!isStaticFrontendRequest(request) || status < 400 || status > 599) {
-            return;
-        }
-
+    const recordFailure = (request: Request, status: StaticAssetFailure['status']) => {
+        if (!isStaticFrontendRequest(request)) return;
         const failure = {
             resourceType: request.resourceType(),
             status,
-            url: response.url(),
+            url: request.url(),
         };
         const key = `${route}\n${failure.resourceType}\n${failure.status}\n${failure.url}`;
         if (!seen.has(key)) {
             seen.add(key);
             failures.push(failure);
         }
+    };
+    page.on('response', (response) => {
+        const status = response.status();
+        if (status >= 400 && status <= 599) recordFailure(response.request(), status);
+    });
+    page.on('requestfailed', (request) => {
+        recordFailure(request, request.failure()?.errorText ?? 'request failed');
     });
     return failures;
 }
@@ -153,6 +155,19 @@ test.describe('FortWeb fixture static asset integrity', () => {
         })]);
         expect(() => assertNoStaticAssetFailures(fixture.route, failures))
             .toThrow(/\/_fixtures\/remote-detail: image 404 .*copy\.svg/);
+    });
+
+    test('reports a static image request that fails without a response', async ({ page }) => {
+        const route = '/_fixtures/remote-detail';
+        await page.route('**/assets/icons/copy.svg', (request) => request.abort('connectionreset'));
+        const failures = collectStaticAssetFailures(page, route);
+
+        await page.goto(`/fortweb/app/index.html#${route}`);
+        await expect(page.getByRole('heading', { name: 'acme-corp' })).toBeVisible();
+        await waitForFixtureAssets(page);
+
+        expect(() => assertNoStaticAssetFailures(route, failures))
+            .toThrow(/image .*ERR_CONNECTION_RESET.*copy\.svg/);
     });
 
     test('ignores a negative fetch response on the witnesses error fixture', async ({ page }) => {
