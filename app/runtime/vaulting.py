@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import importlib
 import json
 import re
+from dataclasses import asdict
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 
@@ -25,6 +27,15 @@ class RuntimeFault(Exception):
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = code
+
+
+class _TransientStorage(dict):
+    async def sync(self):
+        pass
+
+
+async def _open_transient_storage(_namespace):
+    return _TransientStorage()
 
 
 _CONFIG: dict = {}
@@ -510,6 +521,159 @@ def _get_identifier_record(hby, aid: str):
     return _identifier_record(hab)
 
 
+def _identifier_introduction(hab, modules):
+    """Export public event history and the latest signed delivery information."""
+    version = modules["kering"].Vrsn_2_0
+    stream = bytearray()
+    def append_history(pre):
+        count = 0
+        try:
+            for _, fn, dig in hab.db.fels.getAllItemIter(keys=pre, on=0):
+                stream.extend(hab.db.cloneEvtMsg(pre=pre, fn=fn, dig=dig, gvrsn=version))
+                count += 1
+        except (modules["kering"].MissingEntryError, modules["kering"].SerializeError) as exc:
+            raise RuntimeFault("BAD_STATE", "Identifier event history is incomplete.") from exc
+        if count < hab.kevers[pre].sn + 1:
+            raise RuntimeFault("BAD_STATE", "Identifier event history is incomplete.")
+
+    append_history(hab.pre)
+    roles = [(role, eid) for (_, role, eid), end in hab.db.ends.getTopItemIter(keys=(hab.pre,))
+             if end.allowed or end.enabled]
+    for eid in dict.fromkeys([*hab.kever.wits, *(eid for _, eid in roles)]):
+        if eid != hab.pre and eid in hab.kevers:
+            append_history(eid)
+        stream.extend(hab.loadLocScheme(eid=eid, gvrsn=version))
+    for _, said in hab.db.eans.getTopItemIter(keys=(hab.pre,)):
+        serder = hab.db.rpys.get(keys=(said.qb64,))
+        cigars = []
+        for verfer, cigar in hab.db.scgs.get(keys=(said.qb64,)):
+            cigar.verfer = verfer
+            cigars.append(cigar)
+        tsgs = modules["db"].fetchTsgs(db=hab.db.tsgs, diger=said)
+        stream.extend(modules["eventing"].messagize(serder=serder, cigars=cigars, tsgs=tsgs, gvrsn=version))
+    return bytes(stream)
+
+
+async def _import_identifier(hby, organizer, modules, encoded, alias):
+    if not isinstance(encoded, str) or len(encoded) > 4 * 1024 * 1024:
+        raise RuntimeFault("VALIDATION", "Identifier file is missing or too large.")
+    try:
+        stream = bytearray(base64.b64decode(encoded, validate=True))
+        parser = modules["parsing"].Parser(local=False, version=modules["kering"].Vrsn_2_0)
+        # Parser.parse tolerates message errors; process extracted messages explicitly before touching the vault.
+        extraction = parser.groupParsator(ims=stream, framed=True, local=False,
+                                         version=modules["kering"].Vrsn_2_0, processive=False)
+        try:
+            next(extraction)
+            raise ValueError("Incomplete stream")
+        except StopIteration as done:
+            messages = done.value
+        ilks = modules["kering"].Ilks
+        if not messages or messages[0].serder.ilk not in (ilks.icp, ilks.dip):
+            raise ValueError("Missing inception event")
+        aid = messages[0].serder.pre
+        if _is_local_identifier(hby, aid):
+            raise RuntimeFault("CONFLICT", "A local identifier cannot be imported as a remote.")
+        if any(message.serder.pvrsn != modules["kering"].Vrsn_2_0 or
+               message.serder.ilk not in (ilks.icp, ilks.dip, ilks.rot, ilks.drt, ilks.ixn, ilks.rpy)
+               for message in messages):
+            raise ValueError("Unsupported message")
+
+        staging = modules["webbasing"].WebBaser(name="identifier-import", temp=True)
+        try:
+            await staging.reopen(storageOpener=_open_transient_storage)
+            router = modules["routing"].Router()
+            revery = modules["routing"].Revery(db=staging, rtr=router)
+            kevery = modules["eventing"].Kevery(db=staging, rvy=revery, lax=False, local=False)
+            kevery.registerReplyRoutes(router=router)
+            for message in messages:
+                parser.msgProcess(asdict(message), kvy=kevery, rvy=revery, tvy=None, exc=None, vry=None)
+            if aid not in staging.kevers:
+                raise ValueError("Missing verified key state")
+            endpoints = {aid, *staging.kevers[aid].wits}
+            endpoints.update(eid for (_, _, eid), _ in staging.ends.getTopItemIter(keys=(aid,)))
+            for message in messages:
+                serder = message.serder
+                if serder.pre not in endpoints:
+                    raise ValueError("Unrelated identifier")
+                if serder.ilk == ilks.rpy and serder.route not in (
+                    "/loc/scheme", "/end/role/add", "/end/role/cut"
+                ):
+                    raise ValueError("Unsupported reply")
+                if serder.ilk == ilks.rpy and serder.route.startswith("/end/role/") and serder.pre != aid:
+                    raise ValueError("Unrelated endpoint role")
+                if serder.ilk != ilks.rpy:
+                    existing = hby.db.kels.getLast(keys=serder.pre, on=serder.sn)
+                    if isinstance(existing, (bytes, bytearray, memoryview)):
+                        existing = bytes(existing).decode("utf-8")
+                    if existing is not None and existing != serder.said:
+                        raise RuntimeFault("CONFLICT", "Identifier history conflicts with this vault.")
+        finally:
+            await staging.aclose(clear=True)
+
+    except RuntimeFault:
+        raise
+    except Exception as exc:
+        raise RuntimeFault("VALIDATION", "Identifier file is invalid or unsupported.") from exc
+
+    kevery = modules["eventing"].Kevery(db=hby.db, rvy=hby.rvy, lax=False, local=False)
+    for message in messages:
+        serder = message.serder
+        previous = None
+        if serder.ilk == ilks.rpy:
+            data = serder.ked["a"]
+            if serder.route == "/loc/scheme":
+                previous = hby.db.lans.get(keys=(data["eid"], data["scheme"]))
+            else:
+                previous = hby.db.eans.get(keys=(data["cid"], data["role"], data["eid"]))
+            if previous is not None and previous.qb64 == serder.said:
+                continue
+        try:
+            parser.msgProcess(asdict(message), kvy=kevery, rvy=hby.rvy, tvy=None, exc=None, vry=None)
+        except modules["kering"].UnverifiedReplyError:
+            # Staging verified the reply; KERI's freshness rules retain an accepted newer reply.
+            if previous is None:
+                raise
+    organizer.update(aid, {"alias": alias, "cesrImported": "true"})
+    return aid
+
+
+def _issue_signed_credential(hby, organizer, modules, params):
+    issuer = require_text(params.get("issuerAid"), field="Issuer")
+    recipient = require_text(params.get("recipientAid"), field="Recipient")
+    schema_id = require_text(params.get("schemaId"), field="Schema ID")
+    attributes = params.get("attributes")
+    if not isinstance(attributes, dict) or len(_json_bytes(attributes)) > 1024 * 1024:
+        raise RuntimeFault("VALIDATION", "Credential attributes must be a JSON object of at most 1 MiB.")
+    _get_identifier_record(hby, issuer)
+    _require_remote_contact(hby, organizer, recipient, require_oobi=True)
+    if recipient not in hby.kevers:
+        raise RuntimeFault("VALIDATION", "Recipient key state is unavailable.")
+    if attributes.get("i", recipient) != recipient or attributes.get("d", "") != "" or attributes.get("rd"):
+        raise RuntimeFault("VALIDATION", "Attributes must match the recipient and cannot declare a registry.")
+    schemer = hby.db.schema.get(keys=(schema_id,))
+    if schemer is None:
+        raise RuntimeFault("NOT_FOUND", "Schema was not found in this vault.")
+    if "rd" in schemer.sed.get("required", []):
+        raise RuntimeFault("UNSUPPORTED", "This schema requires registry-backed issuance.")
+    try:
+        messaging = importlib.import_module("keri.acdc.messaging")
+    except ImportError as exc:
+        raise RuntimeFault("UNSUPPORTED", "This runtime does not support ACDC issuance.") from exc
+    try:
+        credential = messaging.acdcmap(israid=issuer, uuid=modules["coring"].Noncer().qb64,
+                                       schema=schema_id, attribute={"d": "", **attributes},
+                                       iseaid=recipient)
+        schemer.typ.resolver = modules["scheming"].CacheResolver(hby.db)
+        schemer.verify(raw=json.dumps(credential.sad).encode("utf-8"))
+    except Exception as exc:
+        raise RuntimeFault("VALIDATION", "Credential does not match the selected schema.") from exc
+    proof = hby.habByPre(issuer).endorse(credential, gvrsn=modules["kering"].Vrsn_2_0)
+    return {"said": credential.said, "issuerAid": issuer, "recipientAid": recipient,
+            "schemaId": schema_id, "authentication": "signature", "registry": None,
+            "cesr": base64.b64encode(proof).decode("ascii")}
+
+
 def _dedupe(values):
     seen = set()
     ordered = []
@@ -616,15 +780,15 @@ def _is_local_identifier(hby, aid: str):
     return hby.habByPre(aid) is not None
 
 
-def _has_remote_oobi(contact):
-    return bool(str(contact.get("oobi") or "").strip())
+def _has_remote_connection(contact):
+    return bool(str(contact.get("oobi") or "").strip()) or contact.get("cesrImported") == "true"
 
 
 def _list_remote_contacts(hby, organizer):
     contacts = []
     for contact in organizer.list():
         aid = str(contact.get("id") or "").strip()
-        if not aid or _is_local_identifier(hby, aid) or not _has_remote_oobi(contact):
+        if not aid or _is_local_identifier(hby, aid) or not _has_remote_connection(contact):
             continue
         contacts.append(contact)
     return contacts
@@ -684,7 +848,7 @@ def _require_remote_contact(
     if contact is None:
         raise RuntimeFault("NOT_FOUND", f"Remote identifier '{aid}' was not found.")
 
-    if require_oobi and not _has_remote_oobi(contact):
+    if require_oobi and not _has_remote_connection(contact):
         if missing_oobi_code == "CONFLICT":
             raise RuntimeFault(
                 "CONFLICT",
@@ -872,6 +1036,12 @@ async def dispatch(method: str, params: dict):
         aid = require_text(params.get("aid"), field="Identifier")
         return {"identifier": _get_identifier_record(hby, aid)}
 
+    if method == "identifiers.export":
+        aid = require_text(params.get("aid"), field="Identifier")
+        _get_identifier_record(hby, aid)
+        introduction = _identifier_introduction(hby.habByPre(aid), modules)
+        return {"cesr": base64.b64encode(introduction).decode("ascii")}
+
     if method == "identifiers.create":
         alias = require_text(params.get("alias"), field="Identifier alias")
         if hby.habByName(alias) is not None:
@@ -883,12 +1053,46 @@ async def dispatch(method: str, params: dict):
             "identifier": _get_identifier_record(reopened["hby"], reopened["hby"].habByName(alias).pre),
         }
 
+    if method == "schemas.import":
+        schema_id = require_text(params.get("schemaId"), field="Schema ID")
+        schema = params.get("schema")
+        if not isinstance(schema, str) or not schema or len(schema.encode("utf-8")) > 1024 * 1024:
+            raise RuntimeFault("VALIDATION", "A JSON schema of at most 1 MiB is required.")
+        try:
+            schemer = modules["scheming"].Schemer(raw=schema.encode("utf-8"))
+            if schemer.said != schema_id:
+                raise ValueError("Schema ID mismatch")
+        except Exception as exc:
+            raise RuntimeFault("VALIDATION", "Schema is invalid or does not match its expected ID.") from exc
+        if hby.db.schema.get(keys=(schema_id,)) is None:
+            hby.db.schema.pin(keys=(schema_id,), val=schemer)
+            reopened = await persist_and_reload()
+            schemer = reopened["hby"].db.schema.get(keys=(schema_id,))
+        return {"schema": {"said": schemer.said, "title": schemer.sed.get("title", ""), "raw": schemer.raw.decode("utf-8")}}
+
+    if method == "schemas.get":
+        schema_id = require_text(params.get("schemaId"), field="Schema ID")
+        schemer = hby.db.schema.get(keys=(schema_id,))
+        if schemer is None:
+            raise RuntimeFault("NOT_FOUND", "Schema was not found in this vault.")
+        return {"schema": {"said": schemer.said, "title": schemer.sed.get("title", ""), "raw": schemer.raw.decode("utf-8")}}
+
+    if method == "credentials.issueSigned":
+        return {"credential": _issue_signed_credential(hby, organizer, modules, params)}
+
     if method == "remotes.list":
         return {"remotes": _list_remote_records(hby, organizer)}
 
     if method == "remotes.get":
         aid = require_text(params.get("aid"), field="Remote identifier")
         return {"remote": _get_remote_record(hby, organizer, aid)}
+
+    if method == "remotes.import":
+        alias = require_text(params.get("alias"), field="Alias")
+        aid = await _import_identifier(hby, organizer, modules, params.get("cesr"), alias)
+        reopened = await persist_and_reload()
+        reopened_organizer = reopened["modules"]["organizing"].Organizer(hby=reopened["hby"])
+        return {"remote": _get_remote_record(reopened["hby"], reopened_organizer, aid)}
 
     if method == "remotes.update":
         aid = require_text(params.get("aid"), field="Remote identifier")
