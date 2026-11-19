@@ -35,6 +35,38 @@ def _load_module():
                 sys.modules[key] = value
 
 
+class SurfaceKelReplayTest(unittest.TestCase):
+    def test_replay_preserves_witness_attachments_and_rebuilds_only_missing_events(self):
+        transporting = _load_module()
+        inception = b"0:inception"
+        witnessed_rotation = b"2:rotation-with-witness-receipts"
+        transporting.vaulting.load_modules = lambda: {
+            "serdering": types.SimpleNamespace(
+                SerderKERI=lambda *, raw: types.SimpleNamespace(
+                    sn=int(raw[:1]), ked={}
+                )
+            )
+        }
+        fallback_calls = []
+
+        def own_event(*, sn):
+            fallback_calls.append(sn)
+            return b"1:missing-event"
+
+        hab = types.SimpleNamespace(
+            pre="controller",
+            db=types.SimpleNamespace(
+                clonePreIter=lambda *, pre: iter([inception, witnessed_rotation])
+            ),
+            msgOwnEvent=own_event,
+        )
+        self.assertEqual(
+            list(transporting._iter_surface_keystate_messages(hab=hab, start_sn=1, end_sn=2)),
+            [(1, b"1:missing-event"), (2, witnessed_rotation)],
+        )
+        self.assertEqual(fallback_calls, [1])
+
+
 class ProxyUrlTest(unittest.TestCase):
     def test_only_explicit_loopback_services_use_development_proxy(self):
         transporting = _load_module()
